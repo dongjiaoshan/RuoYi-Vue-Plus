@@ -1,5 +1,6 @@
 package org.dromara.djs.breed.core.service.impl;
 
+import org.dromara.djs.breed.event.weaning.mapper.PigWeaningMapper;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.PigStatusRecord;
@@ -16,6 +17,7 @@ import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.mapper.PigStatusRecordMapper;
 import org.dromara.djs.breed.core.service.PigStateMachine;
 import org.dromara.djs.breed.farm.service.PenCountUpdater;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -77,6 +79,20 @@ class PigCoreServiceImplTest {
     private PenCountUpdater penCountUpdater;
 
     private PigCoreServiceImpl service;
+
+    /**
+     * MP 的 LambdaWrapper 需要 entity 的列名缓存，mock 路径下没有 Spring 扫描，必须手工预热，
+     * 否则 `getSqlSegment()` 抛 "can not find lambda cache for this entity"（项目已知坑）。
+     */
+    @BeforeAll
+    static void initMpEntityCache() {
+        com.baomidou.mybatisplus.core.MybatisConfiguration cfg =
+            new com.baomidou.mybatisplus.core.MybatisConfiguration();
+        org.apache.ibatis.builder.MapperBuilderAssistant assistant =
+            new org.apache.ibatis.builder.MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(assistant, Pig.class);
+    }
 
     @BeforeEach
     void setup() {
@@ -940,4 +956,86 @@ class PigCoreServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("pig.not_found");
     }
+    @Test
+    @DisplayName("断奶选猪谓词：整串复用 D-0112 的 PENDING_BIRTH_WEIGHT，且没有被拼接粘住的关键字")
+    void weanableLitterPredicateContract() throws Exception {
+        String sql = weanablePredicate().replaceAll("\\s+", " ");
+
+        assertThat(sql)
+            .as("必须整串复用 PigFarrowMapper.PENDING_BIRTH_WEIGHT —— 出生重订正页/首页徽标/断奶选猪三处不许各自抄；"
+                + "尤其第二支只能是「零档案窝」，放宽成「这窝没有断奶记录」会让整窝被寄养走的母猪永久卡在列表里")
+            .contains(org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper
+                .PENDING_BIRTH_WEIGHT.replaceAll("\\s+", " "));
+        assertThat(sql)
+            .as("MP lambdaQuery 不起别名，子查询必须用全表名重新锚定外层猪只行")
+            .contains("f.pig_id = t_farm_pig_info.id");
+        assertThat(sql)
+            .as("必须看这头母猪的全部分娩，不能只认最近一窝 —— FarrowPicker 允许工人回头断老窝，"
+                + "只认最近一窝会让老窝里没断完的仔猪从列表上彻底消失、永远停在 piglet")
+            .doesNotContain("ORDER BY f2.farrow_date DESC")
+            .contains("f.pig_id = t_farm_pig_info.id");
+        assertThat(sql)
+            .as("整窝未贴标的窝没有逐头行，缺这一支会把断奶主流程整个筛掉")
+            .contains("NOT EXISTS (SELECT 1 FROM t_farm_pig_weaning w");
+        assertThat(sql)
+            .as("<> 在 <script> 里会被当 XML 标签，启动期崩容器（2026-09-20 踩过）")
+            .doesNotContain("<>");
+        for (String kw : new String[]{"ANDNOT", "ANDEXISTS", "NOTEXISTS", "ORNOT", "DESCLIMIT", "ANDf."}) {
+            assertThat(sql).as("关键字被拼接粘住了：" + kw).doesNotContain(kw);
+        }
+    }
+
+    /** 反射读 {@code PigCoreServiceImpl.WEANABLE_LITTER_EXISTS}（私有常量，测试不为它开放可见性）。 */
+    private static String weanablePredicate() throws Exception {
+        java.lang.reflect.Field f = PigCoreServiceImpl.class.getDeclaredField("WEANABLE_LITTER_EXISTS");
+        f.setAccessible(true);
+        return (String) f.get(null);
+    }
+
+    /** 捕获本次查询真正下到 mapper 的那个 wrapper，落实它的 SQL 段（MP 的 sqlSegment 是懒拼的）。 */
+    private String capturedSegment(java.util.function.Consumer<PigCoreServiceImpl> call) {
+        when(pigMapper.selectList(any())).thenReturn(java.util.List.of());
+        call.accept(service);
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.Wrapper> cap =
+            ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.Wrapper.class);
+        verify(pigMapper).selectList(cap.capture());
+        return String.valueOf(cap.getValue().getSqlSegment());
+    }
+
+    @Test
+    @DisplayName("断奶选猪谓词必须真的挂到查询上 —— 只验常量字符串等于没验（拆掉 .apply 照样全绿）")
+    void weanablePredicateIsAppliedToSearchQuery() throws Exception {
+        String seg = capturedSegment(svc -> svc.searchByEarKeyword(
+            null, null, "F", "sow", null, 60, "WEANING", null, null, null, null, null));
+        assertThat(seg)
+            .as("dueType=WEANING 的选猪查询必须带上「还有断奶活没干完」这道硬条件")
+            .contains("t_farm_pig_farrow f")
+            .contains("f.pig_id = t_farm_pig_info.id")
+            .contains("t_farm_pig_pigletno pl");
+    }
+
+    @Test
+    @DisplayName("栋舍 chip 与列表必须同口径 —— 不同口径会出现 chip 显 N 而点进去是空的（r120 同款坑）")
+    void weanablePredicateIsAppliedToBarnCount() {
+        String seg = capturedSegment(svc ->
+            svc.countByBarn(null, "F", "sow", null, null, "WEANING", null));
+        assertThat(seg).contains("t_farm_pig_farrow f").contains("f.pig_id = t_farm_pig_info.id");
+    }
+
+    @Test
+    @DisplayName("非断奶场景不挂这道条件 —— 它只服务 dueType=WEANING，别污染其余 11 个调用方")
+    void weanablePredicateNotAppliedElsewhere() {
+        String farrow = capturedSegment(svc -> svc.searchByEarKeyword(
+            null, "PZ", "F", "sow", null, 60, "FARROW", null, null, null, null, null));
+        assertThat(farrow).doesNotContain("t_farm_pig_farrow f");
+    }
+
+    @Test
+    @DisplayName("手输耳号时放行这道条件 —— 工人奔着某一头具体的猪去，不该「库里明明有却搜不出来」")
+    void weanablePredicateSkippedWhenSearchingByEarNo() {
+        String seg = capturedSegment(svc -> svc.searchByEarKeyword(
+            "260713", null, "F", "sow", null, 60, "WEANING", null, null, null, null, null));
+        assertThat(seg).doesNotContain("t_farm_pig_farrow f");
+    }
+
 }

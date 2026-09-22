@@ -18,7 +18,11 @@ public interface PigWeaningMapper extends BaseMapperPlus<PigWeaning, PigWeaningV
      *
      * <p><b>三个信号缺一不可</b>，因为三条断奶路径留下的痕迹不一样：</p>
      * <ol>
-     *   <li>本窝任一条未删断奶明细带这个耳号 —— 逐头断奶（行238）留下的痕迹；</li>
+     *   <li>任一条未删断奶明细带这个耳号 —— 逐头断奶（行238）留下的痕迹。<b>不限定是哪一窝的
+     *       断奶记录</b>（D-0113 寄养）：寄养的仔猪跟着养母断，落下的明细挂在养母那一窝，
+     *       按「本窝」找会漏掉，于是这头猪在生母窝里永远显示成「还没断奶」，可以被反复断。
+     *       耳号在租户内唯一是 DDL 约束保证的（{@code uk_piglet_ear (tenant_id, piglet_ear_no, del_unique)}），
+     *       不是统计观察，所以不绑窝反而是更严的判据；</li>
      *   <li>猪只档案已有断奶日 —— 逐头明细回写的个体快照；</li>
      *   <li>猪只档案已不是仔猪（这里必须写 {@code !=} 不能写 {@code <>}：本常量被 {@code <script>} 包着的
      *       动态 SQL 复用，{@code <} 会被 MyBatis 当成 XML 标签起始、启动期直接 SAXParseException 崩容器）
@@ -35,8 +39,7 @@ public interface PigWeaningMapper extends BaseMapperPlus<PigWeaning, PigWeaningV
                    ON w.id = wd.weaning_id AND w.del_flag = '0' AND w.tenant_id = wd.tenant_id
                 WHERE wd.del_flag = '0'
                   AND wd.tenant_id = pl.tenant_id
-                  AND wd.ear_no = pl.piglet_ear_no
-                  AND w.farrow_id = pl.farrow_id)
+                  AND wd.ear_no = pl.piglet_ear_no)
           OR cub.wean_date IS NOT NULL
           OR (cub.pig_type IS NOT NULL AND cub.pig_type != 'piglet'))
         """;
@@ -118,7 +121,7 @@ public interface PigWeaningMapper extends BaseMapperPlus<PigWeaning, PigWeaningV
     List<UnweanedLitterRowVo> selectUnweanedLitterRows(@Param("tenantId") String tenantId);
 
     /**
-     * 本窝里「这批耳号中哪几头已经断过奶」（BRD-WEAN-SELECT-001 提交去重守卫）。
+     * 「这批耳号中哪几头已经断过奶」（BRD-WEAN-SELECT-001 提交去重守卫）。
      *
      * <p>改造前 {@code (DN, WEAN)} 不在状态机 transition 表里，第二次提交同一窝会被非法流转直接挡住，
      * 顺带也挡住了「同一头仔猪断两次」。分批补断要求跳过状态机之后这道天然屏障就没了 ——
@@ -128,8 +131,10 @@ public interface PigWeaningMapper extends BaseMapperPlus<PigWeaning, PigWeaningV
      *
      * <p>判据与待断奶列表共用 {@link #ALREADY_WEANED}，两边不会各自漂移。</p>
      *
+     * <p><b>不按窝收窄</b>（D-0113 寄养）：本次提交里可能混着别窝寄养过来的仔猪，按 farrowId 过滤
+     * 会把它们整批放行，于是同一头寄养仔猪能在两头母猪名下各断一次。耳号全租户唯一，直接按耳号判。</p>
+     *
      * @param tenantId 租户
-     * @param farrowId 本窝分娩 ID
      * @param earNos   本次要断的仔猪耳号（非空）
      * @return 其中已断过奶的耳号；空集合表示这批都还没断
      */
@@ -141,13 +146,23 @@ public interface PigWeaningMapper extends BaseMapperPlus<PigWeaning, PigWeaningV
             ON cub.id = pl.pig_id AND cub.del_flag = '0' AND cub.tenant_id = pl.tenant_id
          WHERE pl.del_flag = '0'
            AND pl.tenant_id = #{tenantId}
-           AND pl.farrow_id = #{farrowId}
            AND pl.piglet_ear_no IN
                <foreach item="e" collection="earNos" open="(" separator="," close=")">#{e}</foreach>
            AND """ + ALREADY_WEANED + """
         </script>
         """)
     List<String> selectAlreadyWeanedEarNos(@Param("tenantId") String tenantId,
-                                           @Param("farrowId") Long farrowId,
                                            @Param("earNos") java.util.Collection<String> earNos);
+
+    /**
+     * 「这一窝还剩几头没断奶」（D-0115）。判据复用 {@link #UNWEANED_PIGLET_COUNT}，与待断奶列表、
+     * 出生重订正页选窝列表、mp 首页徽标同源。用途：寄养提交后判断生母那一窝是不是已经被掏空。
+     *
+     * @param farrowId 分娩记录 id
+     * @return 剩余未断奶仔猪头数；窝不存在或已软删返 null
+     */
+    @Select("SELECT " + UNWEANED_PIGLET_COUNT
+        + " FROM t_farm_pig_farrow f WHERE f.id = #{farrowId} AND f.del_flag = '0'")
+    Integer countUnweanedPigletsInLitter(@Param("farrowId") Long farrowId);
+
 }

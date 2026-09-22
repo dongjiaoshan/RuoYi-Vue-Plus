@@ -44,6 +44,15 @@ public class PigWeaningDetail extends TenantEntity {
     /** 仔猪耳号（可空，原型逐头行允许无耳号只录重）。 */
     private String earNo;
 
+    /**
+     * 这头仔猪出生在哪一窝（D-0113 寄养）。
+     *
+     * <p>寄养时与所属断奶记录的 {@code farrow_id} 不同 —— 仔猪跟着养母断，但它是生母那一窝的。
+     * 无耳号的匿名行记为断奶记录本窝。<b>提交那一刻定死，之后不再从汇总列反推</b>：
+     * 反推怎么写都有漏（编造耳号 / 寄养头日后死亡被软删），两个方向各能把本窝的头数上限掰坏一次。</p>
+     */
+    private Long birthFarrowId;
+
     /** 断奶体重 kg。 */
     private BigDecimal weight;
 

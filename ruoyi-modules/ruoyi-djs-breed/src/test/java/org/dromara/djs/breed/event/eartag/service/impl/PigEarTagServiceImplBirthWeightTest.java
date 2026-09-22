@@ -37,6 +37,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
@@ -122,6 +123,9 @@ class PigEarTagServiceImplBirthWeightTest {
             return 1;
         });
         when(pigletnoMapper.selectList(any())).thenAnswer(inv -> new ArrayList<>(pigletnoTable));
+        // D-0116：自动补建的判据改成「连软删的行一起数」——死光的窝不能被当成零档案老窝再补建一遍。
+        // 假库里的行全是未删的，所以直接返回行数。
+        when(pigletnoMapper.countByFarrowIgnoreDeleted(anyLong())).thenAnswer(inv -> pigletnoTable.size());
         when(pigletnoMapper.updateById(any(PigPigletno.class))).thenAnswer(inv -> {
             PigPigletno patch = inv.getArgument(0);
             for (PigPigletno row : pigletnoTable) {
@@ -461,7 +465,7 @@ class PigEarTagServiceImplBirthWeightTest {
         service.autoCreatePigletsForFarrow(farrow, 1L);
         String weanedEar = pigletnoTable.get(0).getPigletEarNo();
         String stillNursing = pigletnoTable.get(1).getPigletEarNo();
-        when(weaningMapper.selectAlreadyWeanedEarNos(any(), eq(FARROW_ID), any()))
+        when(weaningMapper.selectAlreadyWeanedEarNos(any(), any()))
             .thenReturn(List.of(weanedEar));
 
         // 未断奶那头排在前面：若查重是循环内判而不是 pre-pass，它会先被改掉再抛异常
@@ -488,7 +492,7 @@ class PigEarTagServiceImplBirthWeightTest {
             .filter(r -> "F".equals(r.getPigletSex()))
             .sorted(Comparator.comparing(PigPigletno::getPigletEarNo)).toList();
         String weanedMale = males.get(0).getPigletEarNo();
-        when(weaningMapper.selectAlreadyWeanedEarNos(any(), eq(FARROW_ID), any()))
+        when(weaningMapper.selectAlreadyWeanedEarNos(any(), any()))
             .thenReturn(List.of(weanedMale));
 
         // 旧 mp 提交体：无耳号，按 live_born 铺满整窝（先公后母），逐头给不同重量
@@ -518,7 +522,7 @@ class PigEarTagServiceImplBirthWeightTest {
         when(dictService.getDictValue("djs_piglet_default_weight", "仔猪出生重")).thenReturn("2");
         service.autoCreatePigletsForFarrow(farrow, 1L);
         String weanedEar = pigletnoTable.get(0).getPigletEarNo();
-        when(weaningMapper.selectAlreadyWeanedEarNos(any(), eq(FARROW_ID), any()))
+        when(weaningMapper.selectAlreadyWeanedEarNos(any(), any()))
             .thenReturn(List.of(weanedEar));
 
         var list = service.statByFarrow(FARROW_ID).getTaggedList();
@@ -536,7 +540,7 @@ class PigEarTagServiceImplBirthWeightTest {
         PigFarrow farrow = mkFarrow(2, 1, 1);
         when(dictService.getDictValue("djs_piglet_default_weight", "仔猪出生重")).thenReturn("2");
         service.autoCreatePigletsForFarrow(farrow, 1L);
-        when(weaningMapper.selectAlreadyWeanedEarNos(any(), eq(FARROW_ID), any()))
+        when(weaningMapper.selectAlreadyWeanedEarNos(any(), any()))
             .thenReturn(List.of());
 
         assertThat(service.statByFarrow(FARROW_ID).getTaggedList())
@@ -586,4 +590,18 @@ class PigEarTagServiceImplBirthWeightTest {
         assertThat(last.getTotalWeight()).isEqualByComparingTo(new BigDecimal(total));
         assertThat(last.getAvgWeight()).isEqualByComparingTo(new BigDecimal(avg));
     }
+    @Test
+    @DisplayName("D-0116：一窝贴过标的仔猪全部死亡（pigletno 被软删）后，不许被当成零档案老窝再补建一窝幽灵档案")
+    void ensureLitter_doesNotRebuildAfterWholeLitterDied() {
+        mkFarrow(3, 2, 1);
+        // 未删行为 0（全死了），但历史上建过 3 行 —— 判据看的必须是后者
+        pigletnoTable.clear();
+        when(pigletnoMapper.countByFarrowIgnoreDeleted(anyLong())).thenReturn(3);
+
+        service.ensureLitterCreated(FARROW_ID);
+
+        verify(pigMapper, never()).insert(any(Pig.class));
+        verify(pigletnoMapper, never()).insert(any(PigPigletno.class));
+    }
+
 }

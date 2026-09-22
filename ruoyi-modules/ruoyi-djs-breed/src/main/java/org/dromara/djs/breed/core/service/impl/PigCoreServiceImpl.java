@@ -32,6 +32,7 @@ import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.event.PigStateChangedEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
+import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
 import org.dromara.djs.breed.core.mapper.PigStatusRecordMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
@@ -113,6 +114,39 @@ public class PigCoreServiceImpl implements IPigCoreService {
     private static final int GESTATION_DAYS_DISPLAY = 114;
     /** 断奶期展示固定天数：分娩日 + 25。 */
     private static final int LACTATION_DAYS_DISPLAY = 25;
+
+    /**
+     * 断奶选猪列表的硬条件：<b>这头母猪最近一窝的断奶还没干完</b>（V6 行249 + 行255）。
+     *
+     * <p>断奶录入原先只列 {@code FM} 哺乳母猪。但断奶是「按所选仔猪断」，母猪第一次提交就转 DN
+     * （D-0098②），紧接着还可能被配种转去别的状态 —— 只断了半窝的母猪立刻从列表消失，剩下的仔猪
+     * 再也够不到，会永远停在 {@code pig_type='piglet'}、永远算进仔猪存栏、永远变不成育肥猪。
+     * 原先靠列表顶部一个「调整断奶仔猪（跨窝/补断）」按钮绕开，甲方行249 要求去掉它，
+     * 所以列表判据从「母猪是什么状态」改成「这头母猪还有没有断奶的活要干」。</p>
+     *
+     * <p>判据**整串复用** {@link PigFarrowMapper#PENDING_BIRTH_WEIGHT}（D-0112 定的那一串），
+     * 与出生重订正页选窝列表、mp 首页徽标同源 —— 「还有未断奶仔猪 **OR** 零档案且没断过奶的老窝」。
+     * 第二支只覆盖**零档案**的窝（整窝未贴标，没有逐头行、第一支恒为 false），不能放宽成「这窝没有断奶记录」：
+     * 那样的话整窝被寄养走的母猪（自己名下一条断奶记录都没有、却已经没有仔猪可断）会永远留在列表里，
+     * 点进去铺不出行、提交必 400、又因 FM 不在配种的可入状态里而永久卡死。</p>
+     *
+     * <p><b>看这头母猪的全部分娩，不是只看最近一窝</b>：FarrowPicker 会把该母猪所有分娩都列给工人选
+     * （{@code recent-by-mother}），先断新窝再回头断老窝是允许的。只认最近一窝会让老窝里没断完的仔猪
+     * 从列表上彻底消失、永远停在 {@code pig_type='piglet'} —— 这正是本谓词要解决的那类问题换个方向重演。
+     * 「遗留分娩永久钉住母猪」这个担心由判据本身挡掉：第一支要求真有未断奶仔猪，第二支要求零档案且没断过奶，
+     * 两者都为假的老窝不会命中（staging 实测：全部窝与最近一窝两种写法命中集合完全相同，均为 16 头）。</p>
+     *
+     * <p>MP 的 lambdaQuery 不起别名，故子查询里用全表名 {@code t_farm_pig_info} 重新锚定外层猪只行。</p>
+     */
+    private static final String WEANABLE_LITTER_EXISTS =
+        "EXISTS (SELECT 1 FROM t_farm_pig_farrow f"
+            + " WHERE f.pig_id = t_farm_pig_info.id"
+            + " AND f.del_flag = '0'"
+            + " AND f.tenant_id = t_farm_pig_info.tenant_id"
+            + " AND " + PigFarrowMapper.PENDING_BIRTH_WEIGHT + ")";
+
+    /** 断奶板块的 dueType 取值；{@link #WEANABLE_LITTER_EXISTS} 只对它生效。 */
+    private static final String DUE_TYPE_WEANING = "WEANING";
 
     private final PigMapper pigMapper;
     private final PigStatusRecordMapper statusRecordMapper;
@@ -857,6 +891,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
 
         LambdaQueryWrapper<Pig> w = buildSearchWrapper(earNoKeyword, statuses, callerWantsEnd, sexFilter, pigTypes,
             barnIdFilter, isCastrated, dropNullBarn, applyMinAge ? minAgeDays : null, applyMaxAge ? maxAgeDays : null)
+            // 断奶选猪：只列「任一窝还有断奶活没干完」的母猪（行249/255）。搜耳号时放行 ——
+            // 与上方 dueType 硬筛同一条豁免（row256）：工人手输耳号就是奔着某一头具体的猪去的。
+            .apply(!searchingByEarNo && DUE_TYPE_WEANING.equals(dueType), WEANABLE_LITTER_EXISTS)
             // deferLimit 时不下 SQL LIMIT —— 截断推迟到内存筛 + 排序之后（见方法末尾 subList）
             .last(!deferLimit, "LIMIT " + effectiveLimit);
 
@@ -1252,6 +1289,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
             // row180：出栏选猪日龄 >= minAgeDays，与 searchByEarKeyword 完全一致（{0} 占位 + apply 防注入，
             // COALESCE(birth_date, introduce_date) 同口径），否则 chip 计全部而列表只列到龄 → 对不上。
             .apply(applyMinAge, "DATEDIFF(NOW(), COALESCE(birth_date, introduce_date)) >= {0}", minAgeDays)
+            // 行249/255：断奶选猪的「还有断奶活要干」硬条件必须与 searchByEarKeyword 同口径挂上，
+            // 否则 chip 计全部母猪、列表只列有活干的 → chip 显 N 而点进去是空的（r120 同款坑）。
+            .apply(!searchingByEarNo && DUE_TYPE_WEANING.equals(dueType), WEANABLE_LITTER_EXISTS)
             // 无栋舍归属的猪只不计入任何 chip
             .isNotNull(Pig::getBarnId);
         if (!statuses.isEmpty()) {

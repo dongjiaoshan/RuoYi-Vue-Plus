@@ -29,10 +29,18 @@ public interface PigFarrowMapper extends BaseMapperPlus<PigFarrow, PigFarrowVo> 
     String selectBoarEarByBreedingId(@Param("breedingId") Long breedingId);
 
     /**
-     * 本窝还没有任何仔猪档案（行242 上线前分娩、从未走过耳号标记的老窝）。别名契约：{@code f} = {@code t_farm_pig_farrow}。
+     * 本窝一头仔猪档案都没有（整窝从未贴标）。别名契约：调用方 SQL 里 {@code f} = {@code t_farm_pig_farrow}。
+     *
+     * <p>🔴 <b>刻意不过滤 {@code pn.del_flag}</b>：仔猪死亡登记会把 {@code t_farm_pig_pigletno} 那一行软删
+     * （{@code DieServiceImpl}）。带上 {@code del_flag='0'} 的话，一窝逐头贴过标的仔猪全部死亡之后，
+     * 这一窝在 SQL 上就伪装成「零档案窝」—— 母猪继续列在断奶待办里，点进去后端返 0 条逐头行、
+     * mp 回落成按 {@code live_born} 铺匿名行，工人照着提交就录出一窝幽灵断奶头数，污染窝均断奶数 /
+     * 产房损失率 / PSY（独立验收 2026-09-22 实测 10 头全死的窝录出 10 头断奶并转 DN）。
+     * 「这一窝生过哪几头」是事实，删不掉；D-0110 要照顾的真·老窝连软删行都没有，不受影响。
+     * 根因（死亡登记该不该软删 pigletno）另挂 D-0116 等拍板，这里先把入口堵上。</p>
      */
     String NO_PIGLET_ARCHIVE = "NOT EXISTS (SELECT 1 FROM t_farm_pig_pigletno pn"
-        + " WHERE pn.farrow_id = f.id AND pn.del_flag = '0' AND pn.tenant_id = f.tenant_id)";
+        + " WHERE pn.farrow_id = f.id AND pn.tenant_id = f.tenant_id)";
 
     /** 本窝没有任何断奶记录。别名契约同 {@link #NO_PIGLET_ARCHIVE}。 */
     String NO_WEANING_RECORD = "NOT EXISTS (SELECT 1 FROM t_farm_pig_weaning w"

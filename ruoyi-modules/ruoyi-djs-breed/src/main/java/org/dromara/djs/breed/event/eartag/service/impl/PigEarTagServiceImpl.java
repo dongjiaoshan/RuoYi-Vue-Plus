@@ -130,7 +130,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         List<PigletEarTagVo> taggedList = new ArrayList<>(tagged);
         if (tagged > 0) {
             Map<Long, Pig> pigById = loadPigsByIds(existing.stream().map(PigPigletno::getPigId).toList());
-            Set<String> weaned = selectWeanedEarNos(farrowId, existing);
+            Set<String> weaned = selectWeanedEarNos(existing);
             for (PigPigletno log : existing) {
                 Pig p = log.getPigId() == null ? null : pigById.get(log.getPigId());
                 if (p == null) {
@@ -203,7 +203,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         bySex.values().forEach(l -> l.sort(Comparator.comparing(PigPigletno::getPigletEarNo,
             Comparator.nullsLast(Comparator.naturalOrder()))));
         Map<String, Integer> cursor = new HashMap<>();
-        Set<String> weaned = selectWeanedEarNos(farrow.getId(), existing);
+        Set<String> weaned = selectWeanedEarNos(existing);
 
         int applied = 0;
         List<String> skippedWeaned = new ArrayList<>();
@@ -474,8 +474,12 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         if (farrow == null) {
             throw new ServiceException(I18nMessages.t("pigletno.farrow.not_found", String.valueOf(farrowId)));
         }
-        if (selectLitterPiglets(farrowId).isEmpty()) {
-            // D-0110：老窝进来时就补建，否则订正页是一张没有耳号的空表单，工人无从下手
+        // D-0110：老窝进来时就补建，否则订正页是一张没有耳号的空表单，工人无从下手。
+        // 🔴 判「有没有档案」必须连**软删的行**一起看：仔猪死亡登记会把 pigletno 行软删，
+        // 只看未删行的话，一窝逐头贴过标的仔猪全部死亡之后就会被当成「零档案老窝」再补建一遍，
+        // 凭空造出一窝幽灵仔猪档案（独立验收实测：10 头全死的窝直接打这个端点能建出 10 行）。
+        // 真·老窝连软删行都没有，不受影响 —— 与待断奶判据 PigFarrowMapper.NO_PIGLET_ARCHIVE 同口径。
+        if (pigletnoMapper.countByFarrowIgnoreDeleted(farrowId) == 0) {
             autoCreatePigletsForFarrow(farrow, LoginHelper.getUserId());
         }
         return statByFarrow(farrowId);
@@ -518,7 +522,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
 
         // D-0112（甲方 2026-09-22 选②按仔猪算）：断掉的那几头出生重已经定死，不许再改。
         // 整单拒绝而不是静默跳过 —— 悄悄丢掉工人填的值，他不会知道这头没改上。
-        Set<String> weaned = selectWeanedEarNos(farrowId, litter);
+        Set<String> weaned = selectWeanedEarNos(litter);
         if (!weaned.isEmpty()) {
             for (PigletBirthWeightItem item : bo.getItems()) {
                 String earNo = StringUtils.trim(item.getPigletEarNo());
@@ -568,7 +572,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
      * <p>判据走 {@link PigWeaningMapper#selectAlreadyWeanedEarNos} —— 与断奶选择页、选窝列表、
      * mp 徽标同一串 {@code ALREADY_WEANED}，四处不会各自漂移。</p>
      */
-    private Set<String> selectWeanedEarNos(Long farrowId, List<PigPigletno> litter) {
+    private Set<String> selectWeanedEarNos(List<PigPigletno> litter) {
         List<String> earNos = litter.stream()
             .map(PigPigletno::getPigletEarNo)
             .filter(StringUtils::isNotBlank)
@@ -579,7 +583,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
             return new HashSet<>();
         }
         return new HashSet<>(
-            weaningMapper.selectAlreadyWeanedEarNos(TenantHelper.getTenantId(), farrowId, earNos));
+            weaningMapper.selectAlreadyWeanedEarNos(TenantHelper.getTenantId(), earNos));
     }
 
     /** 本窝已建档仔猪（耳号 + 性别 + 当前出生重的权威行），按 id asc = 建档顺序。 */

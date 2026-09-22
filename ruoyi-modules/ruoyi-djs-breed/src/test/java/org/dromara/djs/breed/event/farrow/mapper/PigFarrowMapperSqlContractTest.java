@@ -106,4 +106,17 @@ class PigFarrowMapperSqlContractTest {
             assertThat(selectSql(name)).as(name).doesNotContain("<>");
         }
     }
+    @Test
+    @DisplayName("D-0116：零档案判据刻意不过滤软删 —— 过滤了的话整窝死光的窝会伪装成未贴标窝，录出幽灵断奶头数")
+    void noPigletArchiveIgnoresSoftDelete() {
+        String sql = PigFarrowMapper.NO_PIGLET_ARCHIVE.replaceAll("\\s+", " ");
+        assertThat(sql)
+            .as("死亡登记会软删 pigletno 行；带上 del_flag='0' 时，一窝逐头贴过标的仔猪全部死亡之后"
+                + "这一窝在 SQL 上就成了「零档案窝」，母猪继续列在断奶待办里、mp 按 live_born 铺匿名行，"
+                + "工人一提交就录出一窝根本不存在的断奶头数，污染窝均断奶数/产房损失率/PSY")
+            .doesNotContain("pn.del_flag")
+            .contains("pn.farrow_id = f.id")
+            .contains("pn.tenant_id = f.tenant_id");
+    }
+
 }
