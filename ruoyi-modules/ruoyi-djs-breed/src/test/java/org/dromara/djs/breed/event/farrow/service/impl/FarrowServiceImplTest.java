@@ -422,7 +422,7 @@ class FarrowServiceImplTest {
 
     @Test
     @DisplayName("选窝列表的「未断奶」过滤走 SQL 侧 NOT EXISTS，不靠内存筛")
-    void pendingLitters_filtersUnweanedInSql() {
+    void pendingLitters_filtersByUnweanedPigletInSql() {
         when(farrowMapper.selectVoList(any())).thenReturn(new ArrayList<>(List.of(mkLitterRow(77L, 8))));
 
         service.queryPendingLitters(null, null);
@@ -434,10 +434,16 @@ class FarrowServiceImplTest {
         String sql = captor.getValue().getSqlSegment().replaceAll("\\s+", " ");
         assertThat(sql)
             .as("过滤条件掉回内存 = LIMIT 200 的候选被滤掉大半，列表口径会漂")
-            .contains("NOT EXISTS")
-            .contains("t_farm_pig_weaning")
-            .contains("w.farrow_id = t_farm_pig_farrow.id")
-            .contains("w.del_flag = '0'");
+            .contains("EXISTS")
+            .contains("f.id = t_farm_pig_farrow.id");
+        assertThat(sql)
+            .as("D-0112：逐头判「还有没断奶的仔猪」，不是按窝判「有没有断奶记录」")
+            .contains("t_farm_pig_pigletno pl")
+            .contains("pl.farrow_id = f.id");
+        assertThat(sql.replaceAll("\\s+", " "))
+            .as("与徽标共用同一串判据，不许各自抄一份")
+            .contains(org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper
+                .PENDING_BIRTH_WEIGHT.replaceAll("\\s+", " "));
     }
 
     @Test

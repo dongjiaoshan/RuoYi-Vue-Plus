@@ -31,6 +31,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -83,6 +84,8 @@ class PigEarTagServiceImplBirthWeightTest {
     private PenCountUpdater penCountUpdater;
     @Mock
     private DictService dictService;
+    @Mock
+    private org.dromara.djs.breed.event.weaning.mapper.PigWeaningMapper weaningMapper;
 
     private PigEarTagServiceImpl service;
 
@@ -94,7 +97,7 @@ class PigEarTagServiceImplBirthWeightTest {
     @BeforeEach
     void setup() {
         service = new PigEarTagServiceImpl(pigMapper, pigletnoMapper, farrowMapper, earNoAllocator,
-            breedConfigMapper, penCountUpdater, dictService);
+            breedConfigMapper, penCountUpdater, dictService, weaningMapper);
 
         when(earNoAllocator.buildPrefix(eq("4"), eq("04"), eq("M"), any(LocalDate.class)))
             .thenReturn("4-04-1-260508");
@@ -451,6 +454,97 @@ class PigEarTagServiceImplBirthWeightTest {
     }
 
     @Test
+    @DisplayName("D-0112：已断奶那头的出生重改不动 —— 整单拒绝，同一单里没断奶的那头也不许先落库")
+    void adjust_weanedEarNo_rejectedWholeSubmit() {
+        PigFarrow farrow = mkFarrow(2, 1, 1);
+        when(dictService.getDictValue("djs_piglet_default_weight", "仔猪出生重")).thenReturn("2");
+        service.autoCreatePigletsForFarrow(farrow, 1L);
+        String weanedEar = pigletnoTable.get(0).getPigletEarNo();
+        String stillNursing = pigletnoTable.get(1).getPigletEarNo();
+        when(weaningMapper.selectAlreadyWeanedEarNos(any(), eq(FARROW_ID), any()))
+            .thenReturn(List.of(weanedEar));
+
+        // 未断奶那头排在前面：若查重是循环内判而不是 pre-pass，它会先被改掉再抛异常
+        PigletBirthWeightBo bo = mkBo(stillNursing, "1.11", weanedEar, "2.22");
+
+        assertThatThrownBy(() -> service.adjustBirthWeights(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining(weanedEar);
+        verify(pigletnoMapper, never()).updateById(any(PigPigletno.class));
+        verify(pigMapper, never()).updateById(any(Pig.class));
+    }
+
+    @Test
+    @DisplayName("D-0112 旁路：旧 mp 整窝按位提交时，已断奶那几头跳过不写，但位次不塌（后面的头不许串位）")
+    void batchTag_compatPath_skipsWeanedButKeepsPositions() {
+        PigFarrow farrow = mkFarrow(4, 2, 2);
+        when(dictService.getDictValue("djs_piglet_default_weight", "仔猪出生重")).thenReturn("2");
+        service.autoCreatePigletsForFarrow(farrow, 1L);
+        // 建档顺序 = 公 2 头在前、母 2 头在后；把第一头公的标成已断奶
+        List<PigPigletno> males = pigletnoTable.stream()
+            .filter(r -> "M".equals(r.getPigletSex()))
+            .sorted(Comparator.comparing(PigPigletno::getPigletEarNo)).toList();
+        List<PigPigletno> females = pigletnoTable.stream()
+            .filter(r -> "F".equals(r.getPigletSex()))
+            .sorted(Comparator.comparing(PigPigletno::getPigletEarNo)).toList();
+        String weanedMale = males.get(0).getPigletEarNo();
+        when(weaningMapper.selectAlreadyWeanedEarNos(any(), eq(FARROW_ID), any()))
+            .thenReturn(List.of(weanedMale));
+
+        // 旧 mp 提交体：无耳号，按 live_born 铺满整窝（先公后母），逐头给不同重量
+        PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
+        bo.setFarrowId(FARROW_ID);
+        bo.setPiglets(List.of(
+            mkItem("M", "7.71"), mkItem("M", "7.72"),
+            mkItem("F", "7.73"), mkItem("F", "7.74")));
+
+        BigDecimal weanedBefore = males.get(0).getBirthWeight();   // 建档时写的字典默认 2kg
+        service.batchTag(bo);
+
+        assertThat(males.get(0).getBirthWeight())
+            .as("已断奶那头必须一个字节都没改（仍是建档时的值，不是提交上来的 7.71）")
+            .isEqualByComparingTo(weanedBefore);
+        assertThat(males.get(1).getBirthWeight())
+            .as("第二头公的必须还是拿到它自己那一位的 7.72，而不是被跳过后串成 7.71")
+            .isEqualByComparingTo(new BigDecimal("7.72"));
+        assertThat(females.get(0).getBirthWeight()).isEqualByComparingTo(new BigDecimal("7.73"));
+        assertThat(females.get(1).getBirthWeight()).isEqualByComparingTo(new BigDecimal("7.74"));
+    }
+
+    @Test
+    @DisplayName("D-0112：本窝清单逐头标 weaned，断掉的那几头前端据此置灰")
+    void statByFarrow_marksWeanedPiglets() {
+        PigFarrow farrow = mkFarrow(2, 1, 1);
+        when(dictService.getDictValue("djs_piglet_default_weight", "仔猪出生重")).thenReturn("2");
+        service.autoCreatePigletsForFarrow(farrow, 1L);
+        String weanedEar = pigletnoTable.get(0).getPigletEarNo();
+        when(weaningMapper.selectAlreadyWeanedEarNos(any(), eq(FARROW_ID), any()))
+            .thenReturn(List.of(weanedEar));
+
+        var list = service.statByFarrow(FARROW_ID).getTaggedList();
+
+        assertThat(list).hasSize(2);
+        assertThat(list).filteredOn(v -> weanedEar.equals(v.getPigletEarNo()))
+            .allMatch(v -> Boolean.TRUE.equals(v.getWeaned()));
+        assertThat(list).filteredOn(v -> !weanedEar.equals(v.getPigletEarNo()))
+            .allMatch(v -> Boolean.FALSE.equals(v.getWeaned()));
+    }
+
+    @Test
+    @DisplayName("D-0112：一窝都没断奶 → 逐头 weaned=false，整页照常可改")
+    void statByFarrow_noneWeaned_allEditable() {
+        PigFarrow farrow = mkFarrow(2, 1, 1);
+        when(dictService.getDictValue("djs_piglet_default_weight", "仔猪出生重")).thenReturn("2");
+        service.autoCreatePigletsForFarrow(farrow, 1L);
+        when(weaningMapper.selectAlreadyWeanedEarNos(any(), eq(FARROW_ID), any()))
+            .thenReturn(List.of());
+
+        assertThat(service.statByFarrow(FARROW_ID).getTaggedList())
+            .isNotEmpty()
+            .allMatch(v -> Boolean.FALSE.equals(v.getWeaned()));
+    }
+
+    @Test
     @DisplayName("farrow 不存在 → 抛异常（不静默建空窝）")
     void adjust_farrowNotFound_rejected() {
         when(farrowMapper.selectById(FARROW_ID)).thenReturn(null);
@@ -462,6 +556,13 @@ class PigEarTagServiceImplBirthWeightTest {
         bo.setItems(List.of(item));
 
         assertThatThrownBy(() -> service.adjustBirthWeights(bo)).isInstanceOf(ServiceException.class);
+    }
+
+    private static PigletEarTagItem mkItem(String sex, String weight) {
+        PigletEarTagItem it = new PigletEarTagItem();
+        it.setPigletSex(sex);
+        it.setBirthWeight(new BigDecimal(weight));
+        return it;
     }
 
     private PigletBirthWeightBo mkBo(String ear1, String w1, String ear2, String w2) {

@@ -11,6 +11,7 @@ import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.EarNoAllocator;
@@ -32,6 +33,7 @@ import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.eartag.service.IPigEarTagService;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
+import org.dromara.djs.breed.event.weaning.mapper.PigWeaningMapper;
 import org.dromara.djs.breed.farm.service.PenCountUpdater;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,6 +45,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -83,6 +86,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
     private final BreedConfigMapper breedConfigMapper;
     private final PenCountUpdater penCountUpdater;
     private final DictService dictService;
+    private final PigWeaningMapper weaningMapper;
 
     /** 字典 {@code djs_piglet_default_weight} 下「出生重」那一项的标签（同字典另有「仔猪断奶重」项）。 */
     private static final String BIRTH_WEIGHT_DICT_LABEL = "仔猪出生重";
@@ -126,6 +130,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         List<PigletEarTagVo> taggedList = new ArrayList<>(tagged);
         if (tagged > 0) {
             Map<Long, Pig> pigById = loadPigsByIds(existing.stream().map(PigPigletno::getPigId).toList());
+            Set<String> weaned = selectWeanedEarNos(farrowId, existing);
             for (PigPigletno log : existing) {
                 Pig p = log.getPigId() == null ? null : pigById.get(log.getPigId());
                 if (p == null) {
@@ -134,7 +139,10 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
                     p.setCurrentStatus("");
                     p.setBirthDate(farrow.getFarrowDate() == null ? null : farrow.getFarrowDate().toLocalDate());
                 }
-                taggedList.add(PigletEarTagVo.from(p, log));
+                PigletEarTagVo row = PigletEarTagVo.from(p, log);
+                // D-0112：断掉的那几头留在清单里只作展示，出生重不可再改
+                row.setWeaned(weaned.contains(log.getPigletEarNo()));
+                taggedList.add(row);
             }
         }
         vo.setTaggedList(taggedList);
@@ -172,6 +180,18 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
      *
      * <p>提交头数多于已建档头数时只贴前 N 头并 warn，不新建、不报错：旧 mp 的行数是按
      * live_born 铺的，正常等长；不等长只可能是并发或脏数据，此时保住已有档案比报错更有用。</p>
+     *
+     * <p><b>已断奶的那几头跳过不写</b>（D-0112 后半句：已断奶不可再改出生重）。这里跳过、
+     * 而 {@link #adjustBirthWeights} 那条路整单拒绝，两者不一致是**故意的**：</p>
+     * <ul>
+     *   <li>新 mp 带耳号提交 —— 工人是冲着某一头去的，报错才对得上他的动作；</li>
+     *   <li>旧 mp 不带耳号、按 {@code live_born} 铺满整窝按位提交 —— 半断奶的窝上它<b>必然</b>
+     *       连已断奶那几头一起交上来。整单拒绝等于让这窝在旧 mp 上彻底改不了出生重，
+     *       把 D-0112 刚恢复的「剩下没断奶的还能改」又赔进去。</li>
+     * </ul>
+     * <p>跳过时<b>位次不塌</b>：仍按完整清单对位，只是被跳过那一位不落库 —— 否则后面每一头都会
+     * 串到前一头的重量上。放弃的是「旧 mp 上工人得不到提示」：它的提交体渲染不出逐头状态，
+     * 只能靠 warn 日志留痕；新 mp 过审后这条路自然退场。</p>
      */
     private List<PigletEarTagVo> adjustBirthWeightsBySexOrder(PigFarrow farrow,
                                                               List<PigPigletno> existing,
@@ -183,8 +203,10 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         bySex.values().forEach(l -> l.sort(Comparator.comparing(PigPigletno::getPigletEarNo,
             Comparator.nullsLast(Comparator.naturalOrder()))));
         Map<String, Integer> cursor = new HashMap<>();
+        Set<String> weaned = selectWeanedEarNos(farrow.getId(), existing);
 
         int applied = 0;
+        List<String> skippedWeaned = new ArrayList<>();
         for (PigletEarTagItem item : submitted) {
             List<PigPigletno> pool = bySex.get(item.getPigletSex());
             int idx = cursor.merge(item.getPigletSex(), 1, Integer::sum) - 1;
@@ -196,6 +218,11 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
                 continue;
             }
             PigPigletno row = pool.get(idx);
+            // D-0112：这一位已经断奶了 —— 位次照走（后面的头不能串位），但这一行不落库
+            if (weaned.contains(row.getPigletEarNo())) {
+                skippedWeaned.add(row.getPigletEarNo());
+                continue;
+            }
             PigPigletno logUpdate = new PigPigletno();
             logUpdate.setId(row.getId());
             logUpdate.setBirthWeight(bw);
@@ -208,8 +235,12 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
             }
             applied++;
         }
-        if (applied < submitted.size()) {
-            log.warn("[V6-R242-compat] farrowId={} 提交 {} 头、已建档 {} 头，只订正了前 {} 头",
+        if (!skippedWeaned.isEmpty()) {
+            log.warn("[D-0112-compat] farrowId={} 旧客户端整窝提交，已断奶 {} 头跳过不改出生重：{}",
+                farrow.getId(), skippedWeaned.size(), skippedWeaned);
+        }
+        if (applied + skippedWeaned.size() < submitted.size()) {
+            log.warn("[V6-R242-compat] farrowId={} 提交 {} 头、已建档 {} 头，只订正了 {} 头",
                 farrow.getId(), submitted.size(), existing.size(), applied);
         } else {
             log.info("[V6-R242-compat] farrowId={} 旧客户端提交，已建档窝降级为按性别顺序订正出生重 {} 头",
@@ -476,12 +507,24 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
 
         // 同一耳号在一次提交里出现两次：静默取最后一个等于把工人先填的那个值悄悄扔掉，
         // 他不会知道自己录重了。整单拒绝，让他自己看清楚改哪一头。
-        Set<String> seen = new java.util.HashSet<>();
+        Set<String> seen = new HashSet<>();
         for (PigletBirthWeightItem dup : bo.getItems()) {
             String e = StringUtils.trim(dup.getPigletEarNo());
             if (!seen.add(e)) {
                 throw new ServiceException(
                     I18nMessages.t("pigletno.ear_no.duplicated", e), 400);
+            }
+        }
+
+        // D-0112（甲方 2026-09-22 选②按仔猪算）：断掉的那几头出生重已经定死，不许再改。
+        // 整单拒绝而不是静默跳过 —— 悄悄丢掉工人填的值，他不会知道这头没改上。
+        Set<String> weaned = selectWeanedEarNos(farrowId, litter);
+        if (!weaned.isEmpty()) {
+            for (PigletBirthWeightItem item : bo.getItems()) {
+                String earNo = StringUtils.trim(item.getPigletEarNo());
+                if (weaned.contains(earNo)) {
+                    throw new ServiceException(I18nMessages.t("pigletno.ear_no.weaned", earNo), 400);
+                }
             }
         }
 
@@ -517,6 +560,26 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         List<PigletEarTagVo> result = statByFarrow(farrowId).getTaggedList();
         result.sort(Comparator.comparing(PigletEarTagVo::getPigletEarNo));
         return result;
+    }
+
+    /**
+     * 本窝这批耳号里哪几头已经断过奶（D-0112）。
+     *
+     * <p>判据走 {@link PigWeaningMapper#selectAlreadyWeanedEarNos} —— 与断奶选择页、选窝列表、
+     * mp 徽标同一串 {@code ALREADY_WEANED}，四处不会各自漂移。</p>
+     */
+    private Set<String> selectWeanedEarNos(Long farrowId, List<PigPigletno> litter) {
+        List<String> earNos = litter.stream()
+            .map(PigPigletno::getPigletEarNo)
+            .filter(StringUtils::isNotBlank)
+            .toList();
+        if (earNos.isEmpty()) {
+            // 必须是 HashSet 不能是 Set.of()：历史 pigletno 行的耳号可能为 null，
+            // 而不可变集合的 contains(null) 直接抛 NPE，会把整页读崩
+            return new HashSet<>();
+        }
+        return new HashSet<>(
+            weaningMapper.selectAlreadyWeanedEarNos(TenantHelper.getTenantId(), farrowId, earNos));
     }
 
     /** 本窝已建档仔猪（耳号 + 性别 + 当前出生重的权威行），按 id asc = 建档顺序。 */

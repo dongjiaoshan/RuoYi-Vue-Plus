@@ -147,7 +147,10 @@ class TracePublicServiceImplTest {
     private static final Long PIG_ID = 2059482914806059010L;
     private static final Long PLOT_ID = 6001L;
     private static final Long ZONE_ID = 6101L;
-    /** 原材料作物产品 id（成品由它加工而来），采摘入库流水按它 + 地块收窄。 */
+    /** 生产领用发生在这个库位（D-0108 的键）。 */
+    private static final Long PICK_LOCATION_ID = 9301000000000006L;
+
+    /** 原材料作物产品 id（成品由它加工而来），采摘入库流水按它 + 领用库位收窄。 */
     private static final Long MATERIAL_ID = 100000000000000341L;
     private static final Long STORE_ID = 5001L;
     private static final Long FARM_ID = 100L;
@@ -560,8 +563,20 @@ class TracePublicServiceImplTest {
         }
     }
 
+    /** D-0108 第一步会先查一条生产领用出库流水拿库位；这里造那条。 */
+    private static StockFlow pickFlow(Long locationId) {
+        StockFlow pick = new StockFlow();
+        pick.setProductId(MATERIAL_ID);
+        pick.setPlotId(PLOT_ID);
+        pick.setInoutType("OT");
+        pick.setFlowType("prod_pick_out");
+        pick.setWarehouseId(locationId);
+        pick.setFlowDate(java.sql.Timestamp.valueOf(LocalDateTime.of(2026, 6, 24, 8, 0)));
+        return pick;
+    }
+
     @Test
-    @DisplayName("veg 采摘节点改取本地块最近一次采摘入库的流水时间（D-0108），压过种植记录那条整批共用的 data_date")
+    @DisplayName("veg 采摘节点取「原材料领用库位」上最近一次采摘入库（D-0108），压过种植记录那条整批共用的 data_date")
     void getByProduceCode_veg_harvestTakesLatestHarvestInbound() {
         TraceCode code = new TraceCode();
         code.setProduceCode(VEG_CODE);
@@ -586,14 +601,15 @@ class TracePublicServiceImplTest {
         pack.setProduceTime(java.sql.Timestamp.valueOf(LocalDateTime.of(2026, 6, 25, 9, 0)));
         when(productProductionMapper.selectOne(any(Wrapper.class))).thenReturn(pack);
 
-        // 本地块该原材料最近一次采摘入库：6/20 —— 比整批共用的 data_date(6/1) 晚，且贴近打包日
+        // 该原材料在领用库位上最近一次采摘入库：6/20 —— 比整批共用的 data_date(6/1) 晚，且贴近打包日
         StockFlow inbound = new StockFlow();
-        inbound.setPlotId(PLOT_ID);
+        inbound.setWarehouseId(PICK_LOCATION_ID);
         inbound.setProductId(MATERIAL_ID);
         inbound.setFlowType("veg_stock_in");
         inbound.setInoutType("IN");
         inbound.setFlowDate(java.sql.Timestamp.valueOf(LocalDateTime.of(2026, 6, 20, 16, 40, 0)));
-        when(stockFlowMapper.selectOne(any(Wrapper.class))).thenReturn(inbound);
+        when(stockFlowMapper.selectOne(any(Wrapper.class)))
+            .thenReturn(pickFlow(PICK_LOCATION_ID), inbound);
 
         PublicTraceVo vo = service.getByProduceCode(VEG_CODE);
 
@@ -602,6 +618,73 @@ class TracePublicServiceImplTest {
         assertThat(harvest.getTraceTime())
             .as("采摘时间必须来自采摘入库流水，不是种植记录那条整批共用的 data_date")
             .isEqualTo(LocalDateTime.of(2026, 6, 20, 16, 40, 0));
+    }
+
+    @Test
+    @DisplayName("D-0108 键是「领用库位」不是地块：入库查询必须绑 warehouse_id，且值取自领用流水")
+    void harvestInboundQuery_keysOnPickLocationNotPlot() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(VEG_CODE);
+        code.setCodeType("veg");
+        code.setProductId(PRODUCT_ID);
+        code.setPlotId(PLOT_ID);
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+
+        ProductProduction pack = new ProductProduction();
+        pack.setTraceCode(VEG_CODE);
+        pack.setMaterialId(MATERIAL_ID);
+        pack.setProduceTime(java.sql.Timestamp.valueOf(LocalDateTime.of(2026, 6, 25, 9, 0)));
+        when(productProductionMapper.selectOne(any(Wrapper.class))).thenReturn(pack);
+        when(stockFlowMapper.selectOne(any(Wrapper.class)))
+            .thenReturn(pickFlow(PICK_LOCATION_ID), (StockFlow) null);
+
+        service.getByProduceCode(VEG_CODE);
+
+        ArgumentCaptor<Wrapper> cap = ArgumentCaptor.forClass(Wrapper.class);
+        Mockito.verify(stockFlowMapper, Mockito.times(2)).selectOne(cap.capture());
+
+        AbstractWrapper<?, ?, ?> pickW = (AbstractWrapper<?, ?, ?>) cap.getAllValues().get(0);
+        pickW.getTargetSql();   // MP 条件值懒物化，不先取一次 SQL 段 paramNameValuePairs 是空的
+        assertThat(pickW.getParamNameValuePairs().values())
+            .as("第一步必须按「生产领用出库 + 本原材料」找那条领用流水")
+            .contains("prod_pick_out", "OT", MATERIAL_ID);
+
+        AbstractWrapper<?, ?, ?> inW = (AbstractWrapper<?, ?, ?>) cap.getAllValues().get(1);
+        String inSql = inW.getTargetSql();
+        assertThat(inSql)
+            .as("第二步必须按库位查，这是 D-0108 换掉的那个键")
+            .containsIgnoringCase("warehouse_id");
+        assertThat(inSql)
+            .as("不能再按地块查 —— 同一库位里的菜按地块分不开，甲方要的是库位口径")
+            .doesNotContainIgnoringCase("plot_id");
+        assertThat(inW.getParamNameValuePairs().values())
+            .as("库位值必须就是领用流水上的那个")
+            .contains(PICK_LOCATION_ID);
+    }
+
+    @Test
+    @DisplayName("拿不到领用流水就不出采摘节点 —— 不许悄悄退回按地块取（两套口径混读是 D-0108 明确放弃的）")
+    void harvestInbound_noPickFlow_yieldsNoHarvestFromFlow() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(VEG_CODE);
+        code.setCodeType("veg");
+        code.setProductId(PRODUCT_ID);
+        code.setPlotId(PLOT_ID);
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+
+        ProductProduction pack = new ProductProduction();
+        pack.setTraceCode(VEG_CODE);
+        pack.setMaterialId(MATERIAL_ID);
+        pack.setProduceTime(java.sql.Timestamp.valueOf(LocalDateTime.of(2026, 6, 25, 9, 0)));
+        when(productProductionMapper.selectOne(any(Wrapper.class))).thenReturn(pack);
+        when(stockFlowMapper.selectOne(any(Wrapper.class))).thenReturn(null);   // 领用流水查不到
+
+        service.getByProduceCode(VEG_CODE);
+
+        // 只查了第一步，没有第二步 —— 库位拿不到就地收手，不会再去按地块捞一条顶上
+        Mockito.verify(stockFlowMapper, Mockito.times(1)).selectOne(any(Wrapper.class));
     }
 
     @Test
@@ -621,12 +704,14 @@ class TracePublicServiceImplTest {
         pack.setMaterialId(MATERIAL_ID);
         pack.setProduceTime(java.sql.Timestamp.valueOf(LocalDateTime.of(2026, 6, 25, 9, 0)));
         when(productProductionMapper.selectOne(any(Wrapper.class))).thenReturn(pack);
+        when(stockFlowMapper.selectOne(any(Wrapper.class)))
+            .thenReturn(pickFlow(PICK_LOCATION_ID), (StockFlow) null);
 
         service.getByProduceCode(VEG_CODE);
 
         ArgumentCaptor<Wrapper> cap = ArgumentCaptor.forClass(Wrapper.class);
-        Mockito.verify(stockFlowMapper).selectOne(cap.capture());
-        AbstractWrapper<?, ?, ?> w = (AbstractWrapper<?, ?, ?>) cap.getValue();
+        Mockito.verify(stockFlowMapper, Mockito.times(2)).selectOne(cap.capture());
+        AbstractWrapper<?, ?, ?> w = (AbstractWrapper<?, ?, ?>) cap.getAllValues().get(1);
         String sql = w.getTargetSql();   // 懒物化，先取一次
         assertThat(sql)
             .as("必须有 flow_date 的上界谓词，否则采摘时间会跑到产品生产之后")
@@ -652,12 +737,14 @@ class TracePublicServiceImplTest {
         pack.setTraceCode(VEG_CODE);
         pack.setMaterialId(MATERIAL_ID);
         when(productProductionMapper.selectOne(any(Wrapper.class))).thenReturn(pack);
+        when(stockFlowMapper.selectOne(any(Wrapper.class)))
+            .thenReturn(pickFlow(PICK_LOCATION_ID), (StockFlow) null);
 
         service.getByProduceCode(VEG_CODE);
 
         ArgumentCaptor<Wrapper> cap = ArgumentCaptor.forClass(Wrapper.class);
-        Mockito.verify(stockFlowMapper).selectOne(cap.capture());
-        AbstractWrapper<?, ?, ?> w = (AbstractWrapper<?, ?, ?>) cap.getValue();
+        Mockito.verify(stockFlowMapper, Mockito.times(2)).selectOne(cap.capture());
+        AbstractWrapper<?, ?, ?> w = (AbstractWrapper<?, ?, ?>) cap.getAllValues().get(1);
         w.getTargetSql();   // MP 的条件值是懒物化的，不先取一次 SQL 段 paramNameValuePairs 是空的
         Collection<Object> bound = w.getParamNameValuePairs().values();
         assertThat(bound)
@@ -670,7 +757,7 @@ class TracePublicServiceImplTest {
             .as("必须限定入库方向，否则会取到出库流水")
             .contains("IN");
         assertThat(bound)
-            .as("必须按原材料产品收窄 —— 同一地块可能套种多种作物")
+            .as("必须按原材料产品收窄 —— 冷库是全场蔬菜共用的，不收窄就取到别的菜")
             .contains(MATERIAL_ID);
     }
 

@@ -240,7 +240,7 @@ public class FarrowServiceImpl implements IFarrowService {
      *
      * <p>断奶发生在仔猪贴标之后，"已贴满标"的分娩恰恰是最该断奶的，故本端点
      * <b>不</b>按断奶与否过滤（区别于出生重订正"选窝"用的 {@link #queryPendingLitters}——
-     * 那个只返未断奶窝）。tagged / remain 仍回填供 picker 展示建档进度。</p>
+     * 那个只返窝里还有没断奶仔猪的窝）。tagged / remain 仍回填供 picker 展示建档进度。</p>
      *
      * <p>实现：earNo eq（PigFarrow 冗余了 earNo，无需 join pig_info）→ farrow_date 倒序取最近 N 条。</p>
      */
@@ -408,22 +408,26 @@ public class FarrowServiceImpl implements IFarrowService {
     }
 
     /**
-     * 「未断奶」过滤（V6 行243）：该窝没有断奶记录 = 仍在哺乳期，可订正仔猪出生重；
-     * 母猪一断奶就从列表消失。
+     * 出生重订正「选窝」过滤（D-0112 + D-0110）：窝里还有没断奶的仔猪就列出，整窝断完才消失；
+     * 还没建档也没断过奶的老窝一并列出，点进去补建（否则补建永远触发不了）。
+     *
+     * <p>判据本体是 {@link PigFarrowMapper#PENDING_BIRTH_WEIGHT}，与 mp 徽标逐字同一串。
+     * 这里外面再包一层 {@code EXISTS (SELECT 1 FROM t_farm_pig_farrow f WHERE f.id = …)} 只为
+     * <b>重新锚定别名</b>：MP 的 lambdaQuery 不起别名，而那串按 {@code f} 写；包一层比另抄一份安全。</p>
      *
      * <p>放 SQL 侧而非内存过滤——LIMIT 200 的候选集若在内存里被滤掉大半，列表口径会漂。
-     * 主表无别名（MP 的 lambdaQuery 不起别名），故关联条件写全表名 {@code t_farm_pig_farrow.id}；
      * 租户列显式对齐（V1 不开租户拦截器，子查询不会被自动补条件）。</p>
      *
      * <p>⚠️ SQL 里写不等于一律用 {@code !=}：{@code &lt;&gt;} 在 MyBatis {@code &lt;script&gt;} 里会被
      * 当成 XML 标签，建 mapper bean 时崩容器（2026-09-20 踩过）。本串虽走 wrapper 不经 XML 解析，
      * 仍统一守同一条规矩。</p>
      */
-    private static final String UNWEANED_ONLY =
-        "NOT EXISTS (SELECT 1 FROM t_farm_pig_weaning w "
-            + "WHERE w.farrow_id = t_farm_pig_farrow.id "
-            + "AND w.del_flag = '0' "
-            + "AND w.tenant_id = t_farm_pig_farrow.tenant_id)";
+    private static final String PENDING_BIRTH_WEIGHT_ONLY =
+        "EXISTS (SELECT 1 FROM t_farm_pig_farrow f "
+            + "WHERE f.id = t_farm_pig_farrow.id "
+            + "AND f.del_flag = '0' "
+            + "AND f.tenant_id = t_farm_pig_farrow.tenant_id "
+            + "AND " + PigFarrowMapper.PENDING_BIRTH_WEIGHT + ")";
 
     @Override
     public List<FarrowLitterVo> queryPendingLitters(String motherEarNo, String barnName) {
@@ -431,7 +435,7 @@ public class FarrowServiceImpl implements IFarrowService {
         LambdaQueryWrapper<PigFarrow> w = Wrappers.<PigFarrow>lambdaQuery()
             .eq(StringUtils.isNotBlank(motherEarNo), PigFarrow::getEarNo, motherEarNo)
             .eq(StringUtils.isNotBlank(barnName), PigFarrow::getBarnName, barnName)
-            .apply(UNWEANED_ONLY)
+            .apply(PENDING_BIRTH_WEIGHT_ONLY)
             .orderByDesc(PigFarrow::getFarrowDate, PigFarrow::getId)
             .last("LIMIT 200");
         List<PigFarrowVo> rows = farrowMapper.selectVoList(w);

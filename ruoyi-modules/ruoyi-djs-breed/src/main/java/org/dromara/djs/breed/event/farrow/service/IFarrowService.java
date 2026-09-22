@@ -58,14 +58,14 @@ public interface IFarrowService {
      *
      * @param motherEarNo 母猪耳号过滤（可空）
      * @param barnName    分娩栋舍名过滤（chip 点击后传，可空）
-     * @return 未断奶窝 list；无符合条件时返空 list（非 throw）
+     * @return 待订正出生重的窝 list（窝里还有没断奶的仔猪 / 零档案老窝）；无符合条件时返空 list（非 throw）
      */
     List<FarrowLitterVo> queryPendingLitters(String motherEarNo, String barnName);
 
     /**
      * mp 端"仔猪耳号"页分娩栋舍 chip：按分娩舍聚合未断奶窝数（原型 96 顶部 chip"分娩1栋(12)"）。
      *
-     * <p>口径与 {@link #queryPendingLitters} 一致（仅算未断奶窝）；
+     * <p>口径与 {@link #queryPendingLitters} 一致（窝里还有没断奶的仔猪才算）；
      * barn_name 为空的窝归"未分配"不计入；count 0 不返；按 barnName 升序。</p>
      */
     List<FarrowBarnCountVo> countPendingLittersByBarn();

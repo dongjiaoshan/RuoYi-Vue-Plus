@@ -5,13 +5,14 @@ import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.domain.vo.PigFarrowVo;
+import org.dromara.djs.breed.event.weaning.mapper.PigWeaningMapper;
 
 /**
  * 母猪分娩 mapper（BRD-EVENT-002）。
  *
  * <p>额外暴露 {@link #selectBoarEarByBreedingId} 给 BRD-EVENT-003 仔猪耳标做"配种 → 父猪耳号"反查；
  * {@link #countPendingFarrows} / {@link #sumPendingPiglets} 给 mp breed home 徽标查
- * "未断奶 N 窝 / N 头"用（V6 行243 口径，与选窝列表同源）。</p>
+ * "待订正出生重 N 窝 / N 头"用（判据 {@link #PENDING_BIRTH_WEIGHT}，与选窝列表同源）。</p>
  *
  * @author djs
  * @since BRD-EVENT-002
@@ -28,39 +29,59 @@ public interface PigFarrowMapper extends BaseMapperPlus<PigFarrow, PigFarrowVo> 
     String selectBoarEarByBreedingId(@Param("breedingId") Long breedingId);
 
     /**
-     * 未断奶窝数（mp breed home「仔猪耳号」卡徽标的批数，V6 行243 口径）。
+     * 本窝还没有任何仔猪档案（行242 上线前分娩、从未走过耳号标记的老窝）。别名契约：{@code f} = {@code t_farm_pig_farrow}。
+     */
+    String NO_PIGLET_ARCHIVE = "NOT EXISTS (SELECT 1 FROM t_farm_pig_pigletno pn"
+        + " WHERE pn.farrow_id = f.id AND pn.del_flag = '0' AND pn.tenant_id = f.tenant_id)";
+
+    /** 本窝没有任何断奶记录。别名契约同 {@link #NO_PIGLET_ARCHIVE}。 */
+    String NO_WEANING_RECORD = "NOT EXISTS (SELECT 1 FROM t_farm_pig_weaning w"
+        + " WHERE w.farrow_id = f.id AND w.del_flag = '0' AND w.tenant_id = f.tenant_id)";
+
+    /**
+     * 「这一窝还要出现在出生重订正页上」的唯一判据 —— 选窝列表与 mp 徽标共用一串（D-0112 + D-0110）。
      *
-     * <p>口径与 {@code IFarrowService.queryPendingLitters} 一致——<b>母猪未断奶</b>即在列表里，
-     * 一断奶就消失。V6 行242 起整窝在分娩提交时自动建档，旧的「live_born 大于已打标数」口径
-     * 会恒为 0，徽标与列表两边对不上，故一并换掉。</p>
+     * <p>两种情况之一即列出：</p>
+     * <ol>
+     *   <li><b>窝里还有没断奶的仔猪</b>（D-0112，甲方 2026-09-22 选②按仔猪算）——
+     *       原判据是「本窝有没有断奶记录」，断第一头整窝就消失，剩下还在哺乳的仔猪出生重再也改不了；</li>
+     *   <li><b>还没建档、也没断过奶的老窝</b>（D-0110，甲方 2026-09-22 选①自动补建）——
+     *       它一头仔猪档案都没有，第 1 条天然命中不到；不留这一支，点开即补建就永远触发不了。
+     *       已断过奶的零档案老窝不在此列（不给早已离场的猪补建档案）。</li>
+     * </ol>
+     */
+    String PENDING_BIRTH_WEIGHT = "(" + PigWeaningMapper.UNWEANED_PIGLET_EXISTS
+        + " OR (" + NO_PIGLET_ARCHIVE + " AND " + NO_WEANING_RECORD + "))";
+
+    /**
+     * 出生重订正页待处理窝数（mp breed home「仔猪耳号」卡徽标的批数）。
+     *
+     * <p>口径 = {@link #PENDING_BIRTH_WEIGHT}，与选窝列表 {@code IFarrowService.queryPendingLitters}
+     * 同源：窝里还有没断奶的仔猪就在列表里，整窝断完才消失。</p>
      *
      * <p>{@code t_farm_pig_farrow} 无 status 冗余列，全表动态聚合；V1 单租户 tenant_id 写死 '1001'
      * （详 ADR-0001），子查询显式对齐租户列。</p>
      */
-    @Select("""
-        SELECT COUNT(*) FROM t_farm_pig_farrow f
-        WHERE f.del_flag = '0'
-          AND f.tenant_id = '1001'
-          AND NOT EXISTS (
-            SELECT 1 FROM t_farm_pig_weaning w
-            WHERE w.farrow_id = f.id AND w.del_flag = '0' AND w.tenant_id = f.tenant_id
-          )
-        """)
+    @Select("SELECT COUNT(*) FROM t_farm_pig_farrow f"
+        + " WHERE f.del_flag = '0' AND f.tenant_id = '1001'"
+        + " AND " + PENDING_BIRTH_WEIGHT)
     Integer countPendingFarrows();
 
     /**
-     * 未断奶窝的仔猪总头数 = SUM(live_born)（mp breed home 徽标数字，V6 行243 口径）。
+     * 出生重订正页待处理仔猪头数（mp breed home 徽标数字）。
+     *
+     * <p>已建档的窝数「还没断奶的头数」（D-0112 —— 断掉的那几头已经不能再改出生重，不该继续计数）；
+     * 零档案老窝没有逐头行可数，退回窝级 {@code live_born}（点开时按这个数补建，D-0110）。</p>
      *
      * <p>返 0 时 controller 转 wd-badge value=0，mp 端自动隐藏徽标。</p>
      */
-    @Select("""
-        SELECT COALESCE(SUM(COALESCE(f.live_born, 0)), 0) FROM t_farm_pig_farrow f
-        WHERE f.del_flag = '0'
-          AND f.tenant_id = '1001'
-          AND NOT EXISTS (
-            SELECT 1 FROM t_farm_pig_weaning w
-            WHERE w.farrow_id = f.id AND w.del_flag = '0' AND w.tenant_id = f.tenant_id
-          )
-        """)
+    @Select("SELECT COALESCE(SUM("
+        + " CASE WHEN " + NO_PIGLET_ARCHIVE
+        + " THEN COALESCE(f.live_born, 0)"
+        + " ELSE " + PigWeaningMapper.UNWEANED_PIGLET_COUNT
+        + " END), 0)"
+        + " FROM t_farm_pig_farrow f"
+        + " WHERE f.del_flag = '0' AND f.tenant_id = '1001'"
+        + " AND " + PENDING_BIRTH_WEIGHT)
     Integer sumPendingPiglets();
 }

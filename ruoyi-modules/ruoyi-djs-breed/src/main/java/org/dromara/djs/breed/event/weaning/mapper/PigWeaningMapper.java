@@ -42,6 +42,31 @@ public interface PigWeaningMapper extends BaseMapperPlus<PigWeaning, PigWeaningV
         """;
 
     /**
+     * 「本窝仍在哺乳的仔猪」这一集合的 SQL 主体（D-0112，甲方 2026-09-22：出生重订正按仔猪算不按母猪算）。
+     *
+     * <p>判据复用 {@link #ALREADY_WEANED} —— 出生重订正页选窝列表、mp 首页徽标、断奶仔猪选择页
+     * 三处共用同一串，不会各自漂移。已死亡 / 淘汰 / 出栏的仔猪不算「仍在哺乳」，与待断奶列表同口径排除。</p>
+     *
+     * <p><b>别名契约</b>：调用方 SQL 里 {@code f} = {@code t_farm_pig_farrow}。MP 的 lambdaQuery 不起别名，
+     * 那边把整串再包一层 {@code EXISTS (SELECT 1 FROM t_farm_pig_farrow f WHERE f.id = t_farm_pig_farrow.id …)}
+     * 重新锚定别名，而不是另抄一份。</p>
+     */
+    String UNWEANED_PIGLET_BODY = "FROM t_farm_pig_pigletno pl"
+        + " LEFT JOIN t_farm_pig_info cub"
+        + " ON cub.id = pl.pig_id AND cub.del_flag = '0' AND cub.tenant_id = pl.tenant_id"
+        + " WHERE pl.del_flag = '0'"
+        + " AND pl.farrow_id = f.id"
+        + " AND pl.tenant_id = f.tenant_id"
+        + " AND (cub.id IS NULL OR cub.current_status != 'END')"
+        + " AND NOT " + ALREADY_WEANED;
+
+    /** 「这一窝还有没断奶的仔猪」（D-0112）。别名契约同 {@link #UNWEANED_PIGLET_BODY}。 */
+    String UNWEANED_PIGLET_EXISTS = "EXISTS (SELECT 1 " + UNWEANED_PIGLET_BODY + " )";
+
+    /** 「这一窝还有几头没断奶」（D-0112 徽标头数）。别名契约同 {@link #UNWEANED_PIGLET_BODY}。 */
+    String UNWEANED_PIGLET_COUNT = "(SELECT COUNT(*) " + UNWEANED_PIGLET_BODY + " )";
+
+    /**
      * 「分娩未断奶母猪 + 其未断奶仔猪」扁平行（BRD-WEAN-SELECT-001，V6 行238 断奶仔猪选择页）。
      *
      * <p>一行 = 一头尚未断奶的已贴标仔猪，带所属窝（分娩）与母猪的冗余列。一条 SQL 拿全，

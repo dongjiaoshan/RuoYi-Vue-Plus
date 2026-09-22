@@ -57,6 +57,14 @@ public class PigletEarTagVo implements Serializable {
     /** 当前状态（仔猪默认 HB）。 */
     private String currentStatus;
 
+    /**
+     * 这头已经断奶了 —— 出生重不可再改（D-0112，甲方 2026-09-22 选②按仔猪算）。
+     *
+     * <p>一窝可以分几次断，断掉的那几头留在清单里只作展示；前端置灰输入框、提交时不带上它们，
+     * 后端 {@code adjustBirthWeights} 另有一道硬拒（前端置灰只是省一次往返，不是闸）。</p>
+     */
+    private Boolean weaned;
+
     /** 工厂方法：组合 pig + pigletno 字段为单头 VO。 */
     public static PigletEarTagVo from(Pig pig, PigPigletno log) {
         PigletEarTagVo vo = new PigletEarTagVo();

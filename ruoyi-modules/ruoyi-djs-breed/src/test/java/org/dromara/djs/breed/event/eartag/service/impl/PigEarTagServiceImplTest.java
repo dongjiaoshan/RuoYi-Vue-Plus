@@ -78,13 +78,15 @@ class PigEarTagServiceImplTest {
     private org.dromara.djs.breed.farm.service.PenCountUpdater penCountUpdater;
     @Mock
     private org.dromara.common.core.service.DictService dictService;
+    @Mock
+    private org.dromara.djs.breed.event.weaning.mapper.PigWeaningMapper weaningMapper;
 
     private PigEarTagServiceImpl service;
 
     @BeforeEach
     void setup() {
         service = new PigEarTagServiceImpl(pigMapper, pigletnoMapper, farrowMapper, earNoAllocator, breedConfigMapper,
-            penCountUpdater, dictService);
+            penCountUpdater, dictService, weaningMapper);
         // 仔代品系=4 / 品种=04（继承母猪，父猪未命中育种配置）：公前缀 -1- / 母前缀 -2-
         when(earNoAllocator.buildPrefix(eq("4"), eq("04"), eq("M"), any(LocalDate.class)))
             .thenReturn("4-04-1-260508");
