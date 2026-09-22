@@ -7,6 +7,8 @@ import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.EarNoAllocator;
 import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
+import org.dromara.djs.breed.event.eartag.domain.bo.PigletBatchEarTagBo;
+import org.dromara.djs.breed.event.eartag.domain.bo.PigletEarTagItem;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletBirthWeightBo;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletBirthWeightItem;
 import org.dromara.djs.breed.event.eartag.domain.vo.PigletEarTagVo;
@@ -298,6 +300,56 @@ class PigEarTagServiceImplBirthWeightTest {
         verify(pigMapper, times(3))
             .insert(any(Pig.class));
         assertThat(pigletnoTable).as("第二次进页面不得再建一窝").hasSize(3);
+    }
+
+    @Test
+    @DisplayName("旧小程序兼容：窝已自动建档时 batchTag 降级为订正出生重，不再撞 exceeds_live_born")
+    void batchTag_onAlreadyArchivedLitter_degradesToAdjust() {
+        PigFarrow farrow = mkFarrow(2, 1, 1);
+        when(dictService.getDictValue("djs_piglet_default_weight", "仔猪出生重")).thenReturn("2");
+        when(pigMapper.insert(any(Pig.class))).thenAnswer(inv -> {
+            inv.<Pig>getArgument(0).setId(900L + pigletnoTable.size());
+            return 1;
+        });
+        service.autoCreatePigletsForFarrow(farrow, 1L);
+        assertThat(pigletnoTable).hasSize(2);
+
+        // 旧 mp 的提交体：只有 pigletSex + birthWeight，不带耳号
+        PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
+        bo.setFarrowId(FARROW_ID);
+        PigletEarTagItem m = new PigletEarTagItem();
+        m.setPigletSex("M");
+        m.setBirthWeight(new BigDecimal("1.40"));
+        PigletEarTagItem f = new PigletEarTagItem();
+        f.setPigletSex("F");
+        f.setBirthWeight(new BigDecimal("1.60"));
+        bo.setPiglets(List.of(m, f));
+
+        // 关键：不得抛 exceeds_live_born
+        service.batchTag(bo);
+
+        assertThat(pigletnoTable)
+            .as("兼容路径只订正、绝不新增 —— 再建一窝就是重复建档")
+            .hasSize(2);
+        assertThat(pigletnoTable).extracting(PigPigletno::getPigletSex, PigPigletno::getBirthWeight)
+            .as("按性别顺序把重量贴到已建档的那几头上")
+            .containsExactly(
+                org.assertj.core.api.Assertions.tuple("M", new BigDecimal("1.40")),
+                org.assertj.core.api.Assertions.tuple("F", new BigDecimal("1.60")));
+    }
+
+    @Test
+    @DisplayName("旧小程序兼容：已建满的窝 statByFarrow 回报 remaining=liveBorn，否则旧 mp 铺 0 行变死路")
+    void statByFarrow_archivedLitter_reportsRemainingForLegacyClient() {
+        PigFarrow farrow = mkFarrow(2, 1, 1);
+        when(dictService.getDictValue("djs_piglet_default_weight", "仔猪出生重")).thenReturn("2");
+        service.autoCreatePigletsForFarrow(farrow, 1L);
+
+        var stat = service.statByFarrow(FARROW_ID);
+        assertThat(stat.getTagged()).isEqualTo(2);
+        assertThat(stat.getRemaining())
+            .as("回 0 的话旧 mp eartag 页铺 0 行、提交键置灰，整页成死路")
+            .isEqualTo(2);
     }
 
     @Test

@@ -116,7 +116,11 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         vo.setParity(farrow.getParity());
         vo.setLiveBorn(liveBorn);
         vo.setTagged(tagged);
-        vo.setRemaining(Math.max(0, liveBorn - tagged));
+        // 【旧小程序兼容】自动建档后 tagged == liveBorn，remaining 会是 0，
+        // 旧 mp 据此铺 0 行并把提交键置灰（eartag/index.vue:208,579）——整页变死路。
+        // 已建满时回报 liveBorn，让旧 mp 铺满行走 batchTag 的订正降级路径。
+        // 新 mp 不读这个字段做铺行（它按 taggedList 的真实耳号铺），不受影响。
+        vo.setRemaining(tagged > 0 && tagged >= liveBorn ? liveBorn : Math.max(0, liveBorn - tagged));
 
         // 已贴清单（含 pig_info 字段拼装；pig_id 可能为 null 仅在历史 mock 场景，正常路径全有）
         List<PigletEarTagVo> taggedList = new ArrayList<>(tagged);
@@ -147,7 +151,72 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         if (farrow == null) {
             throw new ServiceException(I18nMessages.t("pigletno.farrow.not_found", String.valueOf(bo.getFarrowId())));
         }
+        // 【旧小程序兼容】V6 行242 起分娩提交即自动建档，整窝 tagged == live_born，
+        // 旧 mp 走到这里再建就会撞 exceeds_live_born。旧 mp 的提交体只有 pigletSex + birthWeight、
+        // 不带耳号（耳号本来由后端生成），所以只能按性别顺序把重量贴到已建好的那几头上。
+        // 没有这段，从后端上线到小程序审核通过这段窗口里，工人录完分娩会被旧 mp 自动带到
+        // 一张 0 行、提交键点不动的耳标页，出生重无处可录。
+        List<PigPigletno> existing = selectLitterPiglets(farrow.getId());
+        if (!existing.isEmpty()) {
+            return adjustBirthWeightsBySexOrder(farrow, existing, bo.getPiglets());
+        }
         return createPigletsForFarrow(farrow, bo.getPiglets(), bo.getOperatorId());
+    }
+
+    /**
+     * 旧小程序兼容路径：按性别顺序把提交上来的出生重贴到已建档的仔猪上。
+     *
+     * <p>新客户端走 {@code POST /djs/breed/event/eartag/birth-weight}（按耳号定位，精确）；
+     * 这条只服务「提交体里没有耳号」的旧 mp。同性别内按耳号升序一一对应——耳号是建档时
+     * 连号分配的，顺序与旧 mp 铺行顺序（先公后母）一致。</p>
+     *
+     * <p>提交头数多于已建档头数时只贴前 N 头并 warn，不新建、不报错：旧 mp 的行数是按
+     * live_born 铺的，正常等长；不等长只可能是并发或脏数据，此时保住已有档案比报错更有用。</p>
+     */
+    private List<PigletEarTagVo> adjustBirthWeightsBySexOrder(PigFarrow farrow,
+                                                              List<PigPigletno> existing,
+                                                              List<PigletEarTagItem> submitted) {
+        Map<String, List<PigPigletno>> bySex = new HashMap<>();
+        for (PigPigletno row : existing) {
+            bySex.computeIfAbsent(row.getPigletSex(), k -> new ArrayList<>()).add(row);
+        }
+        bySex.values().forEach(l -> l.sort(Comparator.comparing(PigPigletno::getPigletEarNo,
+            Comparator.nullsLast(Comparator.naturalOrder()))));
+        Map<String, Integer> cursor = new HashMap<>();
+
+        int applied = 0;
+        for (PigletEarTagItem item : submitted) {
+            List<PigPigletno> pool = bySex.get(item.getPigletSex());
+            int idx = cursor.merge(item.getPigletSex(), 1, Integer::sum) - 1;
+            if (pool == null || idx >= pool.size()) {
+                continue;
+            }
+            BigDecimal bw = normalizeBirthWeight(item.getBirthWeight());
+            if (bw == null) {
+                continue;
+            }
+            PigPigletno row = pool.get(idx);
+            PigPigletno logUpdate = new PigPigletno();
+            logUpdate.setId(row.getId());
+            logUpdate.setBirthWeight(bw);
+            pigletnoMapper.updateById(logUpdate);
+            if (row.getPigId() != null) {
+                Pig pigUpdate = new Pig();
+                pigUpdate.setId(row.getPigId());
+                pigUpdate.setBirthWeight(bw);
+                pigMapper.updateById(pigUpdate);
+            }
+            applied++;
+        }
+        if (applied < submitted.size()) {
+            log.warn("[V6-R242-compat] farrowId={} 提交 {} 头、已建档 {} 头，只订正了前 {} 头",
+                farrow.getId(), submitted.size(), existing.size(), applied);
+        } else {
+            log.info("[V6-R242-compat] farrowId={} 旧客户端提交，已建档窝降级为按性别顺序订正出生重 {} 头",
+                farrow.getId(), applied);
+        }
+        syncFarrowWeights(farrow.getId());
+        return statByFarrow(farrow.getId()).getTaggedList();
     }
 
     /**
