@@ -77,6 +77,9 @@ public interface IPickPlanService {
      * <ul>
      *   <li>earliestHarvestdate 必填</li>
      *   <li>lastHarvestdate 给定时必须 ≥ earliestHarvestdate；为空时按作物采摘周期窗口由最早派生</li>
+     *   <li>采摘状态 {@code completed}（采摘完成）：整行锁定，拒绝</li>
+     *   <li>采摘状态 {@code picking}（采摘中）：只允许改最晚采摘日期 —— 传入的 earliestHarvestdate
+     *       与库里不一致时拒绝（实际开始采摘日期已落库，再改计划最早采摘日期会让两者自相矛盾）</li>
      * </ul>
      *
      * @return 实际 UPDATE 行数（0 = 行不存在 / 已删）

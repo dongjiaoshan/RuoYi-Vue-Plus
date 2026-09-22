@@ -76,6 +76,12 @@ public class PickPlanServiceImpl implements IPickPlanService {
     /** 作物 L2 默认图统一走果蔬（IMG-LIB-001）。 */
     private static final String CROP_BELONG_TYPE = "vegetable";
 
+    /** 字典 djs_pick_status：采摘中（实际已开采，begin_harvestdate 已回写）。 */
+    private static final String HARVEST_STATUS_PICKING = "picking";
+
+    /** 字典 djs_pick_status：采摘完成。 */
+    private static final String HARVEST_STATUS_COMPLETED = "completed";
+
     @Override
     public List<PickPlanGroupVo> listByCrop(PickPlanQuery query) {
         PickPlanQuery q = (query == null) ? new PickPlanQuery() : query;
@@ -302,14 +308,19 @@ public class PickPlanServiceImpl implements IPickPlanService {
             throw new ServiceException("采摘明细不存在或已删除（id=" + bo.getId() + "）");
         }
 
-        // row6（何涛 2026-07-17）：只有未进入采摘（待开始 pending / 延期 delayed）的地块可设置采摘计划；
-        // 采摘中 / 采摘完成锁定，与前端 rowEditable 同口径。防「页面未刷新、采摘状态已变仍直接打 API」的后端兜底。
+        // 采摘状态门控（甲方 2026-09-21）：
+        //   待开始 pending / 延期 delayed —— 计划最早、最晚采摘日期都可改；
+        //   采摘中   picking   —— 实际开始采摘日期（begin_harvestdate）已回写落库，此时再改计划最早采摘日期会让
+        //                        「计划最早」晚于「实际已开采」而自相矛盾，故只放行计划最晚采摘日期；
+        //   采摘完成 completed —— 整行锁定。
+        // 前端已按状态禁用对应控件，此处是防「页面未刷新 / 绕过页面直接打 API」的后端兜底。
         String hs = existing.getHarvestStatus();
-        if ("picking".equals(hs) || "completed".equals(hs)) {
-            PlotInfo plot = existing.getPlotId() == null ? null : plotMapper.selectById(existing.getPlotId());
-            String plotLabel = (plot != null && plot.getPlotName() != null) ? plot.getPlotName() : ("id=" + existing.getPlotId());
-            String hsLabel = "picking".equals(hs) ? "采摘中" : "采摘完成";
-            throw new ServiceException("地块【" + plotLabel + "】已" + hsLabel + "，不能设置采摘计划");
+        if (HARVEST_STATUS_COMPLETED.equals(hs)) {
+            throw new ServiceException("地块【" + plotLabel(existing) + "】已采摘完成，不能设置采摘计划");
+        }
+        if (HARVEST_STATUS_PICKING.equals(hs)
+            && !Objects.equals(bo.getEarliestHarvestdate(), existing.getEarliestHarvestdate())) {
+            throw new ServiceException("地块【" + plotLabel(existing) + "】已开始采摘，最早采摘日期不可再改，只能调整最晚采摘日期");
         }
 
         // 「设置采摘计划」：用户显式给定开始（必填）/ 结束采摘日期（earliest/last_harvestdate）。
@@ -359,19 +370,17 @@ public class PickPlanServiceImpl implements IPickPlanService {
             throw new ServiceException("采摘明细不存在或已删除（id=" + bo.getId() + "）");
         }
 
-        // row6（何涛 2026-07-17）：设为 / 取消采摘活动守卫——采摘中 / 采摘完成的地块不得改采摘活动标记，
-        // 仅未进入采摘（待开始 pending / 延期 delayed 等）的地块可操作，与前端 rowEditable 同口径。
-        // 前端已按状态隐藏按钮，此为防「页面未刷新、采摘状态已变仍直接打 API」的后端兜底。
+        // 设为 / 取消采摘活动守卫：采摘中 / 采摘完成的地块不得改采摘活动标记（游客采摘与否在开采后已成既成事实），
+        // 仅未进入采摘（待开始 pending / 延期 delayed 等）的地块可操作，与前端 canToggleActivity 同口径。
+        // 前端已按状态隐藏按钮，此为防「页面未刷新 / 绕过页面直接打 API」的后端兜底。
         String hs = existing.getHarvestStatus();
-        if ("picking".equals(hs) || "completed".equals(hs)) {
-            PlotInfo plot = existing.getPlotId() == null ? null : plotMapper.selectById(existing.getPlotId());
-            String plotLabel = (plot != null && plot.getPlotName() != null) ? plot.getPlotName() : ("id=" + existing.getPlotId());
-            String hsLabel = "picking".equals(hs) ? "采摘中" : "采摘完成";
+        if (HARVEST_STATUS_PICKING.equals(hs) || HARVEST_STATUS_COMPLETED.equals(hs)) {
+            String hsLabel = HARVEST_STATUS_PICKING.equals(hs) ? "采摘中" : "采摘完成";
             String op = isPick == 1 ? "设为采摘活动" : "取消采摘活动";
-            throw new ServiceException("地块【" + plotLabel + "】已" + hsLabel + "，不能" + op);
+            throw new ServiceException("地块【" + plotLabel(existing) + "】已" + hsLabel + "，不能" + op);
         }
-        // row3（何涛 2026-07-17）：取消采摘活动不再强制先指派采摘班组——按上面采摘状态判定即可
-        //（待开始 / 延期可取消，采摘中 / 采摘完成已拦），班组在实际采收时再指派。
+        // 取消采摘活动不强制先指派采摘班组：按上面采摘状态判定即可（待开始 / 延期可取消，采摘中 / 采摘完成已拦），
+        // 班组在实际采收时再指派。
 
         return detailsMapper.update(null,
             Wrappers.<PlantDetails>update()
@@ -460,6 +469,14 @@ public class PickPlanServiceImpl implements IPickPlanService {
         } catch (Exception e) {
             return "1001";
         }
+    }
+
+    /**
+     * 明细行在报错文案里的地块称呼：优先地块名，查不到名字时退回 {@code id=<plotId>} 便于定位。
+     */
+    private String plotLabel(PlantDetails details) {
+        PlotInfo plot = details.getPlotId() == null ? null : plotMapper.selectById(details.getPlotId());
+        return (plot != null && plot.getPlotName() != null) ? plot.getPlotName() : ("id=" + details.getPlotId());
     }
 
     private Long currentUserIdSafe() {

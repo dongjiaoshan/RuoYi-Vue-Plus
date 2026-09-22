@@ -1,15 +1,18 @@
 package org.dromara.djs.plant.pick.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.plant.common.domain.vo.DateWindowStatusStatVo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.pick.domain.bo.PickAdjustBatchBo;
 import org.dromara.djs.plant.pick.domain.bo.PickDetailAdjustBo;
+import org.dromara.djs.plant.pick.domain.bo.PickSetScheduleBo;
 import org.dromara.djs.plant.pick.domain.query.PickPlanQuery;
 import org.dromara.djs.plant.pick.domain.vo.PickPlanGroupVo;
 import org.dromara.djs.plant.pick.mapper.PickPlanMapper;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
+import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
 import org.dromara.djs.plant.team.service.PlantTeamLinkService;
@@ -30,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -45,6 +49,8 @@ import static org.mockito.Mockito.when;
  *       派生重算「计划最晚」，不接收/不改实际采摘起止（begin/end_harvestdate）。</li>
  *   <li>{@code listByCrop}：按最早/最晚采摘日期现算五档状态 + 按状态筛选。</li>
  *   <li>{@code statusStat}：顶部统计版块五档计数。</li>
+ *   <li>{@code setSchedule}：采摘状态门控 —— 待开始两个日期都可改；采摘中只放行最晚采摘日期
+ *       （改最早则拒绝）；采摘完成整行锁定。</li>
  * </ol>
  *
  * @author djs
@@ -199,6 +205,109 @@ class PickPlanServiceImplTest {
         assertThat(stat.getOnSale()).isZero();
         assertThat(stat.getEnding()).isZero();
         assertThat(stat.getOffShelf()).isZero();
+    }
+
+    // ============================================================
+    // setSchedule 采摘状态门控（甲方 2026-09-21：采摘中只放行最晚采摘日期）
+    // ============================================================
+
+    @Test
+    @DisplayName("设置计划·采摘中：最早采摘日期原样回传 → 放行，只改最晚采摘日期")
+    void setSchedulePickingAllowsLastOnly() {
+        PlantDetails existing = pickingRow(LocalDate.of(2026, 8, 1), LocalDate.of(2026, 8, 20));
+        when(detailsMapper.selectOne(any())).thenReturn(existing);
+        when(detailsMapper.update(isNull(), any())).thenReturn(1);
+
+        PickSetScheduleBo bo = new PickSetScheduleBo();
+        bo.setId(1001L);
+        bo.setEarliestHarvestdate(LocalDate.of(2026, 8, 1));
+        bo.setLastHarvestdate(LocalDate.of(2026, 8, 28));
+
+        assertThat(service.setSchedule(bo)).isEqualTo(1);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<UpdateWrapper<PlantDetails>> captor = ArgumentCaptor.forClass(UpdateWrapper.class);
+        org.mockito.Mockito.verify(detailsMapper).update(isNull(), captor.capture());
+        assertThat(captor.getValue().getSqlSet()).contains("last_harvestdate");
+    }
+
+    @Test
+    @DisplayName("设置计划·采摘中：改最早采摘日期 → 拒绝（实际开始采摘日期已落库，改了自相矛盾）")
+    void setSchedulePickingRejectsEarliestChange() {
+        PlantDetails existing = pickingRow(LocalDate.of(2026, 8, 1), LocalDate.of(2026, 8, 20));
+        when(detailsMapper.selectOne(any())).thenReturn(existing);
+        PlotInfo plot = new PlotInfo();
+        plot.setId(77L);
+        plot.setPlotName("采摘1号");
+        when(plotMapper.selectById(77L)).thenReturn(plot);
+
+        PickSetScheduleBo bo = new PickSetScheduleBo();
+        bo.setId(1001L);
+        bo.setEarliestHarvestdate(LocalDate.of(2026, 8, 5));
+        bo.setLastHarvestdate(LocalDate.of(2026, 8, 28));
+
+        assertThatThrownBy(() -> service.setSchedule(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("采摘1号")
+            .hasMessageContaining("最早采摘日期不可再改");
+        org.mockito.Mockito.verify(detailsMapper, org.mockito.Mockito.never()).update(isNull(), any());
+    }
+
+    @Test
+    @DisplayName("设置计划·采摘完成：整行锁定，两个日期都不让改")
+    void setScheduleCompletedRejected() {
+        PlantDetails existing = pickingRow(LocalDate.of(2026, 8, 1), LocalDate.of(2026, 8, 20));
+        existing.setHarvestStatus("completed");
+        when(detailsMapper.selectOne(any())).thenReturn(existing);
+        when(plotMapper.selectById(77L)).thenReturn(null);
+
+        PickSetScheduleBo bo = new PickSetScheduleBo();
+        bo.setId(1001L);
+        bo.setEarliestHarvestdate(LocalDate.of(2026, 8, 1));
+        bo.setLastHarvestdate(LocalDate.of(2026, 8, 28));
+
+        assertThatThrownBy(() -> service.setSchedule(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("已采摘完成，不能设置采摘计划");
+        org.mockito.Mockito.verify(detailsMapper, org.mockito.Mockito.never()).update(isNull(), any());
+    }
+
+    @Test
+    @DisplayName("设置计划·待开始：最早、最晚都可改")
+    void setSchedulePendingAllowsBothDates() {
+        PlantDetails existing = pickingRow(LocalDate.of(2026, 8, 1), LocalDate.of(2026, 8, 20));
+        existing.setHarvestStatus("pending");
+        existing.setBeginHarvestdate(null);
+        when(detailsMapper.selectOne(any())).thenReturn(existing);
+        when(detailsMapper.update(isNull(), any())).thenReturn(1);
+
+        PickSetScheduleBo bo = new PickSetScheduleBo();
+        bo.setId(1001L);
+        bo.setEarliestHarvestdate(LocalDate.of(2026, 9, 1));
+        bo.setLastHarvestdate(LocalDate.of(2026, 9, 20));
+
+        assertThat(service.setSchedule(bo)).isEqualTo(1);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<UpdateWrapper<PlantDetails>> captor = ArgumentCaptor.forClass(UpdateWrapper.class);
+        org.mockito.Mockito.verify(detailsMapper).update(isNull(), captor.capture());
+        String sqlSet = captor.getValue().getSqlSet();
+        assertThat(sqlSet).contains("earliest_harvestdate");
+        assertThat(sqlSet).contains("last_harvestdate");
+    }
+
+    /** 造一行「采摘中」明细：实际开始采摘日期已回写，计划窗口 = 传入的 earliest/last。 */
+    private PlantDetails pickingRow(LocalDate earliest, LocalDate last) {
+        PlantDetails details = new PlantDetails();
+        details.setId(1001L);
+        details.setPlotId(77L);
+        details.setCropId(800L);
+        details.setEarliestHarvestdate(earliest);
+        details.setLastHarvestdate(last);
+        details.setBeginHarvestdate(earliest.plusDays(1));
+        details.setHarvestStatus("picking");
+        details.setIsPick(1);
+        return details;
     }
 
     /** mapper 返回的是可变 list，service 会往行上回写状态。 */

@@ -30,7 +30,12 @@ public class PickSetScheduleBo implements Serializable {
     @NotNull(message = "明细 id 必填")
     private Long id;
 
-    /** 计划最早采摘日期（必填）。 */
+    /**
+     * 计划最早采摘日期（必填）。
+     *
+     * <p>该行采摘状态为 {@code picking}（采摘中）时本字段只读：必须原样回传库里的值，
+     * 传不一致的值会被拒绝（实际开始采摘日期已落库，改计划最早采摘日期会让两者自相矛盾）。</p>
+     */
     @NotNull(message = "开始采摘日期必填")
     private LocalDate earliestHarvestdate;
 
