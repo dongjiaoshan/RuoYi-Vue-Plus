@@ -126,7 +126,7 @@ public class DashboardServiceImpl implements IDashboardService {
      */
     private static final int WEANING_RESYNC_DAYS = 30;
 
-    /** 年化乘数分子（PSY / 平均非生产天数按「头/母猪·年」「天/年」口径展示）。 */
+    /** 年化乘数分子（PSY / 头均非生产天数按「头/母猪·年」「天/年」口径展示）。 */
     private static final BigDecimal DAYS_PER_YEAR = new BigDecimal("365");
 
     /**
@@ -884,7 +884,7 @@ public class DashboardServiceImpl implements IDashboardService {
         // R73：删除「配怀率」行（窗口伪影常 >100%，甲方要求整行去掉）。
         rows.add(new MonthlyProductionStatVo.StatRow("断配间隔", mv(curr, MonthlyProduction::getWeanBreedInterval), mv(prev0, MonthlyProduction::getWeanBreedInterval), "天"));
         rows.add(new MonthlyProductionStatVo.StatRow("返空流头数", mvInt(curr, MonthlyProduction::getAbnormalCount), mvInt(prev0, MonthlyProduction::getAbnormalCount), "头"));
-        rows.add(new MonthlyProductionStatVo.StatRow("平均非生产天数", mv(curr, MonthlyProduction::getNpdDays), mv(prev0, MonthlyProduction::getNpdDays), "天"));
+        rows.add(new MonthlyProductionStatVo.StatRow("头均非生产天数", mv(curr, MonthlyProduction::getNpdDays), mv(prev0, MonthlyProduction::getNpdDays), "天"));
         rows.add(new MonthlyProductionStatVo.StatRow("总产仔数", mvInt(curr, MonthlyProduction::getTotalBornCount), mvInt(prev0, MonthlyProduction::getTotalBornCount), "头"));
         rows.add(new MonthlyProductionStatVo.StatRow("窝均总产仔", mv(curr, MonthlyProduction::getAvgBornPerLitter), mv(prev0, MonthlyProduction::getAvgBornPerLitter), "头/窝"));
         rows.add(new MonthlyProductionStatVo.StatRow("窝均活仔", mv(curr, MonthlyProduction::getAvgLiveBornPerLitter), mv(prev0, MonthlyProduction::getAvgLiveBornPerLitter), "头/窝"));
@@ -1020,7 +1020,7 @@ public class DashboardServiceImpl implements IDashboardService {
     /**
      * 年化：把「统计区间内的量」折成「每年」。{@code statDays} 非正时原样返回（不放大噪声）。
      *
-     * <p>平均非生产天数的口径是「天/年」，而区间内算出来的是「每 statDays 天」的值，
+     * <p>头均非生产天数的口径是「天/年」，而区间内算出来的是「每 statDays 天」的值，
      * 挂「年度」标题展示必须乘 365/statDays。</p>
      *
      * <p>⚠️ PSY <b>不走这里</b>：它的式子自带年化（×365/妊娠天数），再乘一次就是双重年化。

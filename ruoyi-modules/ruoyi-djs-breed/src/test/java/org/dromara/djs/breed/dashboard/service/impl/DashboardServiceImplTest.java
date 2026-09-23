@@ -838,7 +838,7 @@ class DashboardServiceImplTest {
     }
 
     @Test
-    @DisplayName("年度: 平均非生产天数年化（区间值 × 365/已历天数）")
+    @DisplayName("年度: 头均非生产天数年化（区间值 × 365/已历天数）")
     void testAnnualNpdAnnualized() {
         stubAggregateSkeleton();
         // Σ日非生产母猪 101，Σ日生产母猪 6409，已历天数 46 → 年均存栏 139.326
@@ -1062,6 +1062,30 @@ class DashboardServiceImplTest {
         assertThat(row.getPrevious()).isEqualByComparingTo("25.00");
         // 当月/上月不能对调：对调后 current 会变成 25.00
         assertThat(row.getCurrent()).isNotEqualByComparingTo(row.getPrevious());
+    }
+
+    @Test
+    @DisplayName("月度读取端: NPD 那一行叫「头均非生产天数」（V6 行260），数值仍取月表 npd_days、单位仍是天")
+    void testMonthlyStatsNpdRowName() {
+        MonthlyProduction curr = monthRow("0.000");
+        curr.setNpdDays(new BigDecimal("1.070"));
+        MonthlyProduction prev = monthRow("0.000");
+        prev.setNpdDays(new BigDecimal("1.811"));
+        when(monthlyProductionMapper.selectOne(any())).thenReturn(curr).thenReturn(prev);
+        when(farrowingRateMapper.selectFarrowRate(anyString(), any(), any(), any()))
+            .thenReturn(mapOfAll("denom", 0, "numer", 0, "farrowLate", 0));
+
+        MonthlyProductionStatVo vo = service.getMonthlyProductionStats(YearMonth.now());
+
+        assertThat(vo.getRows()).extracting(MonthlyProductionStatVo.StatRow::getMetric)
+            .contains("头均非生产天数")
+            .doesNotContain("平均非生产天数");
+        MonthlyProductionStatVo.StatRow row = vo.getRows().stream()
+            .filter(r -> "头均非生产天数".equals(r.getMetric())).findFirst().orElseThrow();
+        // 只改名不改算法（D-0120 未拍板前按 D-0097①维持天）
+        assertThat(row.getCurrent()).isEqualByComparingTo("1.070");
+        assertThat(row.getPrevious()).isEqualByComparingTo("1.811");
+        assertThat(row.getUnit()).isEqualTo("天");
     }
 
     @Test

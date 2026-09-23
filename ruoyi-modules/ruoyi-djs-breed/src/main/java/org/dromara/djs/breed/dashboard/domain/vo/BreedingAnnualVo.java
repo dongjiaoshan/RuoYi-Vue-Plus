@@ -22,7 +22,7 @@ import java.math.BigDecimal;
  *   <li>{@link #mateRate} 配种率 / {@link #farrowRate} 分娩率 ← <b>实时扫 {@code t_farm_farrowing_rate}</b>
  *       （不是年表列；V1 配种率与分娩率同口径）</li>
  *   <li>{@link #weanMateInterval} 断配间隔 ← {@code wean_breed_interval}（天）</li>
- *   <li>{@link #avgNonProductiveDays} 平均非生产天数 NPD ← {@code avg_npd_days}（天）</li>
+ *   <li>{@link #avgNonProductiveDays} 头均非生产天数 NPD ← {@code avg_npd_days}（天）</li>
  *   <li>{@link #totalBornCount} 总产仔数 ← {@code total_born_count} / {@link #totalLiveBorn} 总活仔 ← {@code total_live_born}</li>
  *   <li>{@link #farrowingLossRate} 产房损失率 ← {@code farrow_loss_rate}</li>
  * </ul>
@@ -47,11 +47,11 @@ public class BreedingAnnualVo implements Serializable {
     private BigDecimal psy;
 
     /**
-     * PSY / 平均非生产天数的统计区间起始日（年表 psy_stat_from，yyyy-MM-dd）。
+     * PSY / 头均非生产天数的统计区间起始日（年表 psy_stat_from，yyyy-MM-dd）。
      *
      * <p>日表不是从年初就有的（起于统计上线那天），两个指标都只能按实际覆盖的那一段算，
      * 不标出区间就没法自证挂着「年度」标题。两格折算成年度值的方式不同：
-     * 平均非生产天数 = 该区间值 ×365/区间天数；PSY 的式子自带年化（×365/115），<b>不乘</b>区间天数。
+     * 头均非生产天数 = 该区间值 ×365/区间天数；PSY 的式子自带年化（×365/115），<b>不乘</b>区间天数。
      * 前端据此渲染「取 X 起 N 天数据折算成年度值」。</p>
      */
     private String psyStatFrom;
@@ -68,7 +68,7 @@ public class BreedingAnnualVo implements Serializable {
     /** 断配间隔（天）= AVG(下次配种日 − 上次断奶日)，1 位小数。 */
     private BigDecimal weanMateInterval;
 
-    /** 平均非生产天数 NPD（天，1 位小数）。 */
+    /** 头均非生产天数 NPD（天，1 位小数）。 */
     private BigDecimal avgNonProductiveDays;
 
     // ---- ③年度产房与仔猪质量 ----
