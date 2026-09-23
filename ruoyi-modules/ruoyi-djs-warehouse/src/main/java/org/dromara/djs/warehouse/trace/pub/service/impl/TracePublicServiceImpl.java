@@ -124,11 +124,11 @@ public class TracePublicServiceImpl
     /** 出入库流水的出库方向标识（{@code stock_flow.inout_type}）。 */
     private static final String INOUT_OUT = "OT";
 
-    /** 生产领用出库流水类型（D-0108 靠它反查原材料是从哪个库位领走的）。 */
+    /** 生产领用出库流水类型（D-0119 靠它反查原材料是从哪个库位领走的）。 */
     private static final String FLOW_TYPE_PROD_PICK_OUT = "prod_pick_out";
 
     /**
-     * 算「采摘」的入库流水类型（D-0108）：毛菜保鲜库入库（采摘即入）+ 果蔬月台收货入库。
+     * 算「采摘」的入库流水类型（D-0119）：毛菜保鲜库入库（采摘即入）+ 果蔬月台收货入库。
      *
      * <p>同地块的入库流水里还有生产退回入库等非采摘入库，一并取最近会把退货时间写成采摘时间，
      * 所以这里用白名单而不是「全部入库减去几种」—— 新增入库类型默认不会冒充采摘。</p>
@@ -196,7 +196,7 @@ public class TracePublicServiceImpl
     /** 发货产品生产记录：产品生产（打包）节点时间 + 果蔬成品实际称重（按 trace_code 关联）。 */
     private final ProductProductionMapper productProductionMapper;
     private final VegDisplayNameMapper vegDisplayNameMapper;
-    /** 出入库流水：果蔬「采摘」节点取本地块最近一次采摘入库的时间（D-0108）。 */
+    /** 出入库流水：果蔬「采摘」节点取本地块最近一次采摘入库的时间（D-0119）。 */
     private final StockFlowMapper stockFlowMapper;
 
     public TracePublicServiceImpl(TraceCodeMapper baseMapper,
@@ -849,7 +849,7 @@ public class TracePublicServiceImpl
         // 邓博 row19：种植 / 采摘节点写班组名（非人员名）；取仓库种植记录的 team_name，无则 null。
         String teamName = planting != null ? planting.getTeamName() : null;
 
-        // 采摘：取该产品原材料在「生产领用那一刻所在库位」上最近一次采摘入库的流水日期（D-0108）。
+        // 采摘：取该产品原材料在「生产领用那一刻所在库位」上、本地块最近一次采摘入库的流水日期（D-0119）。
         // 兜底源 planting_record.data_date 记的是「该地块那批开始采摘」落库的时刻，一批只写一次整批共用，
         // 同一地块后续每批都顶着首批那天，越往后越不准（staging 实测 A-A4东-0-001 紫线茄：
         // data_date 2026-08-03，而 9/15 打包那批的真实采摘入库是 2026-09-13）。入库流水一次采摘一条，才跟得上。
@@ -922,36 +922,31 @@ public class TracePublicServiceImpl
     }
 
     /**
-     * 采摘节点时间源：该产品的原材料在<b>生产领用那一刻所在库位</b>上、最近一次采摘入库的流水时间。
+     * 采摘节点时间源：该产品的原材料在<b>生产领用那一刻所在库位</b>上、<b>本追溯码地块</b>最近一次采摘入库的流水时间。
      *
-     * <p>口径 D-0108（甲方 2026-09-22 拍板，原话：「根据果蔬产品原材料生产领用的库位查询该库位
-     * 最近一次的入库日期，入库时间要小于生产时间」）。三段各对应一步：</p>
+     * <p>口径 D-0119（甲方原话：「取该库位该地块的最后一次入库数据，确保数据和地块是一一对应的」，
+     * 在 D-0108「按原材料生产领用的库位取、入库时间要小于生产时间」上加了地块）。四段各对应一个条件：</p>
      * <ol>
      *   <li><b>领用库位</b> —— 打包之前该原材料最后一条生产领用出库流水
      *       （{@code prod_pick_out}）的 {@code warehouse_id}（列名是 D7 遗留，实为库位 FK）。
-     *       库位取不到就返 null，由调用方退化到种植记录 / 采摘日，不另起一套按地块取的旁路。</li>
+     *       库位取不到就返 null，由调用方退化到种植记录 / 采摘日，不另起一套旁路。</li>
      *   <li><b>同一原材料 + 采摘类入库</b> —— 毛菜鲜品库 / 蔬菜保鲜库是全场蔬菜共用的冷库，
      *       不按原材料过滤时「该库位最近一次入库」= 冷库里最后进的任意一样菜（生产库 2857 个果蔬码
      *       会有 2440 个被改成与本产品无关的同一批日期）；入库类型只认采摘类
      *       （{@code veg_stock_in} 毛菜保鲜库入库、{@code veg_receive_in} 果蔬月台收货），
      *       否则会取到生产退回、门店退回、以及初始库存铺底行（{@code flow_date} 2026-07-30 23:59:59）。</li>
+     *   <li><b>本地块</b> —— 同一库位常混放多个地块的同一样菜；不按地块过滤时会取到同库位里<b>另一个地块</b>
+     *       更晚进的那批，C 端页面就会把 A 地块的编号和 B 地块的采摘时间并排显示（生产库 2960 个果蔬码里有
+     *       981 个是这样，最大偏 27 天）。两类采摘入库流水都带 {@code plot_id}（按地块篮入库）。
+     *       追溯码自身没有地块（生产 228 个）时不加这个条件——没有地块就无从一一对应，仍按库位取。
+     *       库位上找不到本地块的采摘入库就返 null，<b>不回退去取别的地块</b>。</li>
      *   <li><b>入库早于打包</b> —— 装进这个产品的菜不可能是它打包之后才入库的。</li>
      * </ol>
      *
-     * <p><b>键从「地块」换成「库位」放弃的就是地块</b>，而且不是偶尔放弃：生产库实测 2857 个果蔬码里，
-     * 与按地块取的答案不同的有 961 个，这 961 个<b>全部</b>是「本地块明明有可选的采摘入库行，被跳过，
-     * 改取了同库位里<b>另一个地块</b>的更晚那条」（最大偏 27 天）。C 端追溯页同屏显示地块编号与采摘时间，
-     * 于是这 961 个码会把 A 地块的编号和 B 地块的采摘时间并排展示。这是甲方点名要的口径（他们按物理冷库
-     * 而不是按地块理解这批菜），<b>不是缺陷</b>，但别把它说成「取到更新鲜的那批」——那是在掩盖机制。</p>
+     * <p>⚠️ <b>地块这个条件在 staging 上测不出差别</b>：staging 每个库位只进过一个地块的菜，
+     * 加不加地块答案都一样，只有生产的数据密度才暴露。</p>
      *
-     * <p>⚠️ <b>这个面在 staging 上测不出来</b>：staging 99 个果蔬码串味数为 0（每个库位只进过一个地块的菜），
-     * 只有生产的数据密度才暴露。测试员在 staging 过了不等于生产没事。</p>
-     *
-     * <p>对<b>生产用户当前实际看到的值</b>（还在跑 {@code planting_record.data_date} 那一版）的冲击是：
-     * 2586 个码的采摘时间会变，2517 个往后、69 个往前（这 69 个旧值本来就晚于产品生产，属修倒挂），
-     * 最多往后 46 天。给甲方通报要用这组数，不要用「与按地块版本相比」的那组。</p>
-     *
-     * @return 打包时刻之前、该库位上该原材料最近一次采摘入库的时间；链路任一环断掉返回 {@code null}
+     * @return 打包时刻之前、该库位上本地块该原材料最近一次采摘入库的时间；链路任一环断掉返回 {@code null}
      */
     private LocalDateTime resolveHarvestInboundTime(Long materialProductId, Long plotId, Date packTime) {
         if (materialProductId == null) {
@@ -964,6 +959,7 @@ public class TracePublicServiceImpl
         LambdaQueryWrapper<StockFlow> w = new LambdaQueryWrapper<StockFlow>()
             .eq(StockFlow::getWarehouseId, pickLocationId)
             .eq(StockFlow::getProductId, materialProductId)
+            .eq(plotId != null, StockFlow::getPlotId, plotId)
             .eq(StockFlow::getInoutType, INOUT_IN)
             .in(StockFlow::getFlowType, HARVEST_INBOUND_FLOW_TYPES)
             .le(packTime != null, StockFlow::getFlowDate, packTime)
@@ -975,7 +971,7 @@ public class TracePublicServiceImpl
     }
 
     /**
-     * 本产品的原材料是从哪个库位领出去生产的（D-0108 第一步）。
+     * 本产品的原材料是从哪个库位领出去生产的（D-0119 第一步）。
      *
      * <p>取打包时刻之前该原材料最后一条生产领用出库流水的库位。地块已知时一并对齐 —— 同一原材料
      * 同日可能从不同地块各领一次，带上地块才落在本产品那一次领用上；地块为空（生产库 2857 个果蔬码

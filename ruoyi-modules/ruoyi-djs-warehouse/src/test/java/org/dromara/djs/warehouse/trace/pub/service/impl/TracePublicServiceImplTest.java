@@ -147,10 +147,10 @@ class TracePublicServiceImplTest {
     private static final Long PIG_ID = 2059482914806059010L;
     private static final Long PLOT_ID = 6001L;
     private static final Long ZONE_ID = 6101L;
-    /** 生产领用发生在这个库位（D-0108 的键）。 */
+    /** 生产领用发生在这个库位（D-0119 的键之一）。 */
     private static final Long PICK_LOCATION_ID = 9301000000000006L;
 
-    /** 原材料作物产品 id（成品由它加工而来），采摘入库流水按它 + 领用库位收窄。 */
+    /** 原材料作物产品 id（成品由它加工而来），采摘入库流水按它 + 领用库位 + 地块收窄。 */
     private static final Long MATERIAL_ID = 100000000000000341L;
     private static final Long STORE_ID = 5001L;
     private static final Long FARM_ID = 100L;
@@ -563,7 +563,7 @@ class TracePublicServiceImplTest {
         }
     }
 
-    /** D-0108 第一步会先查一条生产领用出库流水拿库位；这里造那条。 */
+    /** D-0119 第一步会先查一条生产领用出库流水拿库位；这里造那条。 */
     private static StockFlow pickFlow(Long locationId) {
         StockFlow pick = new StockFlow();
         pick.setProductId(MATERIAL_ID);
@@ -576,7 +576,7 @@ class TracePublicServiceImplTest {
     }
 
     @Test
-    @DisplayName("veg 采摘节点取「原材料领用库位」上最近一次采摘入库（D-0108），压过种植记录那条整批共用的 data_date")
+    @DisplayName("veg 采摘节点取「原材料领用库位」上本地块最近一次采摘入库（D-0119），压过种植记录那条整批共用的 data_date")
     void getByProduceCode_veg_harvestTakesLatestHarvestInbound() {
         TraceCode code = new TraceCode();
         code.setProduceCode(VEG_CODE);
@@ -621,8 +621,8 @@ class TracePublicServiceImplTest {
     }
 
     @Test
-    @DisplayName("D-0108 键是「领用库位」不是地块：入库查询必须绑 warehouse_id，且值取自领用流水")
-    void harvestInboundQuery_keysOnPickLocationNotPlot() {
+    @DisplayName("D-0119 入库查询同时绑「领用库位」与「本追溯码地块」：同库位混放多地块时不取别的地块那批")
+    void harvestInboundQuery_keysOnPickLocationAndPlot() {
         TraceCode code = new TraceCode();
         code.setProduceCode(VEG_CODE);
         code.setCodeType("veg");
@@ -653,18 +653,55 @@ class TracePublicServiceImplTest {
         AbstractWrapper<?, ?, ?> inW = (AbstractWrapper<?, ?, ?>) cap.getAllValues().get(1);
         String inSql = inW.getTargetSql();
         assertThat(inSql)
-            .as("第二步必须按库位查，这是 D-0108 换掉的那个键")
+            .as("第二步必须按库位查")
             .containsIgnoringCase("warehouse_id");
         assertThat(inSql)
-            .as("不能再按地块查 —— 同一库位里的菜按地块分不开，甲方要的是库位口径")
-            .doesNotContainIgnoringCase("plot_id");
+            .as("第二步还必须按地块查 —— 甲方要采摘时间与页面上的地块编号一一对应（D-0119）")
+            .containsIgnoringCase("plot_id");
         assertThat(inW.getParamNameValuePairs().values())
-            .as("库位值必须就是领用流水上的那个")
-            .contains(PICK_LOCATION_ID);
+            .as("库位值必须就是领用流水上的那个，地块值必须就是本追溯码的地块")
+            .contains(PICK_LOCATION_ID, PLOT_ID);
     }
 
     @Test
-    @DisplayName("拿不到领用流水就不出采摘节点 —— 不许悄悄退回按地块取（两套口径混读是 D-0108 明确放弃的）")
+    @DisplayName("追溯码没有地块时入库查询不加地块条件 —— 无从一一对应，仍按库位取，而不是整段取不到")
+    void harvestInboundQuery_codeWithoutPlot_keysOnPickLocationOnly() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(VEG_CODE);
+        code.setCodeType("veg");
+        code.setProductId(PRODUCT_ID);
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+
+        ProductProduction pack = new ProductProduction();
+        pack.setTraceCode(VEG_CODE);
+        pack.setMaterialId(MATERIAL_ID);
+        pack.setProduceTime(java.sql.Timestamp.valueOf(LocalDateTime.of(2026, 6, 25, 9, 0)));
+        when(productProductionMapper.selectOne(any(Wrapper.class))).thenReturn(pack);
+        StockFlow inbound = new StockFlow();
+        inbound.setWarehouseId(PICK_LOCATION_ID);
+        inbound.setProductId(MATERIAL_ID);
+        inbound.setFlowType("veg_receive_in");
+        inbound.setInoutType("IN");
+        inbound.setFlowDate(java.sql.Timestamp.valueOf(LocalDateTime.of(2026, 6, 18, 7, 30, 0)));
+        when(stockFlowMapper.selectOne(any(Wrapper.class)))
+            .thenReturn(pickFlow(PICK_LOCATION_ID), inbound);
+
+        PublicTraceVo vo = service.getByProduceCode(VEG_CODE);
+
+        ArgumentCaptor<Wrapper> cap = ArgumentCaptor.forClass(Wrapper.class);
+        Mockito.verify(stockFlowMapper, Mockito.times(2)).selectOne(cap.capture());
+        AbstractWrapper<?, ?, ?> inW = (AbstractWrapper<?, ?, ?>) cap.getAllValues().get(1);
+        assertThat(inW.getTargetSql())
+            .as("没有地块可对齐时不能拼出 plot_id 条件（拼成 plot_id = NULL 会整段查空）")
+            .doesNotContainIgnoringCase("plot_id");
+        PublicTraceVo.TimelineNode harvest = vo.getTimeline().stream()
+            .filter(n -> "harvest".equals(n.getTraceContent())).findFirst().orElseThrow();
+        assertThat(harvest.getTraceTime()).isEqualTo(LocalDateTime.of(2026, 6, 18, 7, 30, 0));
+    }
+
+    @Test
+    @DisplayName("拿不到领用流水就不出采摘节点 —— 不许悄悄退回按地块取（两套口径混读会让同一格有两种来源）")
     void harvestInbound_noPickFlow_yieldsNoHarvestFromFlow() {
         TraceCode code = new TraceCode();
         code.setProduceCode(VEG_CODE);
