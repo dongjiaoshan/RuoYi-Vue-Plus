@@ -838,13 +838,13 @@ class DashboardServiceImplTest {
     }
 
     @Test
-    @DisplayName("年度: 头均非生产天数年化（区间值 × 365/已历天数）")
-    void testAnnualNpdAnnualized() {
+    @DisplayName("年度: 头均非生产天数 = 总NPD天数 / 区间平均生产母猪存栏，不年化（D-0120）")
+    void testAnnualNpdIsIntervalValue() {
         stubAggregateSkeleton();
-        // Σ日非生产母猪 101，Σ日生产母猪 6409，已历天数 46 → 年均存栏 139.326
-        // 区间 NPD = 101/139.326 = 0.725 → 年化 ×365/46 = 5.753
+        // Σ日非生产母猪 101，Σ日生产母猪 6409，区间已落盘 46 天 → 区间平均存栏 139.326
+        // 头均非生产天数 = 101/139.326 = 0.725（年化回去 ×365/46 会是 5.753，那是 D-0120 之前的口径）
         // sumEndReserve230 给 37 作对照桶：甲方 row228 ① 要求「不计算 230 后备猪的数据」，
-        // 一旦被加进分子，total_npd_days 会变 138、avg_npd_days 会变 7.859，两条断言同时红。
+        // 一旦被加进分子，total_npd_days 会变 138、avg_npd_days 会变 0.990，两条断言同时红。
         when(aggregateQueryMapper.sumIndicatorRange(anyString(), any(), any()))
             .thenReturn(mapOfAll("sumEndProductionSow", 6409, "sumEndNonprodSow", 101,
                 "sumEndReserve230", 37));
@@ -854,7 +854,7 @@ class DashboardServiceImplTest {
 
         ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
         verify(annualIndicatorMapper).insert(cap.capture());
-        assertThat(cap.getValue().getAvgNpdDays()).isEqualByComparingTo("5.753");
+        assertThat(cap.getValue().getAvgNpdDays()).isEqualByComparingTo("0.725");
         // 全年总NPD天数 = Σ日非生产母猪，**不含** 230 后备（甲方 row228 ①）
         assertThat(cap.getValue().getTotalNpdDays()).isEqualTo(101);
     }

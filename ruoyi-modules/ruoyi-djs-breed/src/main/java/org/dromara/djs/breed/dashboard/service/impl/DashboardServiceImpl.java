@@ -126,7 +126,7 @@ public class DashboardServiceImpl implements IDashboardService {
      */
     private static final int WEANING_RESYNC_DAYS = 30;
 
-    /** 年化乘数分子（PSY / 头均非生产天数按「头/母猪·年」「天/年」口径展示）。 */
+    /** 年化乘数分子（PSY 按「头/母猪·年」口径展示，式中 365/115）。 */
     private static final BigDecimal DAYS_PER_YEAR = new BigDecimal("365");
 
     /**
@@ -1017,23 +1017,6 @@ public class DashboardServiceImpl implements IDashboardService {
         return pct(ratio(Math.min(death, liveBorn), liveBorn));
     }
 
-    /**
-     * 年化：把「统计区间内的量」折成「每年」。{@code statDays} 非正时原样返回（不放大噪声）。
-     *
-     * <p>头均非生产天数的口径是「天/年」，而区间内算出来的是「每 statDays 天」的值，
-     * 挂「年度」标题展示必须乘 365/statDays。</p>
-     *
-     * <p>⚠️ PSY <b>不走这里</b>：它的式子自带年化（×365/妊娠天数），再乘一次就是双重年化。
-     * 本方法当前唯一调用点是 {@code avgNpdDays}。</p>
-     */
-    private static BigDecimal annualize(BigDecimal perWindowValue, int statDays) {
-        if (perWindowValue == null || perWindowValue.signum() == 0 || statDays <= 0) {
-            return perWindowValue == null ? BigDecimal.ZERO : perWindowValue;
-        }
-        return scale3(perWindowValue.multiply(DAYS_PER_YEAR)
-            .divide(new BigDecimal(statDays), 6, RoundingMode.HALF_UP));
-    }
-
     /** 3 位小数（重量 / 率 / 天数落库统一精度）。 */
     private static BigDecimal scale3(BigDecimal v) {
         return v == null ? BigDecimal.ZERO : v.setScale(3, RoundingMode.HALF_UP);
@@ -1763,10 +1746,7 @@ public class DashboardServiceImpl implements IDashboardService {
         // 当月NPD天数（甲方 V6 行234，口径 D-0099）= Σ日非生产母猪头数 + Σ日妊娠损失天数。
         //   分子去掉 230 后备（纯非生产母猪 = Σ日 npd_days = Σ日 end_nonprod_sow_count）。
         int monthNpdDays = sumEndNonprodSow + mapInt(sum, "sumPregLossDays");
-        // 月头均NPD天数 = 当月NPD天数 / 月均生产母猪存栏；分母 0 → 0。
-        //   甲方原文分母写的是「Σ当月每日期末生产母猪头数」，与分子同为「头·日」、相除得到的是比例不是天数
-        //   （现值 0.53 天会变成 0.018）。这里仍按「÷平均存栏」写 —— 等价于甲方式子再乘一个已历天数，
-        //   量纲才成立。待甲方确认，见 D-0097。
+        // 月头均非生产天数（D-0120）= 当月NPD天数 / 月均生产母猪存栏（区间平均存栏，区间 = 当月已落盘日表）；分母 0 → 0。
         BigDecimal npdDays = avgProdSowStock.signum() == 0
             ? BigDecimal.ZERO
             : scale3(new BigDecimal(monthNpdDays).divide(avgProdSowStock, 6, RoundingMode.HALF_UP));
@@ -1918,18 +1898,14 @@ public class DashboardServiceImpl implements IDashboardService {
                 .divide(STANDARD_GESTATION_DAYS, 6, RoundingMode.HALF_UP)
                 .multiply(avgWeanedPerLitter));
 
-        // 全年总NPD天数（甲方 V6 行233 第 1 点，D-0099）= Σ日非生产母猪（去掉 230 后备）+ Σ日妊娠损失天数；
-        //   年头均NPD = 总NPD / 年均生产母猪存栏，再年化成「天/年」。
-        // 甲方原文分母写的是「Σ当年每日期末生产母猪头数」，与分子同为「头·日」、相除得到的是比例不是天数
-        //   （现值 7.35 天会变成 0.02）。这里仍按「÷平均存栏 + 年化」写，等价于甲方式子再乘一个区间天数，
-        //   量纲才成立。待甲方确认，见 D-0097。
-        // ⚠️ 年化只修量纲。该值当前仍显著低于行业区间，根因是断奶/配种事件录入不全 —— 母猪长期卡在
-        //    FM(哺乳)/PZ(配种) 态被算作生产态，非生产段压根没产生。属数据完整度问题，不在本次口径修复内。
+        // 全年总NPD天数（甲方 V6 行233 第 1 点，D-0099）= Σ日非生产母猪（去掉 230 后备）+ Σ日妊娠损失天数。
+        // 年头均非生产天数（D-0120）= 总NPD天数 / 区间平均生产母猪存栏（Σ日期末生产母猪头数 / 区间已落盘日表天数），
+        //   **不年化** —— 日表只覆盖当年的一段，甲方要的是这一段里每头母猪的非生产天数，不外推成全年。
+        //   与当月表同一个式子（区间换成当月），两格量纲一致。
         int totalNpdDays = sumEndNonprodSow + sumPregLoss;
         BigDecimal avgNpdDays = avgProdSowStock.signum() == 0
             ? BigDecimal.ZERO
-            : annualize(scale3(new BigDecimal(totalNpdDays)
-                .divide(avgProdSowStock, 6, RoundingMode.HALF_UP)), daysElapsed);
+            : scale3(new BigDecimal(totalNpdDays).divide(avgProdSowStock, 6, RoundingMode.HALF_UP));
 
         // 年分娩率（甲方 2026-09-18 拍板 D-0090 + D-0091，row231）：直接扫 t_farm_farrowing_rate 整年，
         //   **不再 Σ月表**。分子分母出自同一次查询、逐行分子 ⊆ 分母。

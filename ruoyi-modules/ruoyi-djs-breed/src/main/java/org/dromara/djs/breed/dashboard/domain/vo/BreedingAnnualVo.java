@@ -50,9 +50,8 @@ public class BreedingAnnualVo implements Serializable {
      * PSY / 头均非生产天数的统计区间起始日（年表 psy_stat_from，yyyy-MM-dd）。
      *
      * <p>日表不是从年初就有的（起于统计上线那天），两个指标都只能按实际覆盖的那一段算，
-     * 不标出区间就没法自证挂着「年度」标题。两格折算成年度值的方式不同：
-     * 头均非生产天数 = 该区间值 ×365/区间天数；PSY 的式子自带年化（×365/115），<b>不乘</b>区间天数。
-     * 前端据此渲染「取 X 起 N 天数据折算成年度值」。</p>
+     * 头均非生产天数就是该区间里每头母猪的非生产天数（区间值，不外推成全年，D-0120）；
+     * PSY 的式子自带年化（×365/115），<b>不乘</b>区间天数。</p>
      */
     private String psyStatFrom;
 
@@ -68,7 +67,7 @@ public class BreedingAnnualVo implements Serializable {
     /** 断配间隔（天）= AVG(下次配种日 − 上次断奶日)，1 位小数。 */
     private BigDecimal weanMateInterval;
 
-    /** 头均非生产天数 NPD（天，1 位小数）。 */
+    /** 头均非生产天数 NPD（天/头·统计区间，不年化；D-0120）。 */
     private BigDecimal avgNonProductiveDays;
 
     // ---- ③年度产房与仔猪质量 ----

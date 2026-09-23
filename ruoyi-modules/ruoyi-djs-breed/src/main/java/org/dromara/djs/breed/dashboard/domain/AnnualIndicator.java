@@ -118,7 +118,7 @@ public class AnnualIndicator extends TenantEntity {
     /**
      * 统计区间天数 = 该区间已落盘日表行数。定时重算，ALWAYS 覆盖旧值。
      *
-     * <p>{@link #avgNpdDays} 的年化乘数是 365/该值；{@link #psy} 不用它 —— PSY 式里的 365/115
+     * <p>{@link #avgNpdDays} 的平均存栏按它取均值（区间值，不年化，D-0120）；{@link #psy} 式里的 365/115
      * 自带年化，区间长短只影响分子分母的采样量，不进乘数。两格共用本字段作「数据取自哪一段」的说明。</p>
      */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
