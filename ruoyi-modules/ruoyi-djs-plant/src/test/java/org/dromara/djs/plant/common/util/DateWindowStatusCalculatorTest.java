@@ -24,7 +24,7 @@ class DateWindowStatusCalculatorTest {
     private static final LocalDate TODAY = LocalDate.of(2026, 9, 1);
 
     @Test
-    @DisplayName("开始日期在 30 天以后 → 第 1 档（待上市 / 待采摘）")
+    @DisplayName("开始日期在 30 天以后 → 第 1 档（待上市 / 未到采摘期）")
     void pending() {
         assertThat(DateWindowStatusCalculator.resolve(TODAY.plusDays(31), TODAY.plusDays(200), TODAY))
             .isEqualTo(DateWindowStatusCalculator.PENDING);
@@ -45,7 +45,7 @@ class DateWindowStatusCalculatorTest {
     }
 
     @Test
-    @DisplayName("已过开始日期且离结束超过 15 天 → 第 3 档（上市中 / 采摘中）")
+    @DisplayName("已过开始日期且离结束超过 15 天 → 第 3 档（上市中 / 采摘期内）")
     void onSale() {
         assertThat(DateWindowStatusCalculator.resolve(TODAY.minusDays(1), TODAY.plusDays(16), TODAY))
             .isEqualTo(DateWindowStatusCalculator.ON_SALE);

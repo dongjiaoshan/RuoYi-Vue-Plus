@@ -131,11 +131,11 @@ class PickPlanServiceImplTest {
         LocalDate today = LocalDate.now();
         when(pickPlanMapper.aggregateByCrop(anyString(), anyInt(), any(), any(), any(), any(), any()))
             .thenReturn(rows(
-                cropRow(1L, today.plusDays(60), today.plusDays(200)),   // pending  待采摘
-                cropRow(2L, today.plusDays(10), today.plusDays(200)),   // upcoming 即将采摘
-                cropRow(3L, today.minusDays(1), today.plusDays(40)),    // on_sale  采摘中
-                cropRow(4L, today.minusDays(1), today.plusDays(5)),     // ending   即将结束采摘
-                cropRow(5L, today.minusDays(90), today.minusDays(1)),   // off_shelf 完成采摘
+                cropRow(1L, today.plusDays(60), today.plusDays(200)),   // pending  未到采摘期
+                cropRow(2L, today.plusDays(10), today.plusDays(200)),   // upcoming 临近采摘期
+                cropRow(3L, today.minusDays(1), today.plusDays(40)),    // on_sale  采摘期内
+                cropRow(4L, today.minusDays(1), today.plusDays(5)),     // ending   临近采摘末期
+                cropRow(5L, today.minusDays(90), today.minusDays(1)),   // off_shelf 已过采摘期
                 cropRow(6L, null, null)));                              // 没排计划 → 状态留空
 
         List<PickPlanGroupVo> list = service.listByCrop(new PickPlanQuery());
@@ -144,7 +144,7 @@ class PickPlanServiceImplTest {
         assertThat(list).extracting(PickPlanGroupVo::getPickStatus)
             .containsExactly("pending", "upcoming", "on_sale", "ending", "off_shelf", null);
         assertThat(list).extracting(PickPlanGroupVo::getPickStatusName)
-            .containsExactly("待采摘", "即将采摘", "采摘中", "即将结束采摘", "完成采摘", null);
+            .containsExactly("未到采摘期", "临近采摘期", "采摘期内", "临近采摘末期", "已过采摘期", null);
     }
 
     @Test

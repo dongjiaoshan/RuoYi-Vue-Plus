@@ -26,19 +26,19 @@ public class DateWindowStatusStatVo implements Serializable {
     @Serial
     private static final long serialVersionUID = 1L;
 
-    /** 待上市 / 待采摘。 */
+    /** 待上市 / 未到采摘期。 */
     private Integer pending;
 
-    /** 即将上市 / 即将采摘。 */
+    /** 即将上市 / 临近采摘期。 */
     private Integer upcoming;
 
-    /** 上市中 / 采摘中。 */
+    /** 上市中 / 采摘期内。 */
     private Integer onSale;
 
-    /** 即将下市 / 即将结束采摘。 */
+    /** 即将下市 / 临近采摘末期。 */
     private Integer ending;
 
-    /** 已下架 / 完成采摘。 */
+    /** 已下架 / 已过采摘期。 */
     private Integer offShelf;
 
     /**

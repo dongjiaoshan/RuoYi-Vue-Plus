@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 和「导出里的」是同一个词——改一处忘另一处不报错，只会让甲方看到两个词。这条测试就是那个报错。</p>
  *
  * <p>两页共用 {@link DateWindowStatusCalculator} 的同一套状态码，但中文各一套
- * （上市：待上市…；采摘：待采摘…），所以两组各校一遍。</p>
+ * （上市：待上市…；采摘：未到采摘期…），所以两组各校一遍。</p>
  *
  * <p>plus-ui 是并排的另一个仓库。后端仓库单独 checkout（CI）时读不到那个文件，
  * 此时 {@link Assumptions} 跳过而不是失败——跨仓校验只在两仓都在的开发机上生效。</p>

@@ -48,15 +48,15 @@ public class PickPlanGroupVo implements Serializable {
      * 状态码（service 按 {@link #planEarliest} / {@link #planLatest} 与当天现算，不落库）。
      *
      * <p>取值见 {@link org.dromara.djs.plant.common.util.DateWindowStatusCalculator}：
-     * {@code pending 待采摘 / upcoming 即将采摘 / on_sale 采摘中 / ending 即将结束采摘 /
-     * off_shelf 完成采摘}；最早采摘日期为空时为 {@code null}。
+     * {@code pending 未到采摘期 / upcoming 临近采摘期 / on_sale 采摘期内 / ending 临近采摘末期 /
+     * off_shelf 已过采摘期}；最早采摘日期为空时为 {@code null}。
      * 前端按码查 i18n 显示中文与配色，导出走下面的 {@code pickStatusName}。</p>
      */
     @ExcelIgnore
     private String pickStatus;
 
     /** 状态中文名（仅导出用；前端不读它，前端按 {@code pickStatus} 走 i18n）。 */
-    @ExcelProperty(value = "状态")
+    @ExcelProperty(value = "作物采摘期状态")
     private String pickStatusName;
 
     /** 作物主图 L1 ossId（mapper 透传，Service enrich 后转 {@link #cropImageUrl}）。 */
