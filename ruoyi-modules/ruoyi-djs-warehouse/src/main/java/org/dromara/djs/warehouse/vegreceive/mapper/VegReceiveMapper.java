@@ -352,7 +352,10 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                                          @Param("productId") Long productId);
 
     /**
-     * 取作物名称（VegInbound 提交时冗余写入 receive 记录；自产无 product，从 vegetable_handle 冗余取）。
+     * 取作物名称（VegInbound 提交时冗余写入 receive 记录，从 {@code t_plant_crop_info} 按 cropId 取）。
+     *
+     * <p>⚠️ 早前这里写「自产无 product」——<b>已不成立</b>：row55 起自产收货也落 productId（见本类
+     * {@code addStockByPlotLocation} 的 row55 说明）。该方法本身与产品无关，只按 cropId 查作物名。</p>
      */
     @Select("""
         SELECT crop_name

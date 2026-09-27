@@ -231,6 +231,25 @@ public class StoreUserRelationServiceImpl
     }
 
     @Override
+    public List<Long> currentAccessibleStoreIds() {
+        if (!storeWallEnabled) {
+            return null;
+        }
+        Long userId;
+        try {
+            if (LoginHelper.isSuperAdmin() || LoginHelper.isTenantAdmin()) {
+                return null;
+            }
+            // 审计字段的 currentUserIdSafe() 会把未登录转换为 0，不用于权限身份判定。
+            userId = LoginHelper.getUserId();
+        } catch (Exception e) {
+            log.debug("获取门店范围时无登录上下文，按未绑定处理: {}", e.getMessage());
+            return Collections.emptyList();
+        }
+        return listStoreIdsByUser(userId);
+    }
+
+    @Override
     public boolean isStoreAccessible(Long userId, Long storeId) {
         if (storeId == null) {
             return false;

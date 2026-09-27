@@ -355,8 +355,9 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         stockFlowMapper.insert(flow);
 
         // 5. 双写运输损耗（行59）：仅在地块标记入库完成（is_finish=1）时结算一次。
-        //    运输损耗 = Σ该地块发往月台重(send_platform_weight) − Σ该地块已接收重(veg_receive.weight)。
-        //    loss 变量上面已按 remainSafe(=月台量−已入量) − 本次入量 算出 = 本次终结后的剩余 = 运输损耗。
+        //    运输损耗 = Σ该地块该产品**月台明细**重(t_warehouse_handle_record: record_type=2 且 handle_target=2) − Σ已接收重(veg_receive.weight)。
+        //    （row55 起月台量取自明细表、按产品聚合，不再取 vegetable_handle.send_platform_weight 汇总列。）
+        //    loss 变量上面已按 remainSafe(=月台量−已入量−已结算损耗) − 本次入量 算出 = 本次终结后的剩余 = 运输损耗。
         //    正值才记（record 内部对 <=0 已跳过，此处再守一层显式表达意图）。
         if (finished && loss.signum() > 0) {
             LossFlow lossFlow = new LossFlow();
@@ -385,7 +386,8 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     public Long purchase(VegPurchaseBo bo) {
         Long userId = resolveOperator(bo.getOperatorId());
 
-        // 1. 校验自产食材原料（product_type=1 且 product_attr=2）存在
+        // 1. 校验外购食材原料（product_type=1 且 product_attr=2 且 is_buy_out=1）存在
+        //    —— 判据与完整说明见同文件 requirePurchaseProduct；缺 is_buy_out=1 会放进「未开外购」的食材。
         ProductInfo product = requirePurchaseProduct(bo.getCropId());
 
         // 2. resolve supplier（业务短码 → id+name；查不到只存名称、id 置 null，不阻塞入库）

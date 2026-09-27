@@ -9,6 +9,7 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.domain.dto.UserDTO;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.service.UserService;
+import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.domain.StoreUserRelation;
 import org.dromara.djs.common.store.domain.vo.StoreUserVo;
@@ -22,9 +23,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Collections;
 import java.util.List;
@@ -36,6 +39,8 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 /**
  * {@link StoreUserRelationServiceImpl} 单元测试（STORE-PERM-001 / STR-USER-REL-001）。
@@ -80,6 +85,44 @@ class StoreUserRelationServiceImplTest {
     @BeforeEach
     void setup() {
         service = new StoreUserRelationServiceImpl(baseMapper, userService, storeMapper);
+    }
+
+    @Test
+    void scopeWallOffIsUnrestrictedWithoutLookingUpBindings() {
+        assertThat(service.currentAccessibleStoreIds()).isNull();
+        verifyNoInteractions(baseMapper);
+    }
+
+    @Test
+    void scopeWallOnContainsOnlyCurrentUsersBindings() {
+        ReflectionTestUtils.setField(service, "storeWallEnabled", true);
+        StoreUserRelation relation = new StoreUserRelation();
+        relation.setStoreId(11L);
+        when(baseMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(relation));
+        try (MockedStatic<LoginHelper> login = mockStatic(LoginHelper.class)) {
+            login.when(LoginHelper::getUserId).thenReturn(2001L);
+            assertThat(service.currentAccessibleStoreIds()).containsExactly(11L);
+            ArgumentCaptor<LambdaQueryWrapper<StoreUserRelation>> captor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+            verify(baseMapper).selectList(captor.capture());
+            assertThat(captor.getValue().getSqlSegment()).contains("user_id");
+            assertThat(captor.getValue().getParamNameValuePairs()).containsValue(2001L);
+        }
+    }
+
+    @Test
+    void scopeNoUserIsEmptyAndAdministratorsRemainExempt() {
+        ReflectionTestUtils.setField(service, "storeWallEnabled", true);
+        try (MockedStatic<LoginHelper> login = mockStatic(LoginHelper.class)) {
+            // Long 返回值在 Mockito 默认答案下为 0L；无登录上下文应显式模拟 null。
+            login.when(LoginHelper::getUserId).thenReturn(null);
+            assertThat(service.currentAccessibleStoreIds()).isEmpty();
+            login.when(LoginHelper::isSuperAdmin).thenReturn(true);
+            assertThat(service.currentAccessibleStoreIds()).isNull();
+            login.when(LoginHelper::isSuperAdmin).thenReturn(false);
+            login.when(LoginHelper::isTenantAdmin).thenReturn(true);
+            assertThat(service.currentAccessibleStoreIds()).isNull();
+        }
+        verifyNoInteractions(baseMapper);
     }
 
     @Test

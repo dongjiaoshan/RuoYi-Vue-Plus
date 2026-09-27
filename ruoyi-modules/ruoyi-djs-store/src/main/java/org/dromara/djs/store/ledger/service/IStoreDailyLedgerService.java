@@ -8,8 +8,10 @@ import org.dromara.djs.store.ledger.domain.vo.StoreDailyLedgerCandidateVo;
 import org.dromara.djs.store.ledger.domain.vo.StoreDailyLedgerHeaderVo;
 import org.dromara.djs.store.ledger.domain.vo.StoreDailyLedgerVo;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 门店经营流水盘点台账 Service（STORE-LEDGER-001）。
@@ -33,6 +35,9 @@ public interface IStoreDailyLedgerService {
      * @return 候选行列表（按产品）
      */
     List<StoreDailyLedgerCandidateVo> listCandidates(Long storeId, LocalDate ledgerDate);
+
+    /** 当日现场打包消耗量，按原材料 ID 聚合；供盘点编辑使用，不改变历史台账。 */
+    Map<Long, BigDecimal> queryOnsiteConsumption(Long storeId, LocalDate ledgerDate);
 
     /**
      * 当日盘点整表批量提交：一次落某门店某日多产品行，service 算 closing_qty。

@@ -13,8 +13,12 @@ import java.math.BigDecimal;
  * {@code cropId / cropName / productType? / pendingWeight}。</p>
  *
  * <ul>
- *   <li>自产（{@code /self}）：{@code cropId}=作物 ID，{@code pendingWeight}=该作物月台待入库总量
- *       （= {@code SUM(send_platform_weight)} − 已入库 self 量）；{@code productType} 不填</li>
+ *   <li>自产（{@code /self}）：{@code cropId}=作物 ID、{@code productId}=产品 ID（row55 起聚合到产品维度），
+ *       {@code pendingWeight}<b>按 (作物, 产品) 跨地块汇总</b>（中间量先按地块计算） = 该产品<b>月台明细</b>量
+ *       （{@code t_warehouse_handle_record} 的 {@code record_type=2 且 handle_target=2} 的 {@code record_weight} 之和）
+ *       　　　　− 已入库 self 量（{@code receive_type=1}）− 已结算损耗（{@code is_finish=1} 的 {@code loss_weight}）。
+ *       ⚠️ <b>不是</b> {@code vegetable_handle.send_platform_weight} 汇总列（那是按作物的，多产品会并成一张卡，
+ *       row55 的病根）；产品 ID 与名称分别走 {@code COALESCE(产品, 作物关联产品)} / {@code COALESCE(产品名, 作物名)}</li>
  *   <li>外购（{@code /purchased}）：{@code cropId}=外购产品 ID，{@code pendingWeight}=参考量（V1 外购无预设待收量，置 0），
  *       {@code productType}=产品类型文案（如「果蔬产品」）</li>
  * </ul>

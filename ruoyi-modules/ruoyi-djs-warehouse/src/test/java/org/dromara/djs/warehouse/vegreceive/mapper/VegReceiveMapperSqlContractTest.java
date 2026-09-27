@@ -19,6 +19,29 @@ import static org.assertj.core.api.Assertions.assertThat;
  * clean-QA 做变异测试时实测：把 {@code addStockByPlotLocation} 的 {@code AND product_id &lt;=&gt; #{productId}}
  * 删掉，404 个用例<b>一个都不红</b>——而那一行正是「同一块地收的第二个产品不会被并进第一个产品的篮子」
  * 唯一的防线。口径靠 SQL 原文守，就得断言 SQL 原文。</p>
+ *
+ * <p><b>这支测试的技法与边界（被独立 QA 打穿三次后固化，别退回弱写法）</b>：它断言的是<b>SQL 文本</b>、
+ * <b>不执行 SQL</b>，所以强度完全取决于断言怎么写：</p>
+ * <ul>
+ *   <li><b>只写裸子串 / 只数总数 = 假防线</b>：{@code contains("group by crop_id, product_id")}
+ *       既挡不住删掉其中一处，也挡不住往后追加维度（{@code … product_id, plot_id} 里
+ *       {@code … product_id} 仍匹配）；{@code countOf(...) == 2} 只数「共有两处」，
+ *       把 {@code FROM plat} 换成 {@code FROM recv} 照样通过。</li>
+ *   <li><b>锚到子句边界 = 更强的防线，但仍不够</b>：
+ *       {@code contains("from plat group by crop_id, product_id )")} 一次钉住<b>来源 + 聚合键 + 边界</b>三样，
+ *       上述两种改写同时被杀。<b>但它只钉「字面 + 邻近」，不绑定 CTE 身份</b>——第九轮 QA 用
+ *       {@code SELF-A-full}（把<b>两处来源整体对调</b>：{@code plat_sum}←{@code FROM recv}、
+ *       {@code recv_sum}←{@code FROM plat}）打穿：两个片段依然各自都在。所以来源还要和 CTE 身份绑定，
+ *       见 {@code sum(platform) as platform from plat …} / {@code sum(loss_today) as loss_today from recv …}
+ *       两条（{@code platform} 只在 {@code plat} 里、{@code loss_today} 只在 {@code recv} 里）。</li>
+ *   <li><b>「字面还在」的语义放宽用否定式断言挡</b>：{@code AND vr.receive_type = 1} 被改成
+ *       {@code AND (… = 1 OR … = 2)} 时，光数出现次数无效，但
+ *       {@code doesNotContain("receive_type = 2")} + 把谓词锚到后随子句就能杀掉它，
+ *       <b>并不需要真连库</b>。（第七轮作者曾把这类洞写成「只能在真连库的集成测试里才拦得住」，
+ *       第八轮 QA 指正为过度悲观——那会变成漏测的借口，已按上述技法真正堵上。）</li>
+ * </ul>
+ * <p>剩余的真实边界：写法完全不同但语义等价的改写（如换成子查询表达同一约束）仍可能漏，
+ * 那类才需要真连库集成测试。故本类的定位是「防手滑改写 / 防复制粘贴串源」，不是形式化证明。</p>
  */
 @Tag("local")
 @Tag("dev")
@@ -71,12 +94,15 @@ class VegReceiveMapperSqlContractTest {
             .contains("hr.record_type = 2")
             .contains("hr.handle_target = 2");
         assertThat(sql).doesNotContain("send_platform_weight");
-        // 聚合键含产品
+        // 聚合键含产品。⚠️ 必须锚到**子句边界** ` )`，不能只锚到列清单（见本类 javadoc「为什么断言必须锚边界」）：
+        // `contains("...coalesce(hr.product_id, cr0.related_product)")` 是**子串**断言，再往后追加一个维度
+        // （如 `, cr0.id`）依然通过 —— 而 plat CTE 多一个维度就会把同一 (作物,产品) 拆成多行，
+        // 下游 `plat_sum` 再 SUM 回去也救不回来（甲方会看到重复/翻倍）。
         assertThat(sql)
-            .contains("group by hr.crop_id, hr.plot_id, coalesce(hr.product_id, cr0.related_product)")
-            .contains("group by crop_id, product_id");
+            .contains("group by hr.crop_id, hr.plot_id, coalesce(hr.product_id, cr0.related_product) )");
         // 收货侧同样按产品分组，否则已入库量会在两个产品之间串
-        assertThat(sql).contains("group by vr.crop_id, vr.plot_id, coalesce(vr.product_id, cr1.related_product)");
+        assertThat(sql)
+            .contains("group by vr.crop_id, vr.plot_id, coalesce(vr.product_id, cr1.related_product) )");
         // 关掉租户行注入后，每层事实表 WHERE 必须自带 tenant_id
         assertThat(sql).contains("hr.tenant_id = '1001'").contains("vr.tenant_id = '1001'");
 
@@ -93,6 +119,65 @@ class VegReceiveMapperSqlContractTest {
         assertThat(sql)
             .as("productId 必须取自聚合键 t.product_id，不能是常量/NULL")
             .contains("t.product_id as productid");
+
+        // 三个展示投影与 productId 同级同命：换成 NULL 都是合法 SQL、跑得通、单测全绿，但 mp 拿到的卡会退化。
+        // 实测（clean-QA 第七轮变异）：只钉 productId 时，把 productName 换成 NULL **无测试报警** ——
+        // 而 mp 卡片标题取 `item.productName || item.cropName`（dock/index.vue:355/:458），productName 一空
+        // 两张卡都回落显示作物名「红薯」，红薯杆那张看不出来，**row55 的病原样复发**。故与 productId 同等对待。
+        assertThat(sql)
+            .as("productName 必须回落到产品名（空则 mp 回落作物名 → 多产品卡同名）")
+            .contains("coalesce(pr.product_name, cr.crop_name) as productname");
+        assertThat(sql)
+            .as("imageOssId / productCode 是卡面缩略图与产品码的来源，同样不能被抹成 NULL")
+            .contains("coalesce(pr.image_oss_id, cr.image_oss_id) as imageossid")
+            .contains("coalesce(pr.product_id, cr.crop_code) as productcode");
+
+        // 两个汇总 CTE 的聚合键：plat_sum（月台量）与 recv_sum（已收）**各自**都要按产品分组。
+        // 演进史（三轮独立 QA 打穿三次，别再退回「数总数」或「裸子串」）：
+        //   ① 裸 `.contains("group by crop_id, product_id")` —— 两处文本相同，删任一处另一处仍满足 → 存活；
+        //   ② `countOf(...) == 2` —— 只数「共有两处」，被 9d 打穿：把 plat_sum 的 `FROM plat` 改成
+        //      `FROM recv`，字面仍是两处、计数不变，但月台量变成了已收量 → pendingWeight ≤ 0
+        //      → mp 自产待收货列表整页空。**这是复制粘贴型自然写法，不是刻意构造。**
+        //   ③ 只锚到列清单（`... product_id`）—— 被 4b 打穿：追加 `, plot_id` 后 `... product_id`
+        //      仍是它的**前缀**，断言照样通过。而 plat_sum 一旦变 (crop,product,plot) 粒度，末尾那句
+        //      `LEFT JOIN recv_sum rs ON (crop_id, product_id)` 会把同一 recv_sum 行按地块数**重复**，
+        //      且每行都减「全地块合计已收」→ mp 同一张卡重复出现、多地块作物的 pending 变负被 `WHERE > 0`
+        //      吞掉而**直接丢卡**（甲方可见）。
+        //   ④ 只锚「来源 + 聚合键 + 边界」—— 被 SELF-A-full 打穿：把**两处来源整体对调**
+        //      （plat_sum←`FROM recv`、recv_sum←`FROM plat`），两个字面片段依然各自都在、断言全绿。
+        //      所以来源必须和 **CTE 身份**绑在一起，见下面两条断言。
+        assertThat(sql)
+            .as("plat_sum 必须取自月台明细 FROM plat，且聚合键恰为 (crop_id, product_id)、不多不少")
+            .contains("from plat group by crop_id, product_id )");
+        assertThat(sql)
+            .as("recv_sum 必须取自已收明细 FROM recv，且聚合键恰为 (crop_id, product_id)、不多不少")
+            .contains("from recv group by crop_id, product_id )");
+        // ④ 的堵法：把「聚合列 → 来源」钉在一起。platform 这个列名只存在于 `plat` CTE
+        //（recv 没有 platform），loss_today 只存在于 `recv` CTE（plat 没有 loss_today），
+        // 因此这两条断言同时约束了 **CTE 身份 + 来源** —— 整体对调后两条必红。
+        assertThat(sql)
+            .as("plat_sum 的 platform 列只能来自 plat CTE（防两处来源整体对调 / SELF-A-full）")
+            .contains("sum(platform) as platform from plat group by crop_id, product_id )");
+        assertThat(sql)
+            .as("recv_sum 的 loss_today 列只能来自 recv CTE（防两处来源整体对调 / SELF-A-full）")
+            .contains("sum(loss_today) as loss_today from recv group by crop_id, product_id )");
+
+        // 只算自产收货：recv CTE 漏了 receive_type=1，外购收货会被算进自产「已入库」，静默改数。
+        // 这条以前没人钉（外购与自产混在同一个 SUM 里，页面上看不出来）。
+        assertThat(countOf(sql, "vr.receive_type = 1"))
+            .as("selectSelfPending 的 recv CTE 必须限定自产收货 receive_type=1")
+            .isEqualTo(1);
+        // M9c 闭合（第八轮 QA：「字面计数挡不住语义放宽」）。光数 `receive_type = 1` 出现 1 次，
+        // 挡不住 `AND (vr.receive_type = 1 OR vr.receive_type = 2)` —— 字面仍在、计数仍 1，
+        // 但外购已被算进自产已入库。补两条**纯文本**断言即可，不必真连库：
+        //   ① 这个 CTE 里根本不该出现 receive_type = 2；
+        //   ② 条件必须仍然**紧贴** GROUP BY（防止被 OR 或额外括号包住）。
+        assertThat(sql)
+            .as("recv CTE 不得出现外购收货 receive_type = 2（M9c：OR 放宽会把外购算进自产）")
+            .doesNotContain("receive_type = 2");
+        assertThat(sql)
+            .as("receive_type = 1 之后必须直接接 GROUP BY，不能被 OR/括号包裹（M9c）")
+            .contains("vr.receive_type = 1 group by vr.crop_id, vr.plot_id");
     }
 
     @Test
@@ -147,5 +232,11 @@ class VegReceiveMapperSqlContractTest {
         assertThat(remain).contains("vrl.is_finish = 1");
         // 只算自产收货：漏了这条，外购收货会被计进自产已入库量
         assertThat(remain).contains("vr.receive_type = 1");
+
+        // 地块明细的 recv CTE 同样要限定自产 —— 详情页的「已收量」漏了它，外购收货会被算成自产已收。
+        // 与 selectSelfPending 那条同源不同语句：旧测试只钉了 remain 一处，plots 这处漏网（变异存活）。
+        assertThat(countOf(plots, "vr.receive_type = 1"))
+            .as("selectInboundPlots 的 recv CTE 必须限定自产收货 receive_type=1")
+            .isEqualTo(1);
     }
 }

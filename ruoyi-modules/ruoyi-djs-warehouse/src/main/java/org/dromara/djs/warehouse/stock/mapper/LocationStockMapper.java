@@ -164,15 +164,27 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
 
     /**
      * 按 {@code plot_id} + {@code location_id} 原子扣减自产果蔬库存（步11 偏差修复 · 决策 a：
-     * 自产果蔬「按地块维度」领用）。
+     * 自产果蔬「按地块维度」领用）。<b>⚠️ legacy 路径，勿据此理解建账模型。</b>
      *
-     * <p>自产果蔬入库时库存按 {@code (plot_id, location)} 维度建账（无 product_id，见
-     * {@code VegReceiveServiceImpl.insertPlotStockRow} / {@code VegReceiveMapper.addStockByPlotLocation}），
-     * 故领用扣减也必须按 plot 维度，镜像 {@link #deductByProductLocation}（product 维度）。</p>
+     * <p>⚠️ <b>本方法按 plot 单键扣减，但建账早已是 (plot, product) 双键</b>：自产果蔬入库实际按
+     * {@code (plot_id, product_id, location_id)} 建账，{@code product_id} 由 {@code resolveProductIdByCrop}
+     * 从作物解析（解析不到才留 NULL）——见 {@code VegReceiveServiceImpl.insertPlotStockRow} /
+     * {@code VegReceiveMapper.addStockByPlotLocation}。早前这里写的「{@code (plot_id, location)} 无
+     * product_id」与实现不符：clean-QA 2026-09-26 查实 staging **全表 239 行** {@code product_id} 均非空
+     * （其中 {@code plot_id} 非空的自产篮 31 行）。
+     * ⚠️ <b>后果不是「扣错一篮」而是「双扣」</b>：本方法的 SQL 是**无 {@code LIMIT} 的 UPDATE**，同
+     * {@code (库位, 地块)} 有两篮（红薯 100 / 红薯杆 50）时扣 10 会**把两篮各扣一次**（{@code affectedRows=2}，
+     * 变 90 / 40），跨产品放大扣减 —— 与下文「已知遗留」段一致（clean-QA 2026-09-26 用 staging 临时表
+     * + 事务回滚实测，零实表写入）。同 {@code (plot, location)} 只有一个篮子时才是等价的。
+     * <b>现行主路径是按源手选</b>（{@code batchId} → {@link #deductStockById}，见
+     * {@code MatFlowServiceImpl#issueVegBatches}）；本方法是无 {@code batchId} 时的 legacy 兜底，
+     * 唯一调用方 {@code MatFlowServiceImpl#pickSelfVeg}。改这里前先读 doc/14「自产果蔬领用路径」。</p>
      *
-     * <p>SQL 在 {@code WHERE} 加 {@code product_stock >= deductQty} —— MySQL 行锁 + 数量校验同步发生，
-     * 并发提交（两个工人同时领同一 plot+location）只有一次 affectedRows > 0。
-     * {@code tenant_id} 由 MP 多租户拦截器在 final SQL 阶段注入；不走 MetaObjectHandler.updateFill，
+     * <p>并发扣减由行锁串行化，{@code product_stock >= deductQty} 防止单行扣成负数。
+     * 第二次提交能否成功取决于第一次扣减后的余额；单篮或多篮都可能再次成功，也可能库存不足。
+     * 本 UPDATE 没有产品维度或 {@code LIMIT}，每次都会扣减所有符合条件的篮子，
+     * 因此行锁不能消除上面的跨产品重复扣减风险。</p>
+     * <p>{@code tenant_id} 由 MP 多租户拦截器在 final SQL 阶段注入；不走 MetaObjectHandler.updateFill，
      * 手工 set {@code update_by} / {@code update_time}。</p>
      *
      * <p><b>{@code third_phase = 0} 的作用</b>（V6 row92）：三期入库在「该作物恰好只有 1 块在种地块」时
@@ -356,8 +368,25 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     /**
      * 自产果蔬「按地块维度」可领用列表（步11 偏差修复 · 决策 a；Agent F mp 物资领用蔬菜 tab 消费）。
      *
-     * <p>口径：以 {@code t_warehouse_location_stock} 中 {@code plot_id 非空 + product_id 为空 + 仍有库存}
-     * 的行为粒度（即自产果蔬建的 plot 维度账），LEFT JOIN 地块表取地块编码、再回填作物名（plot→crop
+     * <p>🔴 <b>本查询现在恒返空（clean-QA 2026-09-26 查实，勿当成可用接口）</b>：条件是
+     * {@code product_id IS NULL}，但自产果蔬入库自 G2 起就按 {@code (plot_id, product_id)} 双键建账，
+     * staging 实测**全表 239 行**（其中 {@code plot_id 非空}的自产篮 **31 行**）的 {@code product_id}
+     * <b>无一为 NULL</b>（{@code product_id IS NULL} 的行数 = 0）→ 本 SQL 命中 <b>0 行</b>。
+     * 对照（条件要写全，别只看前半句）：把本 SQL 的两个条件换成 {@code product_id IS NOT NULL} 单条件
+     * 会命中 <b>239 行</b>；再补上本 SQL 本来就有的 {@code product_stock &gt; 0 OR DATE(update_time) = CURDATE()}，
+     * 命中 **22 行 / 2532.957kg / 12 地块 / 8 产品**；只补 {@code plot_id IS NOT NULL} 则是 **31 行 / 13 地块 / 9 产品**
+     *（其中 stock ≤ 0 的 9 行会被本 SQL 的余量条件滤掉）。<b>但目前不可达、非线上缺陷</b>——消费方
+     * {@code MatFlowServiceImpl#selfVegIssueItems} 只被 mp {@code matPack/issue/index.vue} 的
+     * <b>无 productId</b> 分支调用，而该分支自 row67「去顶部 TAB、入口即形态」后已无导航入口：
+     * {@code matPack/index.vue#openIssue} 恒带 {@code productId}，蔬菜业态改走
+     * {@code issue/batch/index?mode=vegetable}（按篮领用）。即 mp 自产果蔬领用的<b>现行主路径是按源手选</b>
+     * （{@code batchId} → {@link #deductStockById}），本方法与 {@code pickSelfVeg} 一样是 doc/14
+     * 标注的 <b>legacy 兼容</b>。要复活这条路径，必须同时改这里（去掉 {@code product_id IS NULL}、
+     * 改按 (plot, product) 出行）与 {@link #deductByPlotLocation}（带上 product），否则列表依旧空。</p>
+     *
+     * <p>口径（照抄现有 SQL 行为，注意它已过时）：以 {@code t_warehouse_location_stock} 中
+     * {@code plot_id 非空 + product_id 为空 + 仍有库存} 的行为粒度 —— 这就是上面 🔴 说的恒空原因；
+     * LEFT JOIN 地块表取地块编码、再回填作物名（plot→crop
      * 取自 {@code t_warehouse_veg_receive} 该地块自产收货的作物，取最近一条）。一个地块在多个库位有库存
      * → 各出一行（库位维度），便于工人按库位领。返 {@code product_stock > 0} 的行，
      * 外加「今天动过但已扣到 0」（{@code DATE(update_time) = CURDATE()}）的行——库存当天归零仍当日可见、
@@ -365,7 +394,8 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      *
      * <p>VO 复用 {@link MatIssueItemVo}：</p>
      * <ul>
-     *   <li>{@code productId} 置 null（自产果蔬无成品 product_id，领用时按 plotId 维度）；</li>
+     *   <li>{@code productId} 置 null（<b>本 legacy 路径</b>不按产品分篮，领用时按 plotId 维度；注意这与
+     *       实际建账的双键模型不匹配，是同一条 legacy 债）；</li>
      *   <li>新增承载：plotId / plotCode 走 VO 扩展字段（见 VO 注释）；</li>
      *   <li>{@code productName} = 作物名（如「小白菜」）；{@code currentStock} = 该 (plot, location) 库存；
      *       {@code defaultLocationId} = 该行库位（领用时直接用）。</li>
@@ -422,7 +452,8 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     /**
      * 按 {@code plot_id} 取该地块最近一条自产收货的作物 ID（步11；plot→crop→related_product 解析链）。
      *
-     * <p>自产果蔬 plot 维度库存行不存 crop_id，领用时需 plot→crop 反查（取 {@code t_warehouse_veg_receive}
+     * <p>自产果蔬库存行<b>不存 crop_id</b>（{@code t_warehouse_location_stock} 没有该列），领用时需
+     * plot→crop 反查（取 {@code t_warehouse_veg_receive}
      * 该地块 {@code receive_type=1} 最近一条的 crop_id），再 service 层 {@code crop.related_product} 解析
      * 果蔬成品 product_id 写入 pick_out 流水。查不到返 null（service 兜底 product_id=0 + warn，不阻塞领用）。
      * 租户单租户显式 {@code tenant_id='1001'}。</p>

@@ -1261,8 +1261,10 @@ public class VegetableHandleServiceImpl
 
     /**
      * DENGBO-R22 采摘去向[果蔬月台]：写一行 {@code t_warehouse_vegetable_handle} 承载 send_platform_weight，
-     * 使采摘活动直送月台的果蔬进入「自产产品收货」待入库列表（{@code selectSelfPending} 按 send_platform_weight 聚合）、可入库；
-     * 其余处理量字段置 0，复用现有月台待收货/入库/损耗全链路。
+     * 使采摘活动直送月台的果蔬进入「自产产品收货」待入库列表、可入库；其余处理量字段置 0，复用现有月台待收货/入库/损耗全链路。
+     * ⚠️ row55 起 {@code selectSelfPending} 的数据源已改为<b>月台明细</b>（{@code t_warehouse_handle_record}，
+     * 见下段同写的那一行），先按 (作物, 地块, 产品) 计算再汇总卡片。
+     * 本行的 {@code send_platform_weight} 保留处理记录汇总；待收货和日发往月台统计均读取明细。
      *
      * <p>Kevin 2026-07-16 定 A：同写一行 {@code t_warehouse_handle_record}(handle_target=2 发往月台，按 handle_time)，
      * 使采摘直送月台的量计入「发往月台果蔬总重」日统计（{@code WarehouseStatAggregateMapper.sumSendPlatformWeight}

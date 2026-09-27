@@ -49,7 +49,8 @@ import java.util.List;
  * <p>列表 / 详情 / 取消 / 指定猪只 delegate warehouse service；创建即提交走门店专属
  * {@link IStoreDemandService}——不在本 controller 复写状态机 / 编码 / 校验。</p>
  *
- * <p>门店视角隔离：列表按 {@code storeId} 显式过滤（店员在 mp 选门店；V1 不做行级拦截器）。</p>
+ * <p>门店墙开启时，applet 请求上下文与 SQL 拦截器限制授权门店集合；
+ * {@code storeId} 可继续显式选店，省略时仅合计授权门店。关墙保持 V1 全域访问。</p>
  *
  * @author djs
  * @since STR-DEMAND-001

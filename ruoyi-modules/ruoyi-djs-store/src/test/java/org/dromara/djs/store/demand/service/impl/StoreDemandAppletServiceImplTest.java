@@ -150,6 +150,33 @@ class StoreDemandAppletServiceImplTest {
         loginHelperMock.close();
     }
 
+    @Test
+    void createAndBatchRejectForeignStoreBeforeProductLookupOrMutation() {
+        when(storeUserRelationService.isStoreAccessible(any(), eq(22L))).thenReturn(false);
+        DemandManageBo single = new DemandManageBo();
+        single.setStoreId(22L);
+        StoreDemandBatchBo batch = new StoreDemandBatchBo();
+        batch.setStoreId(22L);
+        assertThatThrownBy(() -> service.create(single)).isInstanceOf(ServiceException.class)
+            .hasMessageContaining("无权查看该门店");
+        assertThatThrownBy(() -> service.batchCreate(batch)).isInstanceOf(ServiceException.class)
+            .hasMessageContaining("无权查看该门店");
+        Mockito.verifyNoInteractions(storeService, productInfoMapper, demandManageMapper, storeDemandService);
+    }
+
+    @Test
+    void administratorBypassesBindingGuardButStillRunsBusinessValidation() {
+        when(storeUserRelationService.isStoreAccessible(any(), any())).thenReturn(false);
+        loginHelperMock.when(LoginHelper::isSuperAdmin).thenReturn(true);
+        StoreDemandBatchBo batch = new StoreDemandBatchBo();
+        batch.setStoreId(22L);
+        batch.setDemandDate(LocalDate.now());
+        assertThatThrownBy(() -> service.batchCreate(batch)).isInstanceOf(ServiceException.class)
+            .hasMessageContaining("需求产品不能为空");
+        verify(storeService).assertStoreActive(22L);
+        verify(storeUserRelationService, never()).isStoreAccessible(any(), any());
+    }
+
     // ---------------- dayStatus 阶梯 ----------------
 
     @Test

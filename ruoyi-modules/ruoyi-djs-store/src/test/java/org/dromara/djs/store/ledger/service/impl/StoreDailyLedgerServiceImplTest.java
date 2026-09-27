@@ -6,6 +6,7 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.service.DictService;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.djs.common.store.context.StoreContext;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.common.store.service.IStoreService;
@@ -14,6 +15,8 @@ import org.dromara.djs.store.inventory.mapper.StoreInventoryMapper;
 import org.dromara.djs.store.ledger.domain.StoreDailyLedger;
 import org.dromara.djs.store.ledger.domain.bo.StoreDailyLedgerBatchBo;
 import org.dromara.djs.store.ledger.domain.vo.StoreDailyLedgerCandidateVo;
+import org.dromara.djs.store.ledger.domain.vo.StoreDailyLedgerVo;
+import org.dromara.djs.store.ledger.domain.query.StoreDailyLedgerQuery;
 import org.dromara.djs.store.ledger.mapper.StoreDailyLedgerMapper;
 import org.dromara.djs.store.operation.domain.StoreSaleRecord;
 import org.dromara.djs.store.operation.mapper.StoreSaleRecordMapper;
@@ -56,6 +59,7 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -339,6 +343,7 @@ class StoreDailyLedgerServiceImplTest {
             .thenReturn(Map.of(PORK_PRODUCT_ID, new BigDecimal("2.000")));
         StoreDailyLedgerBatchBo bo = batchBo(BigDecimal.ZERO, new BigDecimal("1.000"));
         StoreDailyLedgerBatchBo.Item item = bo.getItems().get(0);
+        item.setSaleQty(new BigDecimal("2.000"));
         item.setGiftQty(new BigDecimal("0.500"));
         item.setLossQty(new BigDecimal("0.250"));
         // 顾客退货给个非 0 值：甲方给的式子里没有这一项，这里钉住「确实没被算进去」
@@ -357,8 +362,8 @@ class StoreDailyLedgerServiceImplTest {
     }
 
     @Test
-    @DisplayName("V6-R215：猪肉原材料行的销售量服务端重算 —— 前端提交的过期值被覆盖，不进倒算式")
-    void testBatchSave_PorkMaterialSaleRecomputedServerSide() {
+    @DisplayName("页面打包消耗过期时拒绝整批，刷新后可按最新消耗保存")
+    void testBatchSave_StaleConsumptionRejectedThenRefreshed() {
         when(baseMapper.selectList(any())).thenReturn(List.of());
         when(productInfoMapper.selectList(any())).thenReturn(
             List.of(porkProduct()), List.of(porkProduct()), List.of());
@@ -376,15 +381,147 @@ class StoreDailyLedgerServiceImplTest {
         StoreDailyLedgerBatchBo bo = batchBo(BigDecimal.ZERO, BigDecimal.ZERO);
         bo.getItems().get(0).setSaleQty(BigDecimal.ZERO);
 
+        assertThatThrownBy(() -> service.batchSave(bo))
+            .isInstanceOfSatisfying(ServiceException.class, ex -> assertThat(ex.getCode()).isEqualTo(409))
+            .hasMessageContaining("刷新打包消耗");
+        assertNoLedgerOrInventoryWrite();
+
+        bo.getItems().get(0).setSaleQty(new BigDecimal("3.00"));
         service.batchSave(bo);
 
         ArgumentCaptor<StoreDailyLedger> cap = ArgumentCaptor.forClass(StoreDailyLedger.class);
         verify(baseMapper, times(1)).insert(cap.capture());
         StoreDailyLedger row = cap.getValue();
-        assertThat(row.getSaleQty()).as("落库的销售量取追溯码消耗量，不是前端提交的 0").isEqualByComparingTo("3.000");
+        assertThat(row.getSaleQty()).as("按最新追溯消耗落库，比较忽略小数位差异").isEqualByComparingTo("3.000");
         // 退回 = 期初 5 + 入库 0 − 销售 3 − 赠送 0 − 期末 0 − 损耗 0 = 2
         //（若采信前端的 0，这里会是 5 —— 把已经打包卖掉的 3kg 当成退回仓库）
         assertThat(row.getWhReturnQty()).isEqualByComparingTo("2.000");
+    }
+
+    @Test
+    @DisplayName("输入全非负但倒算退回为负时，台账和库存均不写入")
+    void testBatchSave_NegativeDerivedReturnRejected() {
+        when(productInfoMapper.selectById(PORK_PRODUCT_ID)).thenReturn(porkProduct());
+        StoreDailyLedgerBatchBo bo = batchBo(BigDecimal.ZERO, new BigDecimal("8"));
+        bo.getItems().get(0).setReturnWhQty(BigDecimal.ZERO);
+
+        assertThatThrownBy(() -> service.batchSave(bo))
+            .isInstanceOf(ServiceException.class).hasMessageContaining("退回量不能为负数").hasMessageContaining("-3");
+        assertNoLedgerOrInventoryWrite();
+    }
+
+    @Test
+    @DisplayName("第二行倒算失败时，第一行已有台账和库存也不能提前更新")
+    void testBatchSave_LaterInvalidRowPreventsEveryWrite() {
+        ProductInfo second = porkProduct();
+        second.setId(PORK_PRODUCT_ID + 1);
+        when(productInfoMapper.selectById(PORK_PRODUCT_ID)).thenReturn(porkProduct());
+        when(productInfoMapper.selectById(second.getId())).thenReturn(second);
+        StoreDailyLedger existing = new StoreDailyLedger();
+        existing.setId(7001L);
+        existing.setProductId(PORK_PRODUCT_ID);
+        when(baseMapper.selectList(any())).thenReturn(List.of(existing));
+        StoreDailyLedgerBatchBo bo = batchBo(BigDecimal.ZERO, new BigDecimal("2"));
+        bo.setEdit(true);
+        StoreDailyLedgerBatchBo.Item invalid = new StoreDailyLedgerBatchBo.Item();
+        invalid.setProductId(second.getId());
+        invalid.setOpeningQty(BigDecimal.ONE);
+        invalid.setClosingQty(new BigDecimal("2"));
+        bo.setItems(List.of(bo.getItems().get(0), invalid));
+
+        assertThatThrownBy(() -> service.batchSave(bo)).isInstanceOf(ServiceException.class)
+            .hasMessageContaining("退回量不能为负数");
+        assertNoLedgerOrInventoryWrite();
+    }
+
+    @Test
+    @DisplayName("倒算退回恰为零可保存；普通产品的负损耗仍保留既有计算语义")
+    void testBatchSave_ZeroReturnAndOrdinaryNegativeLossAllowed() {
+        when(productInfoMapper.selectById(PORK_PRODUCT_ID)).thenReturn(porkProduct());
+        service.batchSave(batchBo(BigDecimal.ZERO, new BigDecimal("5")));
+        when(productInfoMapper.selectById(PORK_PRODUCT_ID)).thenReturn(porkFinishedProduct());
+        service.batchSave(batchBo(BigDecimal.ZERO, new BigDecimal("8")));
+
+        ArgumentCaptor<StoreDailyLedger> cap = ArgumentCaptor.forClass(StoreDailyLedger.class);
+        verify(baseMapper, times(2)).insert(cap.capture());
+        assertThat(cap.getAllValues().get(0).getWhReturnQty()).isEqualByComparingTo("0");
+        assertThat(cap.getAllValues().get(1).getLossQty()).isEqualByComparingTo("-3");
+    }
+
+    @Test
+    @DisplayName("最新打包消耗不依赖候选字典，也不改写历史详情与历史报表")
+    void testOnsiteConsumption_IndependentOfCandidatesAndHistory() {
+        when(dictService.getAllDictByDictType(any())).thenReturn(Map.of());
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(porkProduct()));
+        when(storeTraceService.sumOnsiteConsumedWeightByMaterial(STORE_ID, DATE))
+            .thenReturn(Map.of(PORK_PRODUCT_ID, new BigDecimal("3")));
+        StoreDailyLedgerVo saved = new StoreDailyLedgerVo();
+        saved.setStoreId(STORE_ID);
+        saved.setProductId(PORK_PRODUCT_ID);
+        saved.setSaleQty(BigDecimal.ZERO);
+        saved.setWhReturnQty(BigDecimal.TEN);
+        when(baseMapper.selectVoList(any())).thenReturn(List.of(saved));
+
+        assertThat(service.queryOnsiteConsumption(STORE_ID, DATE).get(PORK_PRODUCT_ID)).isEqualByComparingTo("3");
+        assertThat(service.queryDetail(STORE_ID, DATE).get(0).getSaleQty()).isEqualByComparingTo("0");
+        StoreDailyLedgerQuery query = new StoreDailyLedgerQuery();
+        query.setProductId(PORK_PRODUCT_ID);
+        StoreDailyLedgerVo history = service.queryHistoryByProduct(query).get(0);
+        assertThat(history.getWhReturnQty()).isEqualByComparingTo("10");
+        assertThat(history.getPorkMaterialRow()).isTrue();
+        assertNoLedgerOrInventoryWrite();
+    }
+
+    @Test
+    @DisplayName("已选A店时查询B店，即使B确有打包消耗也须403且不读取追溯数据")
+    void testOnsiteConsumption_RejectsOtherStoreBeforeReadingTrace() {
+        Long otherStoreId = STORE_ID + 1;
+        when(storeMapper.selectById(otherStoreId)).thenReturn(new Store());
+        when(storeTraceService.sumOnsiteConsumedWeightByMaterial(otherStoreId, DATE))
+            .thenReturn(Map.of(PORK_PRODUCT_ID, new BigDecimal("77")));
+        try (MockedStatic<StoreContext> context = Mockito.mockStatic(StoreContext.class)) {
+            context.when(StoreContext::getStoreId).thenReturn(STORE_ID.toString());
+
+            assertThatThrownBy(() -> service.queryOnsiteConsumption(otherStoreId, DATE))
+                .isInstanceOfSatisfying(ServiceException.class, ex -> assertThat(ex.getCode()).isEqualTo(403))
+                .hasMessageContaining("当前所选门店不一致");
+            verify(storeMapper, never()).selectById(otherStoreId);
+            verifyNoInteractions(storeTraceService);
+        }
+    }
+
+    @Test
+    @DisplayName("经门店拦截器放行的同店查询可读真实消耗，不新增人员绑定限制")
+    void testOnsiteConsumption_AllowsMatchingSelectedStore() {
+        when(storeTraceService.sumOnsiteConsumedWeightByMaterial(STORE_ID, DATE))
+            .thenReturn(Map.of(PORK_PRODUCT_ID, new BigDecimal("3")));
+        try (MockedStatic<StoreContext> context = Mockito.mockStatic(StoreContext.class)) {
+            // wall=false 可切任意门店；选择由现有拦截器放行后，同店参数继续可用。
+            context.when(StoreContext::getStoreId).thenReturn(STORE_ID.toString());
+            assertThat(service.queryOnsiteConsumption(STORE_ID, DATE).get(PORK_PRODUCT_ID))
+                .isEqualByComparingTo("3");
+        }
+    }
+
+    @Test
+    @DisplayName("管理员无选店header仍可按参数查询全域中任意门店")
+    void testOnsiteConsumption_AllowsAdminWithoutSelectedStore() {
+        Long otherStoreId = STORE_ID + 1;
+        when(storeMapper.selectById(otherStoreId)).thenReturn(new Store());
+        when(storeTraceService.sumOnsiteConsumedWeightByMaterial(otherStoreId, DATE))
+            .thenReturn(Map.of(PORK_PRODUCT_ID, new BigDecimal("77")));
+        loginHelperMock.when(LoginHelper::isSuperAdmin).thenReturn(true);
+        try (MockedStatic<StoreContext> context = Mockito.mockStatic(StoreContext.class)) {
+            context.when(StoreContext::getStoreId).thenReturn(null);
+            assertThat(service.queryOnsiteConsumption(otherStoreId, DATE).get(PORK_PRODUCT_ID))
+                .isEqualByComparingTo("77");
+        }
+    }
+
+    private void assertNoLedgerOrInventoryWrite() {
+        verify(baseMapper, never()).insert(any(StoreDailyLedger.class));
+        verify(baseMapper, never()).updateById(any(StoreDailyLedger.class));
+        verifyNoInteractions(storeInventoryMapper);
     }
 
     /**

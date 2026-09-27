@@ -35,11 +35,18 @@ class StoreLineHandlerTest {
         return new StoreLineHandler(props);
     }
 
+    /** 后台旧链路没有 applet 授权集合；Mockito 的默认空 List 会错误模拟成“无门店权限”。 */
+    private MockedStatic<StoreContext> mockUnscopedContext() {
+        MockedStatic<StoreContext> mocked = mockStatic(StoreContext.class);
+        mocked.when(StoreContext::getAccessibleStoreIds).thenReturn(null);
+        return mocked;
+    }
+
     @Test
     @DisplayName("铁律1: 非白名单表 → 一律 ignore（不过滤），即便上下文存在")
     void testIgnore_NotInWhitelist() {
         StoreLineHandler handler = newHandler(List.of("t_store_sale_record"));
-        try (MockedStatic<StoreContext> mocked = mockStatic(StoreContext.class)) {
+        try (MockedStatic<StoreContext> mocked = mockUnscopedContext()) {
             mocked.when(StoreContext::getStoreId).thenReturn("100");
             mocked.when(StoreContext::isIgnore).thenReturn(false);
 
@@ -54,7 +61,7 @@ class StoreLineHandlerTest {
     @DisplayName("铁律2: 白名单表 + 空上下文 → ignore（不过滤），防清空数据")
     void testIgnore_EmptyContext() {
         StoreLineHandler handler = newHandler(List.of("t_store_sale_record"));
-        try (MockedStatic<StoreContext> mocked = mockStatic(StoreContext.class)) {
+        try (MockedStatic<StoreContext> mocked = mockUnscopedContext()) {
             mocked.when(StoreContext::isIgnore).thenReturn(false);
             mocked.when(StoreContext::getStoreId).thenReturn(null);
             assertThat(handler.ignoreTable("t_store_sale_record")).isTrue();
@@ -68,7 +75,7 @@ class StoreLineHandlerTest {
     @DisplayName("铁律3: 白名单表 + 编程式 ignore() 段 → ignore（聚合/跨门店视图看全部门店）")
     void testIgnore_IgnoreFlag() {
         StoreLineHandler handler = newHandler(List.of("t_store_sale_record"));
-        try (MockedStatic<StoreContext> mocked = mockStatic(StoreContext.class)) {
+        try (MockedStatic<StoreContext> mocked = mockUnscopedContext()) {
             mocked.when(StoreContext::getStoreId).thenReturn("100");
             mocked.when(StoreContext::isProgrammaticIgnore).thenReturn(true);
             assertThat(handler.ignoreTable("t_store_sale_record")).isTrue();
@@ -79,7 +86,7 @@ class StoreLineHandlerTest {
     @DisplayName("铁律4(option B): 超管/租管身份不放行 —— 显式选了门店就按该店过滤")
     void testFilter_AdminIdentityDoesNotBypass() {
         StoreLineHandler handler = newHandler(List.of("t_store_sale_record"));
-        try (MockedStatic<StoreContext> mocked = mockStatic(StoreContext.class)) {
+        try (MockedStatic<StoreContext> mocked = mockUnscopedContext()) {
             mocked.when(StoreContext::getStoreId).thenReturn("100");
             // 身份维度的 isIgnore（超管/租管）为 true，但没进编程式 ignore() 段
             mocked.when(StoreContext::isIgnore).thenReturn(true);
@@ -94,7 +101,7 @@ class StoreLineHandlerTest {
     @DisplayName("白名单表 + 有效上下文 + 非放行 → 不 ignore（加 store_id 过滤）；大小写不敏感")
     void testFilter_Active() {
         StoreLineHandler handler = newHandler(List.of("t_store_sale_record"));
-        try (MockedStatic<StoreContext> mocked = mockStatic(StoreContext.class)) {
+        try (MockedStatic<StoreContext> mocked = mockUnscopedContext()) {
             mocked.when(StoreContext::getStoreId).thenReturn("100");
             mocked.when(StoreContext::isIgnore).thenReturn(false);
             assertThat(handler.ignoreTable("t_store_sale_record")).isFalse();
@@ -107,7 +114,7 @@ class StoreLineHandlerTest {
     @DisplayName("非法门店 ID（非数字）→ ignore + 不抛异常，避免污染全部 SQL")
     void testIgnore_NonNumericStoreId() {
         StoreLineHandler handler = newHandler(List.of("t_store_sale_record"));
-        try (MockedStatic<StoreContext> mocked = mockStatic(StoreContext.class)) {
+        try (MockedStatic<StoreContext> mocked = mockUnscopedContext()) {
             mocked.when(StoreContext::isIgnore).thenReturn(false);
             mocked.when(StoreContext::getStoreId).thenReturn("abc");
             assertThat(handler.ignoreTable("t_store_sale_record")).isTrue();
@@ -118,7 +125,7 @@ class StoreLineHandlerTest {
     @DisplayName("getTenantId: 返门店 ID 的 LongValue 表达式")
     void testGetTenantId() {
         StoreLineHandler handler = newHandler(List.of("t_store_sale_record"));
-        try (MockedStatic<StoreContext> mocked = mockStatic(StoreContext.class)) {
+        try (MockedStatic<StoreContext> mocked = mockUnscopedContext()) {
             mocked.when(StoreContext::getStoreId).thenReturn("12345");
             Expression expr = handler.getTenantId();
             assertThat(expr).isInstanceOf(LongValue.class);

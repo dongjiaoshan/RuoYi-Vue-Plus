@@ -152,10 +152,14 @@ public class MatIssueItemVo implements Serializable {
     /**
      * 地块 ID（步11 偏差修复 · 决策 a：自产果蔬「按地块维度」领用专用）。
      *
-     * <p>仅 {@code selectSelfVegIssueItems}（自产果蔬可领用列表）回填非空：自产果蔬库存按
-     * {@code (plot_id, location)} 维度建账（无 product_id），列表项以 plotId 标识。前端蔬菜 tab
-     * 点此卡进领用表单时，把 plotId 回填到 {@code MatPickBo.plotId}（而非 productId），后端走
-     * plot 维度扣减 + pick_out 流水带 plot_id。常规 product 维度领用列表此字段为 null。
+     * <p>仅 {@code selectSelfVegIssueItems}（自产果蔬可领用列表）回填非空；常规 product 维度领用列表为 null。
+     * 前端点此卡进领用表单时，把 plotId 回填到 {@code MatPickBo.plotId}（而非 productId），后端走
+     * plot 维度扣减 + pick_out 流水带 plot_id。</p>
+     *
+     * <p>⚠️ <b>legacy 路径</b>：{@code selectSelfVegIssueItems} 现已恒返空、其消费分支也无导航入口
+     * （见 {@code IMatFlowService#selfVegIssueItems}），现行主路径是按源手选（{@code batchId}）。
+     * 另：「自产果蔬无 product_id」是<b>过时说法</b>——自产入库自 G2 起按 {@code (plot_id, product_id)}
+     * 双键建账。本字段的语义只是「这条 legacy 列表项以 plotId 标识」，不代表篮子上没有 product_id。
      * snowflake，前端按 string 处理。</p>
      */
     private Long plotId;

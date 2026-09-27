@@ -14,6 +14,7 @@ import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.util.LikeEscape;
 import org.dromara.djs.common.store.service.IStoreService;
 import org.dromara.djs.common.store.service.IStoreUserRelationService;
+import org.dromara.djs.common.store.context.StoreContext;
 import org.dromara.djs.plant.cropstat.domain.vo.CropPlotStatVo;
 import org.dromara.djs.plant.cropstat.service.ICropPlotStatService;
 import org.dromara.djs.store.demand.core.StoreDemandViewEnricher;
@@ -530,6 +531,7 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int batchCreate(StoreDemandBatchBo bo) {
+        assertStoreReadable(bo.getStoreId());
         // ① 需求日期不得早于今天（闸的说明见 assertDemandDateNotPast）
         LocalDate demandDate = bo.getDemandDate();
         assertDemandDateNotPast(demandDate);
@@ -605,6 +607,7 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long create(DemandManageBo bo) {
+        assertStoreReadable(bo.getStoreId());
         // `/add` 与 `/batch` 是同一个 controller 上的**两扇门**，闸必须两边都装。
         // 独立验收实测过：闸只装 batch 时，一条 /add 请求可同时打穿三道
         // （猪肉原材料 + 谎报 gift_box 拿到礼盒段单号 + 落在昨天），200 直接落库。
@@ -779,7 +782,8 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         if (demand == null) {
             throw new ServiceException("需求不存在或已删除：" + bo.getId(), 404);
         }
-        if (!storeUserRelationService.isStoreAccessible(currentUserIdSafe(), demand.getStoreId())) {
+        if (!StoreContext.isIgnore()
+            && !storeUserRelationService.isStoreAccessible(currentUserIdSafe(), demand.getStoreId())) {
             throw new ServiceException("无权操作该门店的需求", 403);
         }
         // 只判「是不是待确认」，与到店量无关 —— 不为一句报错文案多打一次到店量聚合。
@@ -811,7 +815,8 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         if (demand == null) {
             throw new ServiceException("需求不存在或已删除：" + id, 404);
         }
-        if (!storeUserRelationService.isStoreAccessible(currentUserIdSafe(), demand.getStoreId())) {
+        if (!StoreContext.isIgnore()
+            && !storeUserRelationService.isStoreAccessible(currentUserIdSafe(), demand.getStoreId())) {
             throw new ServiceException("无权操作该门店的需求", 403);
         }
         // 与改量/删行同一道闸（甲方 row70 第 4 条：只有「待确认」的需求门店才能动）。
@@ -838,13 +843,15 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
      * （ADR-0018 V1 全员可跨店），所以这道闸<b>今天是 no-op</b>；装上是为了开墙那天读接口不至于仍然全裸，
      * 而不是等开墙时再回来补三处。</p>
      *
-     * <p>{@code storeId} 为空时不拦：各调用方对「门店必填」有自己的报错文案，这里不抢。</p>
+     * <p>{@code storeId} 为空的汇总读取由 applet 请求范围 + SQL 拦截器收窄到授权门店集合；
+     * 写入参数的必填校验仍由各业务入口负责。</p>
      */
     private void assertStoreReadable(Long storeId) {
         if (storeId == null) {
             return;
         }
-        if (!storeUserRelationService.isStoreAccessible(currentUserIdSafe(), storeId)) {
+        if (!StoreContext.isIgnore()
+            && !storeUserRelationService.isStoreAccessible(currentUserIdSafe(), storeId)) {
             throw new ServiceException("无权查看该门店的需求", 403);
         }
     }

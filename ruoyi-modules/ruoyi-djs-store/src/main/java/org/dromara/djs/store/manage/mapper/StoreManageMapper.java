@@ -24,9 +24,13 @@ import java.util.List;
  *       取消/删除的单不算下过。</li>
  *   <li><b>销售量</b> = 门店盘点记录的销售数量 + 赠送量 → {@code t_store_daily_ledger.sale_qty + gift_qty}。</li>
  *   <li><b>退回量</b> = 门店退回记录的退回量 → {@code t_store_return}，方向锁
- *       {@code store_to_warehouse}（门店退回仓库）。这与台账里那一列<b>叫「退回量」的</b>
- *       {@code wh_return_qty} 同口径；{@code customer_to_store} 是「退货量」（顾客退给门店），
- *       是另一件事，不进本统计。</li>
+ *       {@code store_to_warehouse}（门店退回仓库），**按退回日期归月、与台账无关**。
+ *       ⚠️ 它与台账里那个<b>同名</b>的 {@code wh_return_qty} <b>不再同口径</b>（V6-R215 起）：
+ *       台账里<b>猪肉原材料行</b>自 R215 起保存的是「期初+入库−销售−赠送−期末−损耗」的<b>倒算残差</b>
+ *       （⚠️ 措辞限定在「R215 起」：{@code V202609151020} 明确 {@code wh_return_qty} <b>不动</b>，
+ *       所以 R215 之前的历史行仍是被原样保留的真实退回量，不适用本句）；
+ *       只有<b>其余行</b>才始终是退回模块的真实退回量。本卡片统计始终取 {@code t_store_return} 的实际退回，
+ *       不受 R215 影响、也不受历史行语义影响；{@code customer_to_store} 是「退货量」（顾客退给门店），是另一件事，不进本统计。</li>
  * </ul>
  *
  * <h3>品类数</h3>

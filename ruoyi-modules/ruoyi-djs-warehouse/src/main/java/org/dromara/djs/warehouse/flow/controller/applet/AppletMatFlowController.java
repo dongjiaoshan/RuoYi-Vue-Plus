@@ -122,9 +122,15 @@ public class AppletMatFlowController extends BaseController {
     /**
      * 自产果蔬「按地块维度」可领用列表（步11 偏差修复 · 决策 a；蔬菜 tab 自产果蔬数据源）。
      *
-     * <p>自产果蔬库存按 {@code (plot_id, location)} 建账（无 product_id），常规 {@link #issueItems}
-     * 按 product_id join 列不到。本端点以 plot 维度列出，VO 回填 {@code plotId} / {@code plotCode}
-     * （productId 为 null），前端点卡进领用表单时把 plotId 回填到 {@code MatPickBo.plotId}。</p>
+     * <p>⚠️ <b>legacy 端点</b>：底层 {@code selectSelfVegIssueItems} 按 {@code product_id IS NULL} 过滤，
+     * 而自产果蔬自 G2 起按 {@code (plot_id, product_id)} 双键建账（staging 实测**全表 239 行**、其中
+     * {@code plot_id} 非空的自产篮 **31 行**，{@code product_id} 无一为 NULL）→ <b>恒返空</b>；且其 mp 消费分支自 row67「去顶部 TAB、
+     * 入口即形态」后已无导航入口，蔬菜业态改走 {@code issue/batch/index?mode=vegetable}（按源手选）。
+     * 详见 {@code IMatFlowService#selfVegIssueItems} 与 doc/14「自产果蔬领用路径」。</p>
+     *
+     * <p>以下为原始设计描述（建账模型一句已过时）：常规 {@code issueItems} 按 product_id join 列不到
+     * plot 篮，本端点以 plot 维度列出，VO 回填 {@code plotId} / {@code plotCode}，前端点卡进领用表单时
+     * 把 plotId 回填到 {@code MatPickBo.plotId}。</p>
      *
      * @param locationId 库位 ID（可空，chip 选中态过滤；snowflake string 防截断，service 内 parse）
      */

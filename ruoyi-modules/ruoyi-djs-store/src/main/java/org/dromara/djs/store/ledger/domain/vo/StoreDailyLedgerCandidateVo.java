@@ -20,9 +20,11 @@ import java.math.BigDecimal;
  * </ul>
  * 并集去重；同一产品同时命中 inbound 与 stock 时合并为一行（category=stock，保留 inbound 的 inboundQty）。</p>
  *
- * <p>预填量：{@code openingQty}（库存表结存，只读）、{@code returnWhQty}（退回模块当日该产品聚合，只读）、
- * {@code saleQty}（销售流水当日聚合）、{@code returnSaleQty}（顾客退货当日聚合）。
- * 期末 / 赠送 / 销售前端手填默认 0；损耗由后端按公式计算不在候选。</p>
+ * <p>预填量：{@code openingQty}（库存表结存，只读）、{@code saleQty}（销售流水当日聚合）、
+ * {@code returnSaleQty}（顾客退货当日聚合）；{@code returnWhQty} 分两路 —— 非猪肉原材料行取退回模块当日该产品聚合；
+ * 猪肉原材料行（V6-R215）按 {@code opening + inbound − sale} 倒算残差。
+ * 期末 / 赠送 / 销售前端手填默认 0；<b>非猪肉原材料行</b>的损耗由后端按公式计算、不在候选；
+ * 猪肉原材料行（V6-R215）的损耗改为前端手填。</p>
  *
  * @author djs
  * @since STORE-LEDGER-001

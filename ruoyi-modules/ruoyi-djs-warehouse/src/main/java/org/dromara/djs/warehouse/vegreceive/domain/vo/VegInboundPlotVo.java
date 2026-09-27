@@ -12,13 +12,18 @@ import java.math.BigDecimal;
  * <p>对齐 mp 契约 {@code miniapp/src/api/warehouse/vegReceive.ts#VegInboundPlotVo}：
  * {@code plotId / plotCode / inboundStatus / pendingWeight / actualWeight}。</p>
  *
- * <p>数据来源：某作物下、毛菜处理"发往月台"（{@code vegetable_handle.send_platform_weight}）按地块聚合，
- * 左联本表已入库 self 量：</p>
+ * <p>数据来源：某作物（可选按产品收窄）下、<b>月台明细</b>
+ * （{@code t_warehouse_handle_record} 的 {@code record_type=2 且 handle_target=2} 的 {@code record_weight}）按地块聚合，
+ * 左联已入库 self 量（{@code receive_type=1}）与已结算损耗（{@code is_finish=1} 的 {@code loss_weight}）：</p>
  * <ul>
- *   <li>{@code pendingWeight} = 该地块月台量 − 已入库量（待入果蔬间）</li>
- *   <li>{@code actualWeight} = 该地块已入库量（{@code SUM(veg_receive.weight)} where receiveType=1）</li>
- *   <li>{@code inboundStatus}：actual=0 → pending；0&lt;actual&lt;月台量 → processing；actual≥月台量 → done</li>
+ *   <li>{@code pendingWeight} = 该地块月台量 − 已入库量 − 已结算全历史损耗（刚送到、当天未标记完成的地块损耗恒 0）</li>
+ *   <li>{@code actualWeight} = 该地块已入库量（{@code SUM(veg_receive.weight)} where {@code receiveType=1}）</li>
+ *   <li>{@code lossWeight} = 该地块<b>当天</b>入库完成结算的损耗（{@code DATE(receive_time)=CURDATE()}），与列表卡口径一致；
+ *       参与 {@code pending} 判定的是<b>全历史</b>损耗（{@code loss_all}），两者刻意拆开</li>
+ *   <li>{@code inboundStatus}：真实待入库量 ≤ 0 → done；&gt; 0 且 actual=0 → pending；其余 → processing</li>
  * </ul>
+ *
+ * <p>⚠️ <b>不是</b> {@code vegetable_handle.send_platform_weight} 汇总列 —— 那列按作物、多产品会互串（row55 的病根）。</p>
  *
  * @author djs
  * @since FIX-WMS-VEGRECEIVE-001

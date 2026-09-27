@@ -70,6 +70,10 @@ public class StoreLineHandler implements TenantLineHandler {
         if (!isStoreTable(tableName)) {
             return true;
         }
+        // applet 授权集合是访问上限；空集合也须过滤，不能落入“空上下文不过滤”。
+        if (StoreContext.getAccessibleStoreIds() != null) {
+            return false;
+        }
         // 铁律 2：编程式 ignore() 块放行（聚合 / 跨门店视图主动跨店）。
         // 注意：超管 / 租管不再在此自动放行——见铁律 4（option B：显式选店优先于身份）。
         if (StoreContext.isProgrammaticIgnore()) {

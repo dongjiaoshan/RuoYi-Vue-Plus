@@ -16,14 +16,17 @@ import java.util.Date;
  *
  * <p>对应表 {@code t_warehouse_veg_receive}（V202606200900 建）。记录"果蔬月台收货入库"动作，两类：</p>
  * <ul>
- *   <li>{@code receiveType=1} 自产：把上游毛菜处理"发往月台"（{@code vegetable_handle.send_platform_weight}）
- *       的果蔬入到保鲜室 {@code location_stock}（按 {@code plotId} 维度，库存三维互斥之一）</li>
+ *   <li>{@code receiveType=1} 自产：把上游毛菜处理"发往月台"的果蔬入到保鲜室 {@code location_stock}
+ *       （按 {@code plotId} + {@code productId} 双维 —— row55 起收货按产品聚合，同一地块的多个产品各走各的篮子）</li>
  *   <li>{@code receiveType=2} 外购：外购果蔬产品验收入库（按 {@code productId} 维度 + {@code supplierId}）</li>
  * </ul>
  *
  * <h3>自产"待入库量"闭环（不造假）</h3>
- * <p>待入库 = {@code SUM(vegetable_handle.send_platform_weight)} − {@code SUM(本表 receiveType=1 已入库 weight)}，
- * 按 crop / plot 聚合。{@link org.dromara.djs.warehouse.vegreceive.mapper.VegReceiveMapper} 的聚合查询实现。</p>
+ * <p>待入库 = <b>月台明细</b>（{@code t_warehouse_handle_record} 的 {@code record_type=2 且 handle_target=2} 的
+ * {@code record_weight} 之和）− 本表 {@code receiveType=1} 已入库 weight − 已结算损耗（{@code is_finish=1} 的
+ * {@code loss_weight}），按 crop / plot / <b>product</b> 聚合。⚠️ 数据源<b>不是</b>
+ * {@code vegetable_handle.send_platform_weight} 汇总列（那列按作物，多产品会并成一张卡 —— row55 的病根）。
+ * {@link org.dromara.djs.warehouse.vegreceive.mapper.VegReceiveMapper} 的聚合查询实现。</p>
  *
  * <h3>跨表事务</h3>
  * <p>由 {@link org.dromara.djs.warehouse.vegreceive.service.impl.VegReceiveServiceImpl} 维护：
@@ -75,7 +78,13 @@ public class VegReceive extends TenantEntity {
     private String plotCode;
 
     /**
-     * 外购对应产品 ID（FK → {@code t_warehouse_product_info.id}；自产为 NULL，库存按 plotId 维度）。
+     * 产品 ID（FK → {@code t_warehouse_product_info.id}）。
+     *
+     * <p>⚠️ <b>自产也落产品</b>（row55 起），不是「自产为 NULL」：自产提交时由 service 解析本次收的是
+     * 哪个产品写入（{@code VegReceiveServiceImpl#inbound} → {@code receive.setProductId(...)}），
+     * 否则下一次算「已入库」时认不出这笔收的是哪个产品，同一地块多个产品的待入库量会互相串
+     * （红薯杆收了 50，红薯的待入库也跟着少 50）。库存按 {@code plotId} + {@code productId}
+     * <b>双键</b> UPSERT，不是单向的 {@code plotId} 维度。外购走 {@code productId} 维度 + {@code supplierId}。</p>
      */
     private Long productId;
 

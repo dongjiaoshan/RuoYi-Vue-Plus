@@ -60,6 +60,16 @@ public class StoreDailyLedgerVo implements Serializable {
     /** 产品品类页签（DENGBO-R10）：pork=猪肉 / veg=果蔬 / other=其他。详情按此分 TAB。 */
     private String belongTab;
 
+    /**
+     * 是不是「猪肉原材料行」（{@code belong_type ∈ (pork, white_bar)} 且 {@code product_attr=2}，V6-R215）。
+     *
+     * <p>后端用与落库<b>同一个判据</b> {@code isPorkRawMaterial} 下发，前端据它决定「期末+损耗手填、退回量倒算」
+     * 还是「期末手填、损耗倒算」。<b>必须由后端下发</b>：改造前前端在「历史已盘、今日不在候选」那条分支
+     * 把它写死 {@code false}，一旦该产品因字典少配 / Redis 字典缓存为空而掉出候选，页面就按旧公式渲染并提交，
+     * 而后端查 DB 走新公式 → **页面与落库不一致**（row215-F3，潜伏）。</p>
+     */
+    private Boolean porkMaterialRow;
+
     @ExcelProperty(value = "盘点日期")
     private LocalDate ledgerDate;
 

@@ -21,8 +21,8 @@ import java.util.List;
  * （sa-token perm 拦截 403），故 mp 走独立 applet 端点 + {@code @SaCheckLogin}，
  * 复用同一 {@link IStoreDashboardService}（克隆 W22-006 applet 范式）。</p>
  *
- * <p>门店隔离走显式 {@code storeId} 入参（店员在 mp 选门店；V1 不做行级拦截器，
- * 克隆 AppletStoreDemandController 范式）；null 时按数据权限范围聚合。</p>
+ * <p>门店墙开启时，applet 请求上下文与 SQL 拦截器按授权门店集合过滤；
+ * 显式 {@code storeId} 必须有权限，null 时合计授权门店。关墙 / 管理员保持全域视角。</p>
  *
  * @author djs
  * @since STR-DASH-001

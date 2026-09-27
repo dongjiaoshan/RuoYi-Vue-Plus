@@ -190,7 +190,8 @@ class VegReceiveServiceImplTest {
         stubCommonInbound();
         when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), any(), eq(9001L)))
             .thenReturn(0);
-        // 作物未配 related_product（现网多为 NULL）
+        // 作物未配 related_product —— **构造的边界场景**：staging 实测 103 个作物 related_product 全配
+        //（no_related=0），故这条走的是「数据没配」的兜底路径，不是现网常态（旧注释写「现网多为 NULL」，被 DB 证伪）
         CropInfo crop = new CropInfo();
         crop.setId(12001L);
         crop.setRelatedProduct(null);

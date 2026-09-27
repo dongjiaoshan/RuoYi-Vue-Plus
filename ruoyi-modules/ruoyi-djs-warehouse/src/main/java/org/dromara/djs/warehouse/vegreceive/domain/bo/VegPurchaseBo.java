@@ -14,14 +14,18 @@ import java.math.BigDecimal;
  * <p>对齐 mp 契约 {@code miniapp/src/api/warehouse/vegReceive.ts#VegPurchaseBody}：
  * {@code cropId / weight / supplier / locationId}（+ {@code operatorId?} 入库人）。</p>
  *
- * <p>语义说明：外购果蔬即"外购产品"（{@code product_info.product_type=2}），契约复用字段
+ * <p>语义说明：外购收货只认「<b>食材原材料</b> + <b>显式开了外购</b>」的产品 ——
+ * {@code product_type=1}（食材，<b>不是</b> {@code 2} 的外购商品；饲料/药品/肥料/农药/包材等生产资料走 admin
+ * 采购入库，不在此现场收货）且 {@code product_attr=2}（原材料）且 {@code is_buy_out=1}（admin 产品配置里的
+ * 「支持外购」，未开的如丝瓜 {@code is_buy_out=0} 不进选品）。判据原文见
+ * {@code VegReceiveServiceImpl#requirePurchaseProduct}。契约复用字段
  * {@code cropId} 承载<b>产品 ID</b>（dock 外购列表的 cropId 填的是 product.id）；service 内当 productId 处理。
  * {@code supplier} 承载供应商<b>业务短码</b>（mp SupplierPicker 选中后发 supplierCode），
  * service resolve 成 supplierId + supplierName。</p>
  *
  * <h3>Service 同事务</h3>
  * <ol>
- *   <li>校验产品（product_type=2 外购）存在；resolve supplier</li>
+ *   <li>校验产品（{@code product_type=1 且 product_attr=2 且 is_buy_out=1}）存在；resolve supplier</li>
  *   <li>INSERT {@code t_warehouse_veg_receive}（receiveType=2）</li>
  *   <li>UPSERT {@code location_stock}（按 productId 维度行锁增量 / 不存在 INSERT，复用 LocationStockMapper）</li>
  *   <li>INSERT {@code stock_flow}（flow_type=veg_purchase_in, inout_type=IN, supplierId 关联）</li>

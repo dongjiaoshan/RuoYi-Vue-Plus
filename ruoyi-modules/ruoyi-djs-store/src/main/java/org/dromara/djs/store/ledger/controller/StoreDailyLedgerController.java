@@ -24,8 +24,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 门店经营流水盘点台账 admin Controller（STORE-LEDGER-001，原型「门店管理>门店盘点」重建）。
@@ -56,6 +58,14 @@ public class StoreDailyLedgerController extends BaseController {
     public R<List<StoreDailyLedgerCandidateVo>> candidates(@RequestParam Long storeId,
                                                            @RequestParam(required = false) LocalDate ledgerDate) {
         return R.ok(service.listCandidates(storeId, ledgerDate));
+    }
+
+    /** 盘点编辑使用的最新现场打包消耗量；原材料不在当前候选集时仍可查询。 */
+    @SaCheckPermission("djs:store:check:add")
+    @GetMapping("/onsite-consumption")
+    public R<Map<Long, BigDecimal>> onsiteConsumption(@RequestParam Long storeId,
+                                                     @RequestParam(required = false) LocalDate ledgerDate) {
+        return R.ok(service.queryOnsiteConsumption(storeId, ledgerDate));
     }
 
     /** 当日盘点整表批量提交（一次落某门店某日多产品行，service 算 closing_qty）。 */

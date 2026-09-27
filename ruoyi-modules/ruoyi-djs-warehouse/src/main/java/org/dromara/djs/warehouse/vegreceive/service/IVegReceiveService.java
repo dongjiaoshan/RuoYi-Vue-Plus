@@ -18,8 +18,9 @@ import java.util.List;
  *   <li>自产（{@code receiveType=1}）：果蔬来自上游毛菜处理"发往月台"量，row55 起按
  *       <b>{@code productId + plotId} 双键</b>入 {@code location_stock}，入库前按 (作物, 产品, 地块)
  *       校验剩余可入量防超量。</li>
- *   <li>外购（{@code receiveType=2}）：自产食材原料 SKU（{@code product_type=1 且 product_attr=2}，
- *       <b>不是</b> {@code product_type=2}，口径见 {@code VegReceiveMapper.selectPurchasedPending}），
+ *   <li>外购（{@code receiveType=2}）：自产食材原料 SKU（{@code product_type=1 且 product_attr=2 且
+ *       is_buy_out=1}，<b>不是</b> {@code product_type=2}，口径见 {@code VegReceiveMapper.selectPurchasedPending}
+ *       与 {@code VegReceiveServiceImpl#requirePurchaseProduct}），
  *       按 {@code productId} 维度入库，复用 {@code LocationStockMapper.addByProductLocation}。</li>
  * </ul>
  *
@@ -59,7 +60,8 @@ public interface IVegReceiveService {
     List<VegInboundPlotVo> listInboundPlots(Long cropId, Long productId);
 
     /**
-     * 自产果蔬入库提交（同事务：校验剩余可入量 → INSERT 收货记录 → UPSERT plot 维度库存 → INSERT 入库流水）。
+     * 自产果蔬入库提交（同事务：校验剩余可入量 → INSERT 收货记录 →
+     * UPSERT <b>(plotId, productId) 双键</b>库存 → INSERT 入库流水）。
      *
      * <p>超量（本次 weight &gt; 该 (crop, product, plot) 剩余可入量）抛
      * {@link org.dromara.common.core.exception.ServiceException}，不允许凭空入库。</p>

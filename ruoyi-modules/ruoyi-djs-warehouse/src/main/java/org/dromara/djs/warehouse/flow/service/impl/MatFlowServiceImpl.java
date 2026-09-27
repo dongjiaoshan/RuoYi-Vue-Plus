@@ -240,7 +240,12 @@ public class MatFlowServiceImpl implements IMatFlowService {
             return pickByBatch(bo);
         }
         // 自产果蔬「按地块维度」领用（步11 偏差修复 · 决策 a）：plotId 非空时走 plot 维度扣减分支。
-        // 自产果蔬入库时库存按 (plot_id, location) 建账（无 product_id），故领用也按 plot 扣减；
+        // ⚠️ legacy 分支：自产果蔬入库自 G2 起按 (plot_id, product_id) 双键建账，**不是**「无 product_id」
+        // （clean-QA 2026-09-26 实测 staging 全表 239 行、其中 plot_id 非空的自产篮 31 行，product_id 无一为 NULL），故这里按
+        // plot 单键扣减时，deductByPlotLocation 是一条**无 LIMIT 的 UPDATE**，会把同 (库位,地块) 的**每一篮都扣一次**
+        // （跨产品双扣、库存被放大扣减；不是「扣错一篮」）；且上游列表 selfVegIssueItems 现已恒返空、
+        // 无导航入口。现行主路径是「按源手选」（bo.batchId 非空 → pickByBatch / deductStockById）。
+        // 复活本分支前先读 doc/14「自产果蔬领用路径」，并同步修 deductByPlotLocation + selectSelfVegIssueItems。
         // pick_out 流水带 plot_id，且 product_id 走 crop.related_product 解析（与 admin 打包统计契约）。
         if (bo.getPlotId() != null) {
             return pickSelfVeg(bo);
@@ -1080,8 +1085,10 @@ public class MatFlowServiceImpl implements IMatFlowService {
      * <p>统一目标模型下自产果蔬主路径 = {@code pickByProduct} 经 {@link #isVegSelfMaterial} 判定后走
      * {@link #consumeVegBaskets}（product_id 维度 FIFO，篮带 plot_id 标签到 inhouse）。两条入库路径
      * （直接入库 / 月台中转）都入 {@code product_id+plot_id 双键篮}，故 product 维度领用足够覆盖。
-     * 本方法仅在 mp 显式传 {@code plotId}（旧地块维度入口、无 product_id）时兜底命中，按 plot 维度扣账，
-     * 保留与历史 plot-only 库存行兼容；新代码不应再走此入口。</p>
+     * 本方法仅在 mp 显式传 {@code plotId} 时兜底命中（旧地块维度入口，<b>请求体不带 productId</b>——
+     * 注意这<u>不代表篮子没有 product_id</u>：自产篮是 {@code product_id+plot_id} 双键，上面刚说过），
+     * 按 plot 单键扣账，保留与历史 plot-only 库存行兼容；新代码不应再走此入口，且上游列表
+     * {@code selectSelfVegIssueItems} 现已恒返空（见 {@code IMatFlowService#selfVegIssueItems}）。</p>
      *
      * <p>三步同事务：</p>
      * <ol>
@@ -1186,7 +1193,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
     /**
      * 自产果蔬 plot→crop→{@code crop.related_product} 解析果蔬成品 product_id。
      *
-     * <p>自产果蔬 plot 维度库存行不存 crop_id，先按 plot 反查最近一条自产收货的 crop_id，再取
+     * <p>自产果蔬库存行<b>不存 crop_id</b>，先按 plot 反查最近一条自产收货的 crop_id，再取
      * {@code crop.related_product}（作物↔果蔬成品映射，与 {@code VegetableHandleServiceImpl.resolveProductIdByCrop}
      * 同规则）。任一环节缺失（无收货记录 / 作物已删 / 未配 related_product）→ 返 0 + warn，不阻塞领用
      * （与步5/步6 数据治理同源；product_id=0 不影响领用本身，只是 admin 打包 vegetable 统计 join 不命中）。</p>

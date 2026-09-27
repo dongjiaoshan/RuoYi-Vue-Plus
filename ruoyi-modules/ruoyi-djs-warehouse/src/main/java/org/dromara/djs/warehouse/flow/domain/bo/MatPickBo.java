@@ -33,18 +33,27 @@ public class MatPickBo {
     /**
      * 产品 ID（mp 端从 ProductPicker 选）。
      *
-     * <p>外购果蔬 / 包材等 product 维度领用必填；自产果蔬（{@code plotId} 非空）按地块维度领用时
-     * 可空（库存按 plot 建账，无 product_id）—— 见 {@link #plotId}。{@code @NotNull} 已移除，
+     * <p>外购果蔬 / 包材等 product 维度领用必填；自产果蔬（{@code plotId} 非空）走 legacy plot 维度
+     * 领用时<b>可空</b>—— 见 {@link #plotId}。{@code @NotNull} 已移除，
      * 改由 service 层校验「productId 与 plotId 至少其一」。</p>
+     *
+     * <p>⚠️ 注意不要由「可空」推出「自产篮没有 product_id」：自产果蔬入库自 G2 起就按
+     * {@code (plot_id, product_id)} 双键建账，篮上是带 {@code product_id} 的（staging 实测**全表 239 行**
+     * 无一 {@code product_id} 为 NULL，其中 {@code plot_id} 非空的自产篮 31 行）；这里可空只是因为 legacy
+     * plot 单键领用路径不带它。</p>
      */
     private Long productId;
 
     /**
      * 地块 ID（可空）。
      *
-     * <p>非空 = 自产果蔬「按地块维度」领用（步11 偏差修复 · 决策 a）：自产果蔬入库时库存按
-     * {@code (plot_id, location)} 维度建账（无 product_id，见 {@code VegReceiveServiceImpl.insertPlotStockRow}），
-     * 故领用也必须按 plot 维度扣减。service 此时走 {@code deductByPlotLocation}，并把 plotId 写入
+     * <p>非空 = 自产果蔬「按地块维度」领用（步11 偏差修复 · 决策 a）—— <b>⚠️ legacy 路径</b>：
+     * 消费方 {@code selfVegIssueItems} 现已恒返空且无导航入口（见
+     * {@link org.dromara.djs.warehouse.flow.service.IMatFlowService#selfVegIssueItems}），现行主路径是
+     * {@link #batchId} 的「按源手选」。此分支的扣减走 {@code deductByPlotLocation}（<b>plot 单键</b>），
+     * 而入库实际是 {@code (plot, product)} 双键（见 {@code VegReceiveServiceImpl.insertPlotStockRow}），
+     * 且 {@code deductByPlotLocation} 是**无 {@code LIMIT} 的 UPDATE**、会把同 {@code (库位, 地块)} 的
+     * **每一篮都扣一次**（跨产品双扣、库存被放大扣减）—— 复活该路径前必须同时修这两处。service 此时把 plotId 写入
      * pick_out 流水的 {@code plot_id}；同时按 plot→crop→{@code crop.related_product} 解析果蔬成品
      * product_id 写入流水（与 admin 打包 {@code belong_type='vegetable'} 统计 join 的契约）。</p>
      *

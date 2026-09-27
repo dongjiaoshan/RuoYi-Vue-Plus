@@ -78,7 +78,7 @@ public class DjsStoreWebConfig implements WebMvcConfigurer {
                 List<InnerInterceptor> current = mpInterceptor.getInterceptors();
                 List<InnerInterceptor> rebuilt = new ArrayList<>(current.size() + 1);
                 TenantLineInnerInterceptor storeInterceptor =
-                    new TenantLineInnerInterceptor(new StoreLineHandler(storeProperties));
+                    new StoreScopeInnerInterceptor(new StoreLineHandler(storeProperties));
                 boolean inserted = false;
                 for (InnerInterceptor inner : current) {
                     rebuilt.add(inner);

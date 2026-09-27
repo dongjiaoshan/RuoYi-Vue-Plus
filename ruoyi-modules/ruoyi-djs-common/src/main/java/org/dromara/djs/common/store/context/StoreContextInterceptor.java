@@ -8,13 +8,17 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.store.service.IStoreUserRelationService;
 import org.springframework.web.servlet.HandlerInterceptor;
+import org.springframework.web.servlet.HandlerMapping;
+import org.springframework.web.util.UrlPathHelper;
+
+import java.util.List;
 
 /**
  * 门店上下文拦截器（STORE-PERM-001）。
  *
  * <p>{@link #preHandle} 读请求头 {@code Current-Store-Id} → 校验 → 写入 {@link StoreContext}。
- * 上下文存于 Sa-Token 请求级 {@code SaStorage}，请求结束自动销毁，<b>无需</b> afterCompletion 清理
- * （区别于裸 ThreadLocal）。</p>
+ * applet 请求另取授权门店集合，不要求单店 header。两种上下文均存于 Sa-Token 请求级
+ * {@code SaStorage}，并在 afterCompletion 清理。</p>
  *
  * <h3>跨门店访问拦截（spec：绕过前端校验后端拦截返回权限错误）</h3>
  * <p>非超管账号请求头携带的门店必须在「当前登录人有权限门店」集合内
@@ -41,12 +45,33 @@ public class StoreContextInterceptor implements HandlerInterceptor {
      */
     private static final String STORE_DOMAIN_PREFIX = "/djs/store/";
 
+    private static final String APPLET_STORE_DOMAIN_PREFIX = "/djs/applet/store/";
+
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
+        // 按 MVC 实际匹配的路由判域；原始 URI 的百分号编码不能成为绕过权限的另一条路径。
+        Object matchedPattern = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
+        String route = matchedPattern == null
+            ? UrlPathHelper.defaultInstance.getPathWithinApplication(request) : matchedPattern.toString();
+        if (route.startsWith(APPLET_STORE_DOMAIN_PREFIX)) {
+            // applet 用参数 / 单据归属选店，不强制 header；省略参数时 SQL 按全部授权门店聚合。
+            // /applet/store/return 是仓库跨店接收端，不在此范围内。
+            List<Long> accessible = storeUserRelationService.currentAccessibleStoreIds();
+            String requestedStore = request.getParameter("storeId");
+            if (accessible != null && StringUtils.isNotBlank(requestedStore)) {
+                Long requestedId = parseStoreId(requestedStore);
+                if (requestedId == null || !accessible.contains(requestedId)) {
+                    throw new ServiceException("无该门店操作权限，请重新选择门店", 403);
+                }
+            }
+            StoreContext.setStoreId(null);
+            StoreContext.setAccessibleStoreIds(accessible);
+            return true;
+        }
         // 门店上下文只作用于门店业务域 /djs/store/**：其余域（仓库 /djs/warehouse/** 等跨门店查共享表
         // t_warehouse_demand_manage / t_warehouse_product_inhouse）不注入上下文 → storeId 恒空 →
         // StoreLineHandler 不按门店过滤 → 照常看全部门店（option B：门店切换器不误伤仓库聚合视图）。
-        if (!request.getRequestURI().startsWith(STORE_DOMAIN_PREFIX)) {
+        if (!route.startsWith(STORE_DOMAIN_PREFIX)) {
             return true;
         }
         String storeId = request.getHeader(StoreContext.HEADER_STORE_ID);
@@ -72,6 +97,13 @@ public class StoreContextInterceptor implements HandlerInterceptor {
         // 写入上下文（含超管 / 租管）：StoreLineHandler 据此按所选门店过滤（option B）
         StoreContext.setStoreId(storeId);
         return true;
+    }
+
+    @Override
+    public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler,
+                                Exception ex) {
+        StoreContext.setStoreId(null);
+        StoreContext.setAccessibleStoreIds(null);
     }
 
     /**

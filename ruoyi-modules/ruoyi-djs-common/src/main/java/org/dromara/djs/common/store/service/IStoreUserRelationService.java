@@ -87,6 +87,12 @@ public interface IStoreUserRelationService {
     boolean isStoreAccessible(Long userId, Long storeId);
 
     /**
+     * 当前登录人的门店数据范围。关墙 / 超管 / 租管返回 null（不限制）；
+     * 开墙时返回有效绑定，空集合表示无权访问任何门店，不能当作“不筛选”。
+     */
+    List<Long> currentAccessibleStoreIds();
+
+    /**
      * 统计门店已绑有效人员数（用于 t_md_store 列表「员工数」列，防 N+1 批量场景见实现）。
      *
      * @param storeId 门店 ID

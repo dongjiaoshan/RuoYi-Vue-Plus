@@ -57,7 +57,7 @@ public class AppletStoreManageController {
     /**
      * 月度看板：3 个品类数 + 业态卡（猪肉 / 果蔬 / 蛋类 / 干货 / 其他，当月无数据的卡不下发）。
      *
-     * @param storeId 门店 ID；不传 = 全部门店合计
+     * @param storeId 门店 ID；不传 = 当前有权限门店合计（关墙 / 管理员为全部）
      * @param month   月份 yyyy-MM；不传 = 当月
      * @return 月度看板 VO
      */
@@ -74,7 +74,7 @@ public class AppletStoreManageController {
      *
      * <p>权限与 {@code /monthly} 同一串：看得到卡就看得到卡里的行。</p>
      *
-     * @param storeId    门店 ID；不传 = 全部门店合计
+     * @param storeId    门店 ID；不传 = 当前有权限门店合计（关墙 / 管理员为全部）
      * @param month      月份 yyyy-MM；不传 = 当月（格式非法 400）
      * @param belongType 业态卡 key：pork / vegetable / egg / dry_good / other（白名单外 400）
      * @param pageQuery  分页参数（pageNum / pageSize）

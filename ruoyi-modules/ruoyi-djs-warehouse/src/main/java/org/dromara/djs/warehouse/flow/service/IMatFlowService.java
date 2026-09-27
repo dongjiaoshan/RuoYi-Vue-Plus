@@ -144,10 +144,18 @@ public interface IMatFlowService {
     /**
      * mp 物资领用「自产果蔬可领用」列表（步11 偏差修复 · 决策 a；蔬菜 tab 自产果蔬数据源）。
      *
-     * <p>自产果蔬库存按 {@code (plot_id, location)} 维度建账（无 product_id），常规
-     * {@link #issueItems}（按 product_id JOIN）列不到。本方法以 plot 维度列出可领用项：
-     * 复用 {@link MatIssueItemVo}，回填 {@code plotId} / {@code plotCode}（productId 为 null），
-     * 前端点卡进领用表单时把 plotId 回填 {@code MatPickBo.plotId} 走 plot 维度领用。</p>
+     * <p>⚠️ <b>legacy 路径，当前恒返空且无导航入口（clean-QA 2026-09-26 查实）</b>：底层
+     * {@code selectSelfVegIssueItems} 按 {@code product_id IS NULL} 过滤，而自产果蔬自 G2 起就按
+     * {@code (plot_id, product_id)} 双键建账（staging 实测**全表 239 行**、其中 {@code plot_id} 非空的自产篮
+     * **31 行**，{@code product_id} <b>无一为 NULL</b>）→ 命中 0 行。消费方 mp
+     * {@code matPack/issue/index.vue} 的「无 productId」分支自 row67「去顶部 TAB、入口即形态」后已无入口，
+     * 蔬菜业态改走 {@code issue/batch/index?mode=vegetable}（按源手选，{@code batchId}）。详见 doc/14
+     * 「自产果蔬领用路径」。</p>
+     *
+     * <p>以下为原始<b>设计意图</b>（其中建账模型一句已过时）：常规 {@link #issueItems}（按 product_id JOIN）
+     * 列不到 plot 篮，故本方法以 plot 维度列出可领用项：复用 {@link MatIssueItemVo}，回填
+     * {@code plotId} / {@code plotCode}，前端点卡进领用表单时把 plotId 回填 {@code MatPickBo.plotId}
+     * 走 plot 维度领用。</p>
      *
      * @param locationId 库位 ID（可空，chip 选中态过滤；snowflake string 防截断，service 内 parse）
      * @return 自产果蔬可领用项（按作物名、地块编码排序）；无则空 list

@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.satoken.utils.LoginHelper;
 
+import java.util.List;
 import java.util.function.Supplier;
 
 /**
@@ -39,6 +40,27 @@ public final class StoreContext {
      * SaStorage 中存当前门店 ID 的 key。
      */
     private static final String STORE_ID_KEY = "djs:store:currentStoreId";
+
+    private static final String ACCESSIBLE_STORE_IDS_KEY = "djs:store:accessibleStoreIds";
+
+    /** 小程序请求的授权范围；null 为不限，空集合为无权限。只存请求级 SaStorage。 */
+    public static void setAccessibleStoreIds(List<Long> storeIds) {
+        SaStorage storage = currentStorage();
+        if (storage == null) {
+            return;
+        }
+        if (storeIds == null) {
+            storage.delete(ACCESSIBLE_STORE_IDS_KEY);
+        } else {
+            storage.set(ACCESSIBLE_STORE_IDS_KEY, List.copyOf(storeIds));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public static List<Long> getAccessibleStoreIds() {
+        SaStorage storage = currentStorage();
+        return storage == null ? null : (List<Long>) storage.get(ACCESSIBLE_STORE_IDS_KEY);
+    }
 
     /**
      * 请求头名：前端全局门店选择器注入。

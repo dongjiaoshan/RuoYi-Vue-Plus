@@ -9,6 +9,7 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.djs.common.store.context.StoreContext;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.common.store.service.IStoreService;
@@ -68,8 +69,9 @@ import java.util.stream.Stream;
  *   <li><b>昨日库存</b>：{@code t_store_inventory.stock_qty>0} 的产品，{@code openingQty}=结存。</li>
  * </ol>
  * 并集去重；同一产品同时命中「新到货」与「库存」时合并一行（category=stock，保留 inbound 的 inboundQty）。
- * 各行预填 {@code openingQty}（库存表结存，只读）、{@code returnWhQty}（退回模块当日聚合，只读）、
- * {@code saleQty}/{@code returnSaleQty}（流水当日聚合）。
+ * 各行预填 {@code openingQty}（库存表结存，只读）、{@code saleQty}/{@code returnSaleQty}（流水当日聚合）；
+ * {@code returnWhQty} 分两路：非猪肉原材料行取门店退回模块当日聚合，猪肉原材料行（V6-R215）按
+ * {@code opening + inbound − sale} 倒算残差。
  *
  * <h3>盘点提交（{@link #batchSave}）口径（按 docx 字面）</h3>
  * <ul>
@@ -276,6 +278,23 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
     }
 
     @Override
+    public Map<Long, BigDecimal> queryOnsiteConsumption(Long storeId, LocalDate ledgerDate) {
+        if (storeId == null) {
+            throw new ServiceException("门店不能为空", 400);
+        }
+        // 追溯表不走门店行级过滤；查询参数必须与拦截器已校验的选店上下文一致。
+        String currentStoreId = StoreContext.getStoreId();
+        if (currentStoreId != null && !currentStoreId.equals(storeId.toString())) {
+            throw new ServiceException("查询门店与当前所选门店不一致，请重新选择门店", 403);
+        }
+        if (storeMapper.selectById(storeId) == null) {
+            throw new ServiceException("门店不存在或已删除：" + storeId, 404);
+        }
+        LocalDate date = ledgerDate == null ? LocalDate.now(ZONE_SHANGHAI) : ledgerDate;
+        return storeTraceService.sumOnsiteConsumedWeightByMaterial(storeId, date);
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public int batchSave(StoreDailyLedgerBatchBo bo) {
         // 已终止合作门店禁止盘点
@@ -310,15 +329,12 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             .add(sumMaterialSoldWhiteBarArriveWeight(bo.getStoreId(), date));
         BigDecimal porkInboundSum = BigDecimal.ZERO;
 
-        // V6-R215 第 2 条：猪肉原材料行的销售量**取**当日现场打包追溯码的原材料消耗量 —— 服务端当场重算，
-        // 不采信前端提交的值。原因不是防篡改，是这个数天然会过期：
-        // 现场打包被 assertWithinMaterialInbound 要求「先在门店盘点录入当日入库量」才放行，
-        // 所以首次盘点保存的那一刻必然还没打包、销售量必然是 0；工人打完包再回来「修改」时，
-        // 若沿用上次保存值，销售量就永远钉在 0，退回量倒算把整批入库都算成退回。
+        // 猪肉原材料销售量由追溯域计算。页面看到的量若已过期，整批拒绝，刷新并重新核对后才可保存。
         Map<Long, BigDecimal> onsiteConsumedByMaterial =
             storeTraceService.sumOnsiteConsumedWeightByMaterial(bo.getStoreId(), date);
 
-        int saved = 0;
+        // 整批完成计算和校验后再写入，后续行失败时不会提前修改前面行的台账或库存。
+        List<StoreDailyLedger> pending = new ArrayList<>(bo.getItems().size());
         for (StoreDailyLedgerBatchBo.Item item : bo.getItems()) {
             ProductInfo product = productInfoMapper.selectById(item.getProductId());
             if (product == null) {
@@ -347,8 +363,11 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             //   其余行（含猪肉的生产产品，甲方明说「生产产品逻辑不变」）→ 期末手填，**损耗倒算**（docx 原式）。
             BigDecimal loss;
             if (isPorkRawMaterial(product)) {
-                // 销售量服务端重算（见上方 onsiteConsumedByMaterial 注释），覆盖前端提交值。
                 sale = nz(onsiteConsumedByMaterial.get(item.getProductId()));
+                if (nz(item.getSaleQty()).compareTo(sale) != 0) {
+                    throw new ServiceException("产品「" + product.getProductName()
+                        + "」的现场打包消耗量已变化，请点击「刷新打包消耗」，重新核对退回量后再保存", 409);
+                }
                 loss = nz(item.getLossQty());
                 returnWh = porkMaterialReturnWh(opening, inbound, sale, gift, closing, loss);
             } else {
@@ -356,6 +375,10 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
                     .subtract(sale).subtract(gift)
                     .add(returnSale).subtract(returnWh)
                     .subtract(closing);
+            }
+            if (returnWh.signum() < 0) {
+                throw new ServiceException("产品「" + product.getProductName()
+                    + "」的退回量不能为负数（" + returnWh.toPlainString() + "），请核对期初、入库、销售、赠送、期末及损耗量", 400);
             }
 
             StoreDailyLedger existing = existingByProduct.get(item.getProductId());
@@ -373,17 +396,23 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             entity.setClosingQty(closing);
             entity.setOperatorId(operatorId);
             entity.setRemark(bo.getRemark());
-            if (existing == null) {
+            if (existing != null) {
+                entity.setId(existing.getId());
+            }
+            pending.add(entity);
+        }
+
+        for (StoreDailyLedger entity : pending) {
+            if (entity.getId() == null) {
                 baseMapper.insert(entity);
             } else {
-                entity.setId(existing.getId());
                 baseMapper.updateById(entity);
             }
 
             // 盘点完成：期末结存 UPSERT 进门店独立库存（下次盘点期初读它）。
-            upsertStoreInventory(bo.getStoreId(), item.getProductId(), closing);
-            saved++;
+            upsertStoreInventory(bo.getStoreId(), entity.getProductId(), entity.getClosingQty());
         }
+        int saved = pending.size();
         log.info("[STORE-LEDGER-001] batchSave store={} date={} 行数={}", bo.getStoreId(), date, saved);
         return saved;
     }
@@ -807,6 +836,10 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
                 }
             }
             vo.setBelongTab(resolveBelongTab(p, porkTabIdSet));
+            // row215-F3：把「猪肉原材料行」判据下发给前端，用与落库**同一个** isPorkRawMaterial。
+            // 以前前端在「历史已盘、今日不在候选」分支把它写死 false → 该产品若因字典少配 / Redis 字典缓存为空
+            // 掉出候选，页面按旧公式渲染并提交、后端按新公式落库，两边不一致。判据只此一处，不前后端各推一份。
+            vo.setPorkMaterialRow(isPorkRawMaterial(p));
         }
     }
 
