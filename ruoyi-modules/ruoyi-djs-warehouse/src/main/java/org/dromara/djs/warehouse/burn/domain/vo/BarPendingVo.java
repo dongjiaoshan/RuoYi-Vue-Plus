@@ -49,12 +49,7 @@ public class BarPendingVo implements Serializable {
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private Date marketingTime;
 
-    /**
-     * 接收时间（= 录入头皮肉重量那一刻，bar_info.in_time）。
-     *
-     * <p>称重落库（weighBurn）时 updateStatusToSinging 写 in_time = 录入头皮肉重量当下；
-     * pending_singe 白条尚未称重 → in_time 为 null，前端 graceful 占位「—」。</p>
-     */
+    /** 首个产品实际入库时间；尚无产品入库时为空。 */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private Date receiveTime;
 
@@ -68,15 +63,10 @@ public class BarPendingVo implements Serializable {
      */
     private String status;
 
-    /**
-     * 到场重量 kg（已称重的 singing 白条回填，前端「头皮肉重量」原型字段）。
-     */
+    /** 累计接收重量，含已直发/消耗产品；未录入时为空。字段名保留兼容旧端。 */
     private BigDecimal arriveWeight;
 
-    /**
-     * 已入库产品重量之和 kg（product_inhouse 按 white_bar_id 聚合；
-     * 前端「剩余未入库重量 = 头皮肉重量 - 已入库产品重量之和」计算用）。
-     */
+    /** 已入库产品累计重量（入库流水口径），未录入时为 0。 */
     private BigDecimal inboundedWeight;
 
 }

@@ -53,6 +53,12 @@ public class StockFlow extends TenantEntity {
      */
     private String batchNo;
 
+    /** 工作台单次操作 UUID，仅本次主入库流水填写，旧入口为空。 */
+    private String requestKey;
+
+    /** 规范化请求载荷 SHA-256；同一 UUID 不允许更换载荷。 */
+    private String requestHash;
+
     /**
      * 出库销售单价快照（毛菜间出库 row194 录入；其余出库路径为空）。
      *

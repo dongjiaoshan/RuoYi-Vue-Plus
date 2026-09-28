@@ -49,4 +49,7 @@ public class CutProductTypeVo implements Serializable {
      */
     private String imageUrl;
 
+    private Long defaultLocationId;
+    private String defaultLocationName;
+
 }

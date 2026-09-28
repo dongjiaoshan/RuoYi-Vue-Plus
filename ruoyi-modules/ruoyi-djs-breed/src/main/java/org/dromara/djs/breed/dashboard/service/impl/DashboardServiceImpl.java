@@ -1388,13 +1388,12 @@ public class DashboardServiceImpl implements IDashboardService {
         // ---- 期末存栏快照（T-1 当日 current_status 当前快照，A#4 不回算） ----
         fillEndStock(r, tenantId, statDate);
 
-        // ---- 日NPD天数（row112）= 当日非生产状态母猪头数（= end_nonprod_sow_count 同值） ----
-        // 邓博 row114/115 分子改「纯非生产母猪头数」，去掉 230 后备；月/年从本列 Σ 回读。
-        r.setNpdDays(zeroIfNull(r.getEndNonprodSowCount()));
-
         // ---- 妊娠损失天数（甲方 V6 行232，口径 D-0096）= 当天由配种转出为返空流死淘的母猪，
-        //      Σ其在配种状态的停留天数。月/年 NPD 分子加它（D-0099）、PSY 分子减它（D-0100）。 ----
+        //      Σ其在配种状态的停留天数。日/月/年 NPD 分子计入它（D-0129）、PSY 分子减它（D-0100）。 ----
         r.setPregLossDays(aggregateQueryMapper.sumPregLossDaysForDay(tenantId, dtFrom, dtTo));
+
+        // ---- 日NPD天数（甲方 V6 行261，D-0129）= 期末非生产状态母猪头数 + 当日妊娠损失天数 ----
+        r.setNpdDays(zeroIfNull(r.getEndNonprodSowCount()) + zeroIfNull(r.getPregLossDays()));
 
         // ---- 日分娩猪只妊娠天数（row227）= Σ当日分娩母猪（分娩日−配种日）——
         //      甲方 row227 单独要的统计列，**不是** PSY 分子（PSY 走 pregnant_sow_count，见 upsertAnnualIndicator） ----
@@ -1743,8 +1742,8 @@ public class DashboardServiceImpl implements IDashboardService {
         //   与年表 daysElapsed 同口径；非自然月天数——当月未走完时按已历天数，避免分母虚大拉低月均存栏）
         int daysElapsedInMonth = aggregateQueryMapper.countIndicatorDays(tenantId, from, to);
         BigDecimal avgProdSowStock = scale3(divide(new BigDecimal(sumEndProdSow), daysElapsedInMonth));
-        // 当月NPD天数（甲方 V6 行234，口径 D-0099）= Σ日非生产母猪头数 + Σ日妊娠损失天数。
-        //   分子去掉 230 后备（纯非生产母猪 = Σ日 npd_days = Σ日 end_nonprod_sow_count）。
+        // 当月NPD天数（D-0129）= Σ日非生产母猪头数 + Σ日妊娠损失天数，去掉 230 后备。
+        //   从两个原始字段分别汇总，妊娠损失只计一次；日 npd_days 已包含妊娠损失。
         int monthNpdDays = sumEndNonprodSow + mapInt(sum, "sumPregLossDays");
         // 月头均非生产天数（D-0120）= 当月NPD天数 / 月均生产母猪存栏（区间平均存栏，区间 = 当月已落盘日表）；分母 0 → 0。
         BigDecimal npdDays = avgProdSowStock.signum() == 0
@@ -1898,7 +1897,7 @@ public class DashboardServiceImpl implements IDashboardService {
                 .divide(STANDARD_GESTATION_DAYS, 6, RoundingMode.HALF_UP)
                 .multiply(avgWeanedPerLitter));
 
-        // 全年总NPD天数（甲方 V6 行233 第 1 点，D-0099）= Σ日非生产母猪（去掉 230 后备）+ Σ日妊娠损失天数。
+        // 全年总NPD天数（D-0129）= Σ日非生产母猪（去掉 230 后备）+ Σ日妊娠损失天数，妊娠损失只计一次。
         // 年头均非生产天数（D-0120）= 总NPD天数 / 区间平均生产母猪存栏（Σ日期末生产母猪头数 / 区间已落盘日表天数），
         //   **不年化** —— 日表只覆盖当年的一段，甲方要的是这一段里每头母猪的非生产天数，不外推成全年。
         //   与当月表同一个式子（区间换成当月），两格量纲一致。

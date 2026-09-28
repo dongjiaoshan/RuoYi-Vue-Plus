@@ -66,6 +66,9 @@ public interface ILocationStockService {
      */
     List<Long> productOut(StockOutBo bo);
 
+    /** 工作台产品直出，出库方式固定为分割间出库。 */
+    List<Long> cutRoomOut(StockOutBo bo);
+
     /**
      * 计数类单位出库量必须是整数（V6 row143）。
      *

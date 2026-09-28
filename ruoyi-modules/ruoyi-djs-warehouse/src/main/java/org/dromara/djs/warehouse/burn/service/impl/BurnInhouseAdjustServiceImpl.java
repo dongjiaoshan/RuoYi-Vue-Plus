@@ -183,7 +183,7 @@ public class BurnInhouseAdjustServiceImpl implements IBurnInhouseAdjustService {
         // ---------- Step 2：可调整窗口（业务前置条件，后端必须拦，不能只靠前端隐藏按钮）----------
         // 排在「重量没变就早退」之前：已处理完成的行无论提交什么值都该被拒，
         // 提交一个恰好相同的重量而拿到 200，是把该拒的请求答成了 ok。
-        BarInfo bar = barInfoMapper.selectById(row.getWhiteBarId());
+        BarInfo bar = barInfoMapper.selectForUpdate(row.getWhiteBarId());
         if (bar == null) {
             throw new ServiceException("入库记录关联的白条不存在：" + row.getWhiteBarId());
         }
@@ -201,32 +201,15 @@ public class BurnInhouseAdjustServiceImpl implements IBurnInhouseAdjustService {
             return;
         }
 
-        // ---------- Step 3：上限校验（两道上界，都是「本行新重 + 其它产出行 ≤ 某个基准」）----------
-        // 基准一 = 猪只接收重量 arrive_weight（与燎毛入库同口径）；
-        // 基准二 = 猪只出栏重量 marketing_weight —— 出品率的分母，白条重不得超过它。
-        // 只守基准一是不够的：arrive_weight 为 NULL（外购猪 / 未称重直接处理）时它整段跳过，
-        // 调整入口就成了绕过出品率上界的后门（本方法 Step 9 还会重算当日统计快照）。
-        // 两个基准都为空（极老数据）才完全跳过，此时连其它产出行都不必查。
-        BigDecimal arriveWeight = bar.getArriveWeight();
+        // 接收重量本身已改为产品累计；调整后的全历史累计只与出栏重比较。
         BigDecimal marketingWeight = bar.getMarketingWeight();
-        if (arriveWeight != null || marketingWeight != null) {
-            BigDecimal otherRows = sumOtherRowsWeight(row.getWhiteBarId(), row.getId());
-            if (arriveWeight != null) {
-                BigDecimal maxAllowed = arriveWeight.subtract(otherRows).max(BigDecimal.ZERO);
-                if (newWeight.compareTo(maxAllowed) > 0) {
-                    throw new ServiceException("调整后入库重量不能超过 " + maxAllowed.stripTrailingZeros().toPlainString()
-                        + "kg（猪只接收重量 " + arriveWeight.stripTrailingZeros().toPlainString()
-                        + "kg − 其它产品已入库 " + otherRows.stripTrailingZeros().toPlainString() + "kg）");
-                }
-            }
-            if (marketingWeight != null) {
-                BigDecimal maxByMarketing = marketingWeight.subtract(otherRows).max(BigDecimal.ZERO);
-                if (newWeight.compareTo(maxByMarketing) > 0) {
-                    throw new ServiceException("调整后入库重量不能超过 " + maxByMarketing.stripTrailingZeros().toPlainString()
-                        + "kg（猪只出栏重量 " + marketingWeight.stripTrailingZeros().toPlainString()
-                        + "kg − 其它产品已入库 " + otherRows.stripTrailingZeros().toPlainString() + "kg）");
-                }
-            }
+        var received = stockFlowMapper.selectBurnInbounds(List.of(row.getWhiteBarId()));
+        BigDecimal total = received.stream().map(org.dromara.djs.warehouse.burn.domain.vo.BurnInboundVo::getWeight)
+            .filter(java.util.Objects::nonNull).reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (marketingWeight != null && total.add(delta).compareTo(marketingWeight) > 0) {
+            BigDecimal maxAllowed = marketingWeight.subtract(total.subtract(oldWeight)).max(BigDecimal.ZERO);
+            throw new ServiceException("调整后入库重量不能超过 " + maxAllowed.stripTrailingZeros().toPlainString()
+                + "kg（猪只出栏重量 " + marketingWeight.stripTrailingZeros().toPlainString() + "kg）");
         }
 
         Long userId = LoginHelper.getUserId();
@@ -265,6 +248,12 @@ public class BurnInhouseAdjustServiceImpl implements IBurnInhouseAdjustService {
             throw new ServiceException("该猪只燎毛间已处理完成，不能再调整入库重量");
         }
 
+        Date firstTime = received.stream().map(org.dromara.djs.warehouse.burn.domain.vo.BurnInboundVo::getFlowTime)
+            .filter(java.util.Objects::nonNull).min(Date::compareTo).orElse(row.getProduceTime());
+        if (barInfoMapper.updateBurnProgress(bar.getId(), total.add(delta), firstTime, userId) != 1) {
+            throw new ServiceException("猪只状态已变更，请刷新后重试");
+        }
+
         // ---------- Step 9：统计快照重算 ----------
         // 前 8 步改的都是 as-built 明细，但白条总重 / 平均白条重 / 白条出成率是 **compute-then-store**：
         // WarehouseStatJob 每日 0:00 按 SUM(burn_weight) WHERE DATE(burn_time)=T-1 算好落进
@@ -297,24 +286,6 @@ public class BurnInhouseAdjustServiceImpl implements IBurnInhouseAdjustService {
             return null;
         }
         return record.getBurnTime().toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
-    }
-
-    /**
-     * 同一白条<b>其它</b>产出行的已入库重量之和（不含本行），用于算本行的可调上限。
-     */
-    private BigDecimal sumOtherRowsWeight(Long whiteBarId, Long selfId) {
-        List<ProductInhouse> rows = productInhouseMapper.selectList(
-            new LambdaQueryWrapper<ProductInhouse>()
-                .select(ProductInhouse::getProductWeight)
-                .eq(ProductInhouse::getWhiteBarId, whiteBarId)
-                .ne(ProductInhouse::getId, selfId));
-        BigDecimal sum = BigDecimal.ZERO;
-        for (ProductInhouse r : rows) {
-            if (r.getProductWeight() != null) {
-                sum = sum.add(r.getProductWeight());
-            }
-        }
-        return sum;
     }
 
     /**

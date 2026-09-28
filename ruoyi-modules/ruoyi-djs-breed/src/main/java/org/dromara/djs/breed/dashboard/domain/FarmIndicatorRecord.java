@@ -137,14 +137,14 @@ public class FarmIndicatorRecord extends TenantEntity {
      */
     private Integer yearBatchFarrowCount;
 
-    // ---- NPD（row112 + 甲方 V6 行232） ----
-    /** 日NPD天数（当日非生产状态母猪头数 = endNonprodSowCount 同值）。 */
+    // ---- NPD（甲方 V6 行261） ----
+    /** 日NPD天数（期末非生产状态母猪头数 + 妊娠损失天数）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Integer npdDays;
 
     /**
      * 妊娠损失天数（D-0096）= 当天由配种 PZ 转出为 返情/空怀/流产/死亡/淘汰 的母猪，
-     * Σ 其在 PZ 状态的停留天数。月/年 NPD 分子加这一项（D-0099）、PSY 分子减这一项（D-0100）。
+     * Σ 其在 PZ 状态的停留天数。日/月/年 NPD 分子计入这一项（D-0129）、PSY 分子减这一项（D-0100）。
      * 定时重算，ALWAYS 覆盖旧值。
      */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)

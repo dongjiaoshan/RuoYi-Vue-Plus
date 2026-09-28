@@ -231,7 +231,7 @@ public class PigCutRecordServiceImpl
         // Step 1：SELECT bar_info。邓博 row14 按半只领用：一头猪可分多次领（领一个半只后 bar 已转
         // pending_cut/cutting），故允许从 in_stock / pending_cut / cutting 继续领剩余产出行；
         // 仅拒已收尾（cut_done/ship_out）或未入库（pending_singe/singing）。
-        BarInfo bar = barInfoMapper.selectById(bo.getBarInfoId());
+        BarInfo bar = barInfoMapper.selectForUpdate(bo.getBarInfoId());
         if (bar == null) {
             throw new ServiceException("白条不存在：" + bo.getBarInfoId());
         }
@@ -621,7 +621,7 @@ public class PigCutRecordServiceImpl
      * @return 新 cut_record id
      */
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Long insertOutRecord(String outType, BarInfo bar, ProductInhouse src, BigDecimal outWeight,
                                 Long targetStoreId, Long targetDemandId, Long userId, String outDest) {
         PigCutRecord record = new PigCutRecord();
@@ -660,8 +660,21 @@ public class PigCutRecordServiceImpl
      * 阶段 2：出库称重（多部位提交）。
      */
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void submitCutOut(PigCutOutBo bo) {
+        submitCutOutInternal(bo, true);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public List<org.dromara.djs.warehouse.cut.domain.vo.CutPartReceipt> submitCutOutWithReceipt(PigCutOutBo bo) {
+        // 工作台在首次产物之前已全重领用，后续产物只记自身出入库，不能再记白条出库。
+        return submitCutOutInternal(bo, false);
+    }
+
+    private List<org.dromara.djs.warehouse.cut.domain.vo.CutPartReceipt> submitCutOutInternal(
+        PigCutOutBo bo, boolean includeLegacySummaryFlow) {
+        List<org.dromara.djs.warehouse.cut.domain.vo.CutPartReceipt> receipts = new ArrayList<>();
         Long userId = LoginHelper.getUserId();
 
         // Step 1：SELECT cut_record，校验 cut_status='picked' or 'cutting'
@@ -669,6 +682,12 @@ public class PigCutRecordServiceImpl
         if (record == null) {
             throw new ServiceException("分割单不存在：" + bo.getCutRecordId());
         }
+        barInfoMapper.selectForUpdate(record.getWhiteBarId());
+        record = baseMapper.selectForUpdate(record.getId());
+        if (record == null) {
+            throw new ServiceException("分割单已删除，请刷新重试");
+        }
+
         if (!CUT_STATUS_PICKED.equals(record.getCutStatus())
             && !CUT_STATUS_CUTTING.equals(record.getCutStatus())) {
             throw new ServiceException("分割单状态不符（当前：" + record.getCutStatus()
@@ -753,13 +772,17 @@ public class PigCutRecordServiceImpl
             // row157（撤销 SPLIT-001 拆分）：同一耳号整猪两半只产出同一部位合并到一行篮子——先按
             // (location, product, ear_no, white_bar_no IS NULL, is_end=0) UPSERT 累加，命中 0 行才 insert 新篮，
             // 避免库存查询同耳号同产品出现两行。外购无耳号（earNo 空）→ 不合并（避免跨猪串账），保持一行一次。
-            boolean merged = false;
+            int merged = 0;
+            Long outputStockId;
             if (StringUtils.isNotBlank(record.getEarNo())) {
                 merged = locationStockMapper.addByProductLocationEarNo(
                     effectiveLocationId, productId, record.getEarNo(),
-                    part.getProductWeight(), userId) > 0;
+                    part.getProductWeight(), userId);
+                if (merged > 1) {
+                    throw new ServiceException("存在重复分割库存篮，请先核对库存");
+                }
             }
-            if (!merged) {
+            if (merged == 0) {
                 LocationStock basket = new LocationStock();
                 basket.setLocationId(effectiveLocationId);
                 basket.setProductId(productId);
@@ -770,6 +793,16 @@ public class PigCutRecordServiceImpl
                 basket.setIsEnd(0);
                 basket.setOperatorId(userId);
                 locationStockMapper.insert(basket);
+                outputStockId = basket.getId();
+            } else {
+                LocationStock output = locationStockMapper.selectOne(new LambdaQueryWrapper<LocationStock>()
+                    .eq(LocationStock::getLocationId, effectiveLocationId).eq(LocationStock::getProductId, productId)
+                    .eq(LocationStock::getEarNo, record.getEarNo()).isNull(LocationStock::getWhiteBarNo)
+                    .eq(LocationStock::getIsEnd, 0).last("FOR UPDATE"));
+                if (output == null) {
+                    throw new ServiceException("分割库存篮已变更，请重试");
+                }
+                outputStockId = output.getId();
             }
 
             // 分割品入冻品库流水
@@ -792,28 +825,32 @@ public class PigCutRecordServiceImpl
             flowIn.setOperatorId(userId);
             flowIn.setRemark("分割产出入冻品库 cut_id=" + record.getCutId() + " part=" + part.getCutPart());
             stockFlowMapper.insert(flowIn);
+            receipts.add(new org.dromara.djs.warehouse.cut.domain.vo.CutPartReceipt(flowIn.getId(), outputStockId));
 
             totalWeight = totalWeight.add(part.getProductWeight());
         }
 
-        // Step 4：INSERT 白条总出库流水（合计 weight，关联白条 product_id）
-        StockFlow flowOut = new StockFlow();
-        Map<String, Object> flowCtxOut = new HashMap<>(2);
-        flowCtxOut.put("ioCode", INOUT_OUT);
-        flowOut.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, flowCtxOut));
-        flowOut.setFlowDate(now);
-        flowOut.setProductId(resolveWhiteBarProductId());
-        flowOut.setWarehouseId(record.getLocationId());
-        flowOut.setInoutType(INOUT_OUT);
-        flowOut.setFlowType(FLOW_TYPE_CUT_OUT);
-        // 白条出库去向固定为分割间（FIX-WMS-FLOWDICT-001，前端只读不可改）
-        flowOut.setStockOutDest(STOCK_OUT_DEST_BAR_CUT);
-        flowOut.setChangeNum(totalWeight.negate());
-        flowOut.setChangeQuantity(totalWeight);
-        flowOut.setEarNo(record.getEarNo());
-        flowOut.setOperatorId(userId);
-        flowOut.setRemark("白条分割出库 cut_id=" + record.getCutId() + " 部位数=" + bo.getPartItems().size());
-        stockFlowMapper.insert(flowOut);
+        // 旧入口保留历史汇总流水；新工作台只保留全重领用时的真实白条 OT。
+        if (includeLegacySummaryFlow) {
+            // Step 4：INSERT 白条总出库流水（合计 weight，关联白条 product_id）
+            StockFlow flowOut = new StockFlow();
+            Map<String, Object> flowCtxOut = new HashMap<>(2);
+            flowCtxOut.put("ioCode", INOUT_OUT);
+            flowOut.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, flowCtxOut));
+            flowOut.setFlowDate(now);
+            flowOut.setProductId(resolveWhiteBarProductId());
+            flowOut.setWarehouseId(record.getLocationId());
+            flowOut.setInoutType(INOUT_OUT);
+            flowOut.setFlowType(FLOW_TYPE_CUT_OUT);
+            // 白条出库去向固定为分割间（FIX-WMS-FLOWDICT-001，前端只读不可改）
+            flowOut.setStockOutDest(STOCK_OUT_DEST_BAR_CUT);
+            flowOut.setChangeNum(totalWeight.negate());
+            flowOut.setChangeQuantity(totalWeight);
+            flowOut.setEarNo(record.getEarNo());
+            flowOut.setOperatorId(userId);
+            flowOut.setRemark("白条分割出库 cut_id=" + record.getCutId() + " 部位数=" + bo.getPartItems().size());
+            stockFlowMapper.insert(flowOut);
+        }
 
         // Step 5：proof_oss_ids 增量更新（如有）
         if (StringUtils.isNotBlank(bo.getProofOssIds())) {
@@ -822,13 +859,14 @@ public class PigCutRecordServiceImpl
             upd.setProofOssIds(bo.getProofOssIds());
             baseMapper.updateById(upd);
         }
+        return receipts;
     }
 
     /**
      * 阶段 3：出库完成。
      */
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void submitCutDone(PigCutDoneBo bo) {
         Long userId = LoginHelper.getUserId();
 
@@ -837,6 +875,12 @@ public class PigCutRecordServiceImpl
         if (record == null) {
             throw new ServiceException("分割单不存在：" + bo.getCutRecordId());
         }
+        barInfoMapper.selectForUpdate(record.getWhiteBarId());
+        record = baseMapper.selectForUpdate(record.getId());
+        if (record == null) {
+            throw new ServiceException("分割单已删除，请刷新重试");
+        }
+
         if (!CUT_STATUS_CUTTING.equals(record.getCutStatus())) {
             throw new ServiceException("分割单状态不符（当前：" + record.getCutStatus()
                 + "，需 cutting）");
@@ -1224,6 +1268,18 @@ public class PigCutRecordServiceImpl
             vo.setProductName(p.getProductName());
             vo.setProductUnit(StringUtils.isNotBlank(p.getProductUnit()) ? p.getProductUnit() : "kg");
             vo.setImageUrl(urlsAligned ? urls.get(i) : null);
+            if (StringUtils.isNotBlank(p.getStoreLocationId())) {
+                String first = p.getStoreLocationId().split(",")[0].trim();
+                try {
+                    LocationInfo configured = locationInfoMapper.selectById(Long.valueOf(first));
+                    if (configured != null && Integer.valueOf(1).equals(configured.getLocationStatus())) {
+                        vo.setDefaultLocationId(configured.getId());
+                        vo.setDefaultLocationName(configured.getLocationName());
+                    }
+                } catch (NumberFormatException ignored) {
+                    // 无效配置展示为空，工作台提交会给出配置错误。
+                }
+            }
             result.add(vo);
         }
         return result;

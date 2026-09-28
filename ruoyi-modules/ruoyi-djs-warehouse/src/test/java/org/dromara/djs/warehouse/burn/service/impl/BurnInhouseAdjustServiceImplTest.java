@@ -117,6 +117,8 @@ class BurnInhouseAdjustServiceImplTest {
 
     @BeforeEach
     void setup() {
+        when(barInfoMapper.updateBurnProgress(any(), any(), any(), any())).thenReturn(1);
+
         service = new BurnInhouseAdjustServiceImpl(adjustMapper, productInhouseMapper, barInfoMapper,
             locationStockMapper, stockFlowMapper, pigBurnRecordMapper, stockCheckService, warehouseStatService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
@@ -153,6 +155,7 @@ class BurnInhouseAdjustServiceImplTest {
         b.setEarNo("010126050101");
         b.setStatus(status);
         b.setArriveWeight(arriveWeight);
+        b.setMarketingWeight(arriveWeight);
         return b;
     }
 
@@ -172,6 +175,15 @@ class BurnInhouseAdjustServiceImplTest {
         other.setProductWeight(new BigDecimal(otherWeight));
         others.add(other);
         when(productInhouseMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(others);
+        java.util.List<org.dromara.djs.warehouse.burn.domain.vo.BurnInboundVo> receipts = new java.util.ArrayList<>();
+        java.util.List<ProductInhouse> all = new java.util.ArrayList<>(others);
+        all.add(burnRow());
+        for (ProductInhouse row : all) {
+            var receipt = new org.dromara.djs.warehouse.burn.domain.vo.BurnInboundVo();
+            receipt.setBarInfoId(BAR_ID); receipt.setWeight(row.getProductWeight());
+            receipts.add(receipt);
+        }
+        when(stockFlowMapper.selectBurnInbounds(any())).thenReturn(receipts);
     }
 
     private BurnInhouseAdjustBo bo(BigDecimal weight) {
@@ -196,7 +208,7 @@ class BurnInhouseAdjustServiceImplTest {
     @DisplayName("adjustWeight: happy → 产出行/入库流水按新值覆盖，白条库存/燎毛记录/白条按差额同步")
     void testAdjust_Happy_AllDownstreamValues() {
         when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
         stubOtherRows("30.000");
         stubAllWritesOk();
 
@@ -221,7 +233,7 @@ class BurnInhouseAdjustServiceImplTest {
     void testAdjust_RecalcsStatSnapshotForPastBurnDate() {
         LocalDate burnDate = LocalDate.now().minusDays(1);
         when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
         when(pigBurnRecordMapper.selectById(BURN_RECORD_ID)).thenReturn(burnRecordOn(burnDate));
         stubOtherRows("30.000");
         stubAllWritesOk();
@@ -235,7 +247,7 @@ class BurnInhouseAdjustServiceImplTest {
     @DisplayName("adjustWeight: 燎毛日就是今天 → 不重算（今晚跑批本来就会算这一天，白跑一次没意义）")
     void testAdjust_SkipsStatRecalcForTodayBurnDate() {
         when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
         when(pigBurnRecordMapper.selectById(BURN_RECORD_ID)).thenReturn(burnRecordOn(LocalDate.now()));
         stubOtherRows("30.000");
         stubAllWritesOk();
@@ -257,7 +269,7 @@ class BurnInhouseAdjustServiceImplTest {
     @DisplayName("adjustWeight: 已点「处理完成」(bar=in_stock) → 拒绝调整，任何下游写入都不发生")
     void testAdjust_RejectWhenBurnFinished() {
         when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("in_stock", new BigDecimal("110.500")));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("in_stock", new BigDecimal("110.500")));
 
         assertThatThrownBy(() -> service.adjustWeight(bo(NEW_WEIGHT)))
             .isInstanceOf(ServiceException.class)
@@ -274,7 +286,7 @@ class BurnInhouseAdjustServiceImplTest {
     @DisplayName("adjustWeight: 白条已被并发推进(窗口锁 affected=0) → 抛异常触发整体回滚")
     void testAdjust_RejectWhenBarLockLost() {
         when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
         stubOtherRows("30.000");
         stubAllWritesOk();
         // 前四张表都写成功，最后一步白条窗口锁没拿到（有人抢先点了「处理完成」）
@@ -290,7 +302,7 @@ class BurnInhouseAdjustServiceImplTest {
     void testAdjust_RejectOverArriveWeight() {
         when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
         // 接收重量 110.500，其它产出行已占 30.000 → 本行上限 80.500
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
         stubOtherRows("30.000");
 
         assertThatThrownBy(() -> service.adjustWeight(bo(new BigDecimal("80.501"))))
@@ -306,7 +318,7 @@ class BurnInhouseAdjustServiceImplTest {
     void testAdjust_NoOpWhenUnchanged() {
         when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
         // 窗口校验排在「重量没变就早退」之前，所以可调整态的白条仍要能查到
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
 
         service.adjustWeight(bo(new BigDecimal("80.3000")));
 
@@ -321,7 +333,7 @@ class BurnInhouseAdjustServiceImplTest {
     @DisplayName("adjustWeight: 已处理完成的行提交「同一个重量」→ 仍然拒绝（窗口校验在 no-op 早退之前，不能把该拒的请求答成 ok）")
     void testAdjust_RejectUnchangedWeightWhenBurnFinished() {
         when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("in_stock", new BigDecimal("110.500")));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("in_stock", new BigDecimal("110.500")));
 
         assertThatThrownBy(() -> service.adjustWeight(bo(new BigDecimal("80.3000"))))
             .isInstanceOf(ServiceException.class)
@@ -361,7 +373,7 @@ class BurnInhouseAdjustServiceImplTest {
         ProductInhouse legacy = burnRow();
         legacy.setBurnRecordId(null);
         when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(legacy);
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
         stubOtherRows("30.000");
         stubAllWritesOk();
         when(pigBurnRecordMapper.selectIdByEarNoAndBurnTime(eq("010126050101"), any(Date.class)))
@@ -376,7 +388,7 @@ class BurnInhouseAdjustServiceImplTest {
     @DisplayName("adjustWeight: 未称重(接收重量为空)时跳过上限校验，仍可调整")
     void testAdjust_SkipCapWhenNotWeighed() {
         when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("pending_singe", null));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("pending_singe", null));
         stubAllWritesOk();
 
         service.adjustWeight(bo(NEW_WEIGHT));
@@ -392,7 +404,7 @@ class BurnInhouseAdjustServiceImplTest {
         // arrive_weight 为 NULL 时上面那道「接收重量」闸整段跳过；本方法 Step 9 还会重算当日统计快照，
         // 不在这里封顶，改一次 in_weight 就能把当日出品率顶过 100%。
         when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("pending_singe", null, "100.000"));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("pending_singe", null, "100.000"));
         stubOtherRows("30.000");
         stubAllWritesOk();
 
@@ -409,7 +421,7 @@ class BurnInhouseAdjustServiceImplTest {
     @DisplayName("adjustWeight: 未称重 + 合计 ≤ 出栏重 → 照常放行（新闸不得比改动前更严）")
     void testAdjust_NotWeighedWithinMarketingStillPasses() {
         when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("pending_singe", null, "200.000"));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("pending_singe", null, "200.000"));
         stubOtherRows("30.000");
         stubAllWritesOk();
 
@@ -422,7 +434,7 @@ class BurnInhouseAdjustServiceImplTest {
     @DisplayName("adjustWeight: 白条库存行不存在 / 调整后为负 → 抛异常（不静默跳过）")
     void testAdjust_RejectWhenStockRowMissing() {
         when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
         stubOtherRows("30.000");
         stubAllWritesOk();
         when(locationStockMapper.adjustStockByWhiteBarNo(eq(WHITE_BAR_NO), eq(PRODUCT_ID), any(), eq(USER_ID)))
@@ -441,7 +453,7 @@ class BurnInhouseAdjustServiceImplTest {
     @DisplayName("adjustWeight: 调大重量 → 差额为正，库存/燎毛记录同向加")
     void testAdjust_IncreaseWeight() {
         when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
         stubOtherRows("20.000");
         stubAllWritesOk();
 

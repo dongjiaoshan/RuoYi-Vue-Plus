@@ -19,6 +19,7 @@ import org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo;
 import org.dromara.djs.warehouse.burn.domain.bo.PigBurnWeighBo;
 import org.dromara.djs.warehouse.burn.domain.query.PigBurnRecordQuery;
 import org.dromara.djs.warehouse.burn.domain.vo.BarPendingVo;
+import org.dromara.djs.warehouse.burn.domain.vo.BurnInboundVo;
 import org.dromara.djs.warehouse.burn.domain.vo.BurnProductTypeVo;
 import org.dromara.djs.warehouse.burn.domain.vo.PigBurnRecordVo;
 import org.dromara.djs.warehouse.burn.mapper.PigBurnRecordMapper;
@@ -26,6 +27,8 @@ import org.dromara.djs.warehouse.burn.service.IPigBurnRecordService;
 import org.dromara.djs.warehouse.cross.domain.BarInfo;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
+import org.dromara.djs.warehouse.inout.domain.vo.CompletionCheckVo;
+import org.dromara.djs.warehouse.inout.service.WeightCompletionPolicy;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.loss.domain.LossFlow;
 import org.dromara.djs.warehouse.loss.service.ILossFlowService;
@@ -167,6 +170,7 @@ public class PigBurnRecordServiceImpl
     private final ITraceService traceService;
     private final ImageUrlResolver imageUrlResolver;
     private final ILossFlowService lossFlowService;
+    private final WeightCompletionPolicy completionPolicy;
 
     public PigBurnRecordServiceImpl(PigBurnRecordMapper baseMapper,
                                     StockFlowMapper stockFlowMapper,
@@ -179,7 +183,8 @@ public class PigBurnRecordServiceImpl
                                     IStockCheckService stockCheckService,
                                     ITraceService traceService,
                                     ImageUrlResolver imageUrlResolver,
-                                    ILossFlowService lossFlowService) {
+                                    ILossFlowService lossFlowService,
+                                    WeightCompletionPolicy completionPolicy) {
         super(baseMapper);
         this.stockFlowMapper = stockFlowMapper;
         this.barInfoMapper = barInfoMapper;
@@ -192,13 +197,14 @@ public class PigBurnRecordServiceImpl
         this.traceService = traceService;
         this.imageUrlResolver = imageUrlResolver;
         this.lossFlowService = lossFlowService;
+        this.completionPolicy = completionPolicy;
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long submitBurnRecord(PigBurnRecordBo bo) {
         // ---------- Step 1：校验待燎毛白条 ----------
-        BarInfo bar = barInfoMapper.selectById(bo.getBarInfoId());
+        BarInfo bar = barInfoMapper.selectForUpdate(bo.getBarInfoId());
         if (bar == null) {
             throw new ServiceException("白条不存在：" + bo.getBarInfoId());
         }
@@ -217,48 +223,36 @@ public class PigBurnRecordServiceImpl
             throw new ServiceException("入库库位不存在：" + bo.getLocationId());
         }
         Map<Long, ProductInfo> typeMap = loadWhiteBarTypeMap();
-        // 单品上限兜底（MP-BURN 决策 #4）：单个产品入库重量不能超过头皮肉重量（到场重 arrive_weight，防直连 API 绕过前端拦截）。
-        // 累计校验之前先拦单品，给更早更明确的报错。arrive 为 null（未称重）时跳过本校验（向后兼容）。
-        BigDecimal headSkinWeight = bar.getArriveWeight();
+        List<BurnInboundVo> prior = stockFlowMapper.selectBurnInbounds(List.of(bar.getId()));
+        Map<Long, Long> counts = prior.stream().collect(Collectors.groupingBy(
+            BurnInboundVo::getProductId, Collectors.counting()));
+        long halfCount = prior.stream().filter(r -> typeMap.containsKey(r.getProductId())
+            && PRODUCT_TYPE_HALF.equals(resolveProductType(typeMap.get(r.getProductId())))).count();
+        BigDecimal existing = prior.stream().map(BurnInboundVo::getWeight)
+            .filter(Objects::nonNull).reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal inWeightTotal = BigDecimal.ZERO;
         for (PigBurnRecordBo.ProductTypeItem item : bo.getProductTypeItems()) {
-            if (!typeMap.containsKey(item.getProductId())) {
+            ProductInfo type = typeMap.get(item.getProductId());
+            if (type == null) {
                 throw new ServiceException("无效的白条产品类型：" + item.getProductId());
             }
-            if (headSkinWeight != null && item.getWeight() != null
-                && item.getWeight().compareTo(headSkinWeight) > 0) {
-                throw new ServiceException("单个产品重量不能超过头皮肉重量");
+            if (item.getWeight() == null || item.getWeight().signum() <= 0 || item.getWeight().scale() > 3) {
+                throw new ServiceException("产品重量须大于 0，最多三位小数");
+            }
+            boolean half = PRODUCT_TYPE_HALF.equals(resolveProductType(type));
+            long count = counts.merge(item.getProductId(), 1L, Long::sum);
+            if (count > (half ? 2 : 1) || (half && ++halfCount > 2)) {
+                throw new ServiceException(half ? "半扇最多录入 2 次" : "该产品已处理，只允许录入 1 次");
             }
             inWeightTotal = inWeightTotal.add(item.getWeight());
         }
-
-        // 累计入库总重校验（FIX-WMS-CUTPICKUP-SPLIT-001 配套）：已入库（DB 现有 product_inhouse by
-        // white_bar_id）+ 本次提交 ≤ 头皮肉重量（arrive_weight）。INSERT 前拦，防 reentry / 前端 baseline
-        // 失准（如多次燎毛产出行逐项录入）导致 DB 真实超录，避免产生超重 orphan 行、finish 时才暴雷。
-        // 与 finishPigBurn 同口径；arrive 为 null（未称重）时跳过（向后兼容）。
-        if (headSkinWeight != null) {
-            BigDecimal existing = BigDecimal.ZERO;
-            List<ProductInhouse> existingRows = productInhouseMapper.selectList(
-                new LambdaQueryWrapper<ProductInhouse>()
-                    .select(ProductInhouse::getProductWeight)
-                    .eq(ProductInhouse::getWhiteBarId, bar.getId()));
-            for (ProductInhouse ih : existingRows) {
-                if (ih.getProductWeight() != null) {
-                    existing = existing.add(ih.getProductWeight());
-                }
-            }
-            if (existing.add(inWeightTotal).compareTo(headSkinWeight) > 0) {
-                BigDecimal remain = headSkinWeight.subtract(existing).max(BigDecimal.ZERO);
-                throw new ServiceException("已录入产品总重不能超过头皮肉重量（剩余可入库 " + remain + "kg）");
-            }
+        BigDecimal received = existing.add(inWeightTotal);
+        if (bar.getMarketingWeight() != null && received.compareTo(bar.getMarketingWeight()) > 0) {
+            throw new ServiceException("已录入产品总重不能超过出栏重量");
         }
 
         // ---------- Step 2：生成 burn_id + INSERT 燎毛记录 ----------
-        // r134：burn_record 是「产出行」粒度（一头白条可多个半只/多次产出行入库）。损耗 = 到场(整只) − 入库(整只)，
-        // 是「整只白条」概念，不能挂在单条产出行上——半只入库时 arrive(整只) − 该半只入库量 会把另一半重量误算成损耗
-        // （偏大，客户 r134）。故 burn_record 不再存损耗；整只损耗 = bar_info.arrive_weight − bar_info.in_weight
-        // （in_weight 由 finishBurn 累加两半，是整只口径，Kevin 拍板记在 bar_info 整只级），需要时按 bar_info 派生。
-        // 入库超到场重量的防护由上方「累计入库总重校验」（existing + 本次 ≤ arrive_weight）承担，非此处。
+        // 一次提交记录本次产品重量；接收累计量在 bar 及查询VO中按入库事实计算。
         PigBurnRecord record = toEntity(bo);
         if (record == null) {
             throw new ServiceException("燎毛记录入参转换失败");
@@ -327,6 +321,7 @@ public class PigBurnRecordServiceImpl
             flowIn.setChangeQuantity(item.getWeight());
             flowIn.setEarNo(earNo);
             flowIn.setWhiteBarNo(whiteBarNo);
+            flowIn.setWhiteBarId(bar.getId());
             flowIn.setOperatorId(bo.getOperatorId());
             flowIn.setRemark("燎毛入库 burn_id=" + record.getBurnId() + " whiteBarNo=" + whiteBarNo + " type=" + type.getProductId());
             stockFlowMapper.insert(flowIn);
@@ -335,8 +330,10 @@ public class PigBurnRecordServiceImpl
         // ---------- Step 4：UPDATE bar_info status → singing（燎毛中，中间态；FIX-WMS-MP-BURN-001） ----------
         // 产品逐项入库只推进到中间态 singing（不直推 in_stock），解决「多产品逐个入库第 2 个抛错」现状 bug；
         // bar 终态 singed 由「处理完成」按钮调 finishBurn 推进。乐观锁 WHERE status IN(pending_singe,singing) 幂等兜并发。
-        int affected = barInfoMapper.updateStatusToSinging(
-            bar.getId(), burnTime, bo.getOperatorId());
+        Date firstTime = prior.stream().map(BurnInboundVo::getFlowTime).filter(Objects::nonNull)
+            .min(Date::compareTo).orElse(burnTime);
+        int affected = barInfoMapper.updateBurnProgress(
+            bar.getId(), received, firstTime, bo.getOperatorId());
         if (affected == 0) {
             throw new ServiceException("白条状态不符（已处理完成或不在待燎毛态），请刷新列表");
         }
@@ -350,58 +347,36 @@ public class PigBurnRecordServiceImpl
 
     @Override
     public List<BarPendingVo> queryPendingBars() {
-        List<BarInfo> bars = barInfoMapper.selectList(
-            new LambdaQueryWrapper<BarInfo>()
-                .in(BarInfo::getStatus, List.of(BAR_STATUS_PENDING_SINGE, BAR_STATUS_SINGING))
-                .orderByDesc(BarInfo::getMarketingTime)
-                .last("LIMIT 200"));
-        // 已入库产品重量之和（剩余未入库重量计算用）：对 singing 白条批量聚合 product_inhouse，避免 N+1
-        Map<Long, BigDecimal> inboundedMap = loadInboundedWeightMap(bars);
+        List<BarInfo> bars = barInfoMapper.selectList(new LambdaQueryWrapper<BarInfo>()
+            .in(BarInfo::getStatus, List.of(BAR_STATUS_PENDING_SINGE, BAR_STATUS_SINGING)));
+        if (bars.isEmpty()) {
+            return List.of();
+        }
+        // 接收时间和重量都从同一批完整入库事实计算：兼容旧称重时刻、已直发和已消费产出。
+        List<BurnInboundVo> inbounds = stockFlowMapper.selectBurnInbounds(bars.stream().map(BarInfo::getId).toList());
+        Map<Long, BigDecimal> weights = new HashMap<>();
+        Map<Long, Date> firstTimes = new HashMap<>();
+        for (BurnInboundVo inbound : inbounds) {
+            weights.merge(inbound.getBarInfoId(), inbound.getWeight() == null ? BigDecimal.ZERO : inbound.getWeight(), BigDecimal::add);
+            if (inbound.getFlowTime() != null) {
+                firstTimes.merge(inbound.getBarInfoId(), inbound.getFlowTime(), (x, y) -> x.before(y) ? x : y);
+            }
+        }
         List<BarPendingVo> list = new ArrayList<>(bars.size());
         for (BarInfo bar : bars) {
             BarPendingVo vo = new BarPendingVo();
-            vo.setId(bar.getId());
-            vo.setBarId(bar.getBarId());
-            vo.setEarNo(bar.getEarNo());
-            vo.setMarketingTime(bar.getMarketingTime());
-            vo.setMarketingWeight(bar.getMarketingWeight());
+            vo.setId(bar.getId()); vo.setBarId(bar.getBarId()); vo.setEarNo(bar.getEarNo());
+            vo.setMarketingTime(bar.getMarketingTime()); vo.setMarketingWeight(bar.getMarketingWeight());
             vo.setStatus(bar.getStatus());
-            vo.setArriveWeight(bar.getArriveWeight());
-            // 接收时间 = 录入头皮肉重量那一刻（weighBurn 写 in_time）；未称重 pending_singe 为 null
-            vo.setReceiveTime(bar.getInTime());
-            // pending_singe 尚未入库任何产品 → 0；singing 取聚合值（无则 0）
-            vo.setInboundedWeight(inboundedMap.getOrDefault(bar.getId(), BigDecimal.ZERO));
+            vo.setArriveWeight(weights.get(bar.getId()));
+            vo.setReceiveTime(firstTimes.get(bar.getId()));
+            vo.setInboundedWeight(weights.getOrDefault(bar.getId(), BigDecimal.ZERO));
             list.add(vo);
         }
+        list.sort(java.util.Comparator.comparing((BarPendingVo v) -> v.getReceiveTime() == null
+            ? v.getMarketingTime() : v.getReceiveTime(), java.util.Comparator.nullsLast(java.util.Comparator.reverseOrder()))
+            .thenComparing(BarPendingVo::getId, java.util.Comparator.reverseOrder()));
         return list;
-    }
-
-    /**
-     * 批量聚合 singing 白条已入库产品重量之和（product_inhouse 按 white_bar_id IN + groupBy，避免 N+1）。
-     *
-     * @return white_bar_id → 已入库产品重量之和（pending_singe 白条不参与聚合，调用方默认 0）
-     */
-    private Map<Long, BigDecimal> loadInboundedWeightMap(List<BarInfo> bars) {
-        List<Long> singingBarIds = bars.stream()
-            .filter(b -> BAR_STATUS_SINGING.equals(b.getStatus()))
-            .map(BarInfo::getId)
-            .toList();
-        if (singingBarIds.isEmpty()) {
-            return Map.of();
-        }
-        List<ProductInhouse> inhouses = productInhouseMapper.selectList(
-            new LambdaQueryWrapper<ProductInhouse>()
-                .select(ProductInhouse::getWhiteBarId, ProductInhouse::getProductWeight)
-                .in(ProductInhouse::getWhiteBarId, singingBarIds));
-        Map<Long, BigDecimal> map = new HashMap<>();
-        for (ProductInhouse ih : inhouses) {
-            if (ih.getWhiteBarId() == null) {
-                continue;
-            }
-            BigDecimal w = ih.getProductWeight() == null ? BigDecimal.ZERO : ih.getProductWeight();
-            map.merge(ih.getWhiteBarId(), w, BigDecimal::add);
-        }
-        return map;
     }
 
     @Override
@@ -420,9 +395,15 @@ public class PigBurnRecordServiceImpl
             .toList();
         List<String> urls = imageUrlResolver.resolveList(items);
         boolean urlsAligned = urls.size() == types.size();
-        // row171：带 barInfoId 时聚合该白条 product_inhouse 每 productId 已入库行数（半只两扇 → 2），
-        // 回填 recordedCount，让 mp 卡片「已入库 x/2」计数在重进 / 热重载后仍准确（不再仅靠 session Map）。
-        Map<Long, Integer> recordedCountMap = loadRecordedCountMap(barInfoId);
+        // 入库事实计数不会随直发、打包等后续消耗消失；每个产品同时返回累计实重。
+        List<BurnInboundVo> recorded = barInfoId == null ? List.of()
+            : stockFlowMapper.selectBurnInbounds(List.of(barInfoId));
+        Map<Long, Integer> recordedCountMap = new HashMap<>();
+        Map<Long, BigDecimal> recordedWeights = new HashMap<>();
+        for (BurnInboundVo r : recorded) {
+            recordedCountMap.merge(r.getProductId(), 1, Integer::sum);
+            recordedWeights.merge(r.getProductId(), r.getWeight() == null ? BigDecimal.ZERO : r.getWeight(), BigDecimal::add);
+        }
         List<BurnProductTypeVo> result = new ArrayList<>(types.size());
         for (int i = 0; i < types.size(); i++) {
             ProductInfo p = types.get(i);
@@ -433,42 +414,20 @@ public class PigBurnRecordServiceImpl
             vo.setProductType(resolveProductType(p));
             vo.setImageUrl(urlsAligned ? urls.get(i) : null);
             vo.setRecordedCount(recordedCountMap.getOrDefault(p.getId(), 0));
+            vo.setRecordedWeight(recordedWeights.getOrDefault(p.getId(), BigDecimal.ZERO));
+            boolean whiteBar = WHITE_BAR_BELONG_TYPE.equals(p.getBelongType());
+            vo.setIsWhiteBar(whiteBar);
+            vo.setMaxCount(whiteBar ? 2 : 1);
+            List<LocationPickerVo> locations = queryProductInboundLocations(p.getId());
+            if (!locations.isEmpty()) {
+                vo.setDefaultLocationId(locations.getFirst().getId());
+                vo.setDefaultLocationName(locations.getFirst().getLocationName());
+            }
             result.add(vo);
         }
         return result;
     }
 
-    /**
-     * 聚合该白条 {@code product_inhouse} 中每 productId 已入库行数（row171）。
-     *
-     * <p>一头白条一次燎毛产出行 = 一条 inhouse（半只分两次录 → 同 productId 2 条 → count=2）。
-     * barInfoId 为 null 返空表（recordedCount 恒 0）。</p>
-     *
-     * @return productId → 已入库行数
-     */
-    private Map<Long, Integer> loadRecordedCountMap(Long barInfoId) {
-        if (barInfoId == null) {
-            return Map.of();
-        }
-        List<ProductInhouse> rows = productInhouseMapper.selectList(
-            new LambdaQueryWrapper<ProductInhouse>()
-                .select(ProductInhouse::getProductId)
-                .eq(ProductInhouse::getWhiteBarId, barInfoId));
-        Map<Long, Integer> map = new HashMap<>();
-        for (ProductInhouse ih : rows) {
-            if (ih.getProductId() != null) {
-                map.merge(ih.getProductId(), 1, Integer::sum);
-            }
-        }
-        return map;
-    }
-
-    /**
-     * row170：猪肉类可选入库库位 = 固定「猪肉鲜品库」+「冻品库」两个启用库位（按此顺序）。
-     *
-     * <p>两库 location_type 在 v3 reseed 后均为 {@code warehouse}，无法靠字典类型过滤 → 按库位名精确匹配。
-     * 缺某库（如未 seed）则跳过，返回可命中的子集。</p>
-     */
     @Override
     public List<LocationPickerVo> queryPorkOptionLocations() {
         List<String> names = List.of(PORK_FRESH_LOCATION_NAME, FROZEN_LOCATION_NAME);
@@ -593,67 +552,24 @@ public class PigBurnRecordServiceImpl
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void finishBurn(Long barInfoId, Long operatorId) {
-        if (barInfoId == null) {
-            throw new ServiceException("白条 ID 不能为空");
-        }
-        // ---------- Step 1：校验 bar 在燎毛中态 ----------
-        BarInfo bar = barInfoMapper.selectById(barInfoId);
-        if (bar == null) {
-            throw new ServiceException("白条不存在：" + barInfoId);
-        }
-        if (!BAR_STATUS_SINGING.equals(bar.getStatus())) {
-            throw new ServiceException("白条状态不符（当前：" + bar.getStatus() + "，需燎毛中），请先录入产品入库");
-        }
+        finishBurn(barInfoId, operatorId, false);
+    }
 
-        // ---------- Step 2：聚合该白条已入库产品 → 校验总重 + 半只须集齐 2 扇（后端兜底前端约束）----------
-        // FOR UPDATE（V6-R43）：产出行的入库重量可被 admin「燎毛间产品重量调整」并发改写。若这里用普通
-        // 快照读，「读到旧合计 → 对方调整提交 → 本事务按旧合计写 bar.in_weight」会让白条入库重量与产出行
-        // 对不上。加锁读把产出行纳入本事务写集：并发调整要么排在本次完成之前（读到新值），要么在本事务
-        // 提交后才拿到锁、随即因白条已 in_stock 被自身的窗口校验拒绝。
-        List<ProductInhouse> inhouses = productInhouseMapper.selectList(
-            new LambdaQueryWrapper<ProductInhouse>()
-                .eq(ProductInhouse::getWhiteBarId, bar.getId())
-                .last("FOR UPDATE"));
-        if (inhouses.isEmpty()) {
-            throw new ServiceException("尚未录入任何产品入库，无法处理完成");
-        }
+    @Override
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public CompletionCheckVo finishCheck(Long barInfoId) {
+        BurnCompletionState state = loadBurnCompletion(barInfoId);
+        return completionPolicy.burn(state.receivedWeight(), state.bar().getMarketingWeight());
+    }
 
-        Map<Long, ProductInfo> typeMap = loadWhiteBarTypeMap();
-        BigDecimal inWeightTotal = BigDecimal.ZERO;
-        int halfCount = 0;
-        for (ProductInhouse ih : inhouses) {
-            BigDecimal w = ih.getProductWeight();
-            if (w != null) {
-                inWeightTotal = inWeightTotal.add(w);
-            }
-            ProductInfo type = typeMap.get(ih.getProductId());
-            if (type != null && PRODUCT_TYPE_HALF.equals(resolveProductType(type))) {
-                halfCount++;
-            }
-        }
-        // 白条（半只）必须集齐 2 扇（一头整猪左右两扇）才能处理完成；
-        // 只录了猪头 / 猪脚 等非白条燎毛间原材料（halfCount=0）不受本约束。
-        if (halfCount > 0 && halfCount != 2) {
-            throw new ServiceException("半只需录入 2 个才能处理完成，当前已录 " + halfCount + "/2");
-        }
-        // 累计入库总重 ≤ 头皮肉重量（到场重 arrive_weight）。arrive 为 null（未称重）时跳过本校验（向后兼容）。
-        BigDecimal headSkinWeight = bar.getArriveWeight();
-        if (headSkinWeight != null && inWeightTotal.compareTo(headSkinWeight) > 0) {
-            throw new ServiceException("已录入产品总重不能超过头皮肉重量");
-        }
-        // 白条重（in_weight）≤ 出栏重（marketing_weight）—— 出品率的分子不得超过分母。
-        //
-        // 为什么上面那道 arrive_weight 闸挡不住：它在 arrive_weight 为 NULL 时整段跳过，而外购猪
-        // 与任何没走称重就直接处理完成的白条，arrive_weight 恰恰就是 NULL；此时 in_weight 无上界，
-        // 分母 marketing_weight 却非空（自养取出栏重、外购取毛猪重，建 bar 时就写死），
-        // 于是单头录错就能把当日出品率顶过 100%。这里按分母本身再兜一道。
-        // marketing_weight 为 null（极老数据）时同样跳过，与既有风格一致。
-        BigDecimal marketingWeight = bar.getMarketingWeight();
-        if (marketingWeight != null && inWeightTotal.compareTo(marketingWeight) > 0) {
-            throw new ServiceException("白条重量不能超过出栏重量（出栏重 "
-                + marketingWeight.stripTrailingZeros().toPlainString() + "kg，当前已录 "
-                + inWeightTotal.stripTrailingZeros().toPlainString() + "kg）");
-        }
+    @Override
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public void finishBurn(Long barInfoId, Long operatorId, Boolean confirmAbnormalWeight) {
+        BurnCompletionState state = loadBurnCompletion(barInfoId);
+        BarInfo bar = state.bar();
+        BigDecimal inWeightTotal = state.receivedWeight();
+        WeightCompletionPolicy.requireConfirmation(
+            completionPolicy.burn(inWeightTotal, bar.getMarketingWeight()), confirmAbnormalWeight);
 
         // ---------- Step 3：UPDATE bar status singing → in_stock（燎毛处理完成=已入库，乐观锁）----------
         // 下游分割 availableBars / 库存自检均认 in_stock，故燎毛终态直接落 in_stock，
@@ -667,30 +583,59 @@ public class PigBurnRecordServiceImpl
         // 重量 = 本次入库总重 inWeightTotal。recordEventByEarNo 全程容错（无生码白条 warn 跳过，不拖垮燎毛事务）。
         traceService.recordEventByEarNo(bar.getEarNo(), TraceContentConst.WHITE_BAR_IN, inWeightTotal);
 
-        // ---------- Step 5：DENGBO row27 燎毛损耗 ----------
-        // 燎毛处理完成时，剩余未入库重量（= 头皮肉重量[到场重 arrive_weight] − 本次入库产品总重 inWeightTotal）
-        // 计入「燎毛损耗」统一损耗流水，进「损耗总览」。arrive 为 null（未称重）或剩余 ≤ 0 时不记
-        //（record 内部对 lossWeight ≤ 0 自动跳过）。
-        // 损耗归属产品 = 白条产品（主数据里的「半扇」），与分割损耗 / 预冷损耗同一口径，三者在损耗总览里归到同一产品行；
-        // product_code / product_name / product_unit / belong_type 快照由 lossFlowService.record 按 productId 自动回填。
-        // 另带耳号便于追溯到具体整猪。
-        if (headSkinWeight != null) {
-            BigDecimal burnLoss = headSkinWeight.subtract(inWeightTotal);
-            if (burnLoss.signum() > 0) {
-                LossFlow loss = new LossFlow();
-                loss.setLossType(LOSS_TYPE_BURN);
-                loss.setLossWeight(burnLoss);
-                loss.setLossDate(new Date());
-                loss.setProductId(resolveWhiteBarProductId());
-                loss.setEarNo(bar.getEarNo());
-                loss.setOperatorId(operatorId);
-                loss.setSourceBizType(LOSS_SOURCE_BIZ_BURN);
-                loss.setSourceBizId(bar.getId());
-                lossFlowService.record(loss);
-            }
+        BigDecimal shippedWeight = barInfoMapper.fullyDirectShippedWeight(bar.getId());
+        if (shippedWeight != null) {
+            barInfoMapper.updateStatusToShipOut(bar.getId(), new Date(), shippedWeight, operatorId);
         }
+
+
     }
 
+
+    private record BurnCompletionState(BarInfo bar, BigDecimal receivedWeight) { }
+
+    /** 预检和真正完成都执行相同硬约束；确认标志不能绕过它们。 */
+    private BurnCompletionState loadBurnCompletion(Long barInfoId) {
+        if (barInfoId == null) {
+            throw new ServiceException("白条 ID 不能为空");
+        }
+        // ---------- Step 1：校验 bar 在燎毛中态 ----------
+        BarInfo bar = barInfoMapper.selectForUpdate(barInfoId);
+        if (bar == null) {
+            throw new ServiceException("白条不存在：" + barInfoId);
+        }
+        if (!BAR_STATUS_SINGING.equals(bar.getStatus())) {
+            throw new ServiceException("白条状态不符（当前：" + bar.getStatus() + "，需燎毛中），请先录入产品入库");
+        }
+
+        // 累计入库事实包含已经直发/消耗的产出；整猪锁与录入、调整互斥。
+        List<BurnInboundVo> inbounds = stockFlowMapper.selectBurnInbounds(List.of(bar.getId()));
+        if (inbounds.isEmpty()) {
+            throw new ServiceException("尚未录入任何产品入库，无法处理完成");
+        }
+        Map<Long, ProductInfo> typeMap = loadWhiteBarTypeMap();
+        BigDecimal inWeightTotal = BigDecimal.ZERO;
+        int halfCount = 0;
+        for (BurnInboundVo inbound : inbounds) {
+            inWeightTotal = inWeightTotal.add(inbound.getWeight() == null ? BigDecimal.ZERO : inbound.getWeight());
+            ProductInfo type = typeMap.get(inbound.getProductId());
+            if (type != null && PRODUCT_TYPE_HALF.equals(resolveProductType(type))) {
+                halfCount++;
+            }
+        }
+        if (halfCount != 2) {
+            throw new ServiceException("半只需录入 2 个才能处理完成，当前已录 " + halfCount + "/2");
+        }
+        // 完成时再次校验累计不超过出栏重；缺失基准重量由比例判定作为数据异常拒绝。
+        BigDecimal marketingWeight = bar.getMarketingWeight();
+        if (marketingWeight != null && inWeightTotal.compareTo(marketingWeight) > 0) {
+            throw new ServiceException("白条重量不能超过出栏重量（出栏重 "
+                + marketingWeight.stripTrailingZeros().toPlainString() + "kg，当前已录 "
+                + inWeightTotal.stripTrailingZeros().toPlainString() + "kg）");
+        }
+
+        return new BurnCompletionState(bar, inWeightTotal);
+    }
 
     /**
      * 按产品主数据判定结构化产品类别（FIX-WMS-MP-BURN-001 录入约束用）。

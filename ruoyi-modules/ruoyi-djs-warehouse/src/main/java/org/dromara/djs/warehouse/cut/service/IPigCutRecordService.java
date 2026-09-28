@@ -43,6 +43,8 @@ public interface IPigCutRecordService {
      */
     void submitCutOut(PigCutOutBo bo);
 
+    List<org.dromara.djs.warehouse.cut.domain.vo.CutPartReceipt> submitCutOutWithReceipt(PigCutOutBo bo);
+
     /**
      * 阶段 3：出库完成。
      */

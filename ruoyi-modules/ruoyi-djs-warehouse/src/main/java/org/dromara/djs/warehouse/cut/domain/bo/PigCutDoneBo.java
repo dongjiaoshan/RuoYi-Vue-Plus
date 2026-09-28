@@ -30,6 +30,9 @@ public class PigCutDoneBo {
     @NotNull(message = "{cut.cut_record_id.required}")
     private Long cutRecordId;
 
+    /** 用户明确确认异常比例后可传 true；不豁免状态/数量/超重等硬约束。 */
+    private Boolean confirmAbnormalWeight;
+
     /**
      * 凭证图 OSS IDs CSV（可选）。
      */

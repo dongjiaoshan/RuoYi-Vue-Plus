@@ -168,6 +168,9 @@ class PigCutRecordServiceImplTest {
 
     @BeforeEach
     void setup() {
+        when(cutMapper.selectForUpdate(anyLong())).thenAnswer(i -> cutMapper.selectById(i.getArgument(0, Long.class)));
+        when(barInfoMapper.selectById(anyLong())).thenAnswer(i -> barInfoMapper.selectForUpdate(i.getArgument(0, Long.class)));
+
         service = new TestablePigCutRecordServiceImpl(
             cutMapper, barInfoMapper, flowMapper, productInfoMapper, productInhouseMapper, locationInfoMapper, locationStockMapper, supplierMapper, bizCodeGenerator, traceService, imageUrlResolver, stockCheckService, lossFlowService, pigQueryService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
@@ -203,7 +206,7 @@ class PigCutRecordServiceImplTest {
     @Test
     @DisplayName("submitPickup: happy → cut_record INSERT + bar_info pending_cut UPDATE + 字段冗余正确")
     void testPickup_Happy() {
-        when(barInfoMapper.selectById(70001L)).thenReturn(sampleBar());
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(sampleBar());
         when(barInfoMapper.updateStatusToPendingCut(eq(70001L), eq(9001L))).thenReturn(1);
         when(cutMapper.insert(any(PigCutRecord.class))).thenAnswer(inv -> {
             PigCutRecord r = inv.getArgument(0);
@@ -233,7 +236,7 @@ class PigCutRecordServiceImplTest {
     void testPickup_BarStatusInvalid() {
         BarInfo bar = sampleBar();
         bar.setStatus("cut_done");
-        when(barInfoMapper.selectById(70001L)).thenReturn(bar);
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(bar);
 
         assertThatThrownBy(() -> service.submitPickup(samplePickupBo()))
             .isInstanceOf(ServiceException.class)
@@ -246,7 +249,7 @@ class PigCutRecordServiceImplTest {
     @Test
     @DisplayName("submitPickup: 并发抢占 affectedRows=0 → 抛 已被并发领用")
     void testPickup_ConcurrentLost() {
-        when(barInfoMapper.selectById(70001L)).thenReturn(sampleBar());
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(sampleBar());
         when(barInfoMapper.updateStatusToPendingCut(eq(70001L), eq(9001L))).thenReturn(0);
 
         assertThatThrownBy(() -> service.submitPickup(samplePickupBo()))
@@ -370,7 +373,7 @@ class PigCutRecordServiceImplTest {
         // 入库重量 81.5 → 滴水损耗自动 = 81.5 − 80 = 1.5；出库重量 = pickupWeight = 80
         BarInfo bar = sampleBar();
         bar.setInWeight(new BigDecimal("81.500"));
-        when(barInfoMapper.selectById(70001L)).thenReturn(bar);
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(bar);
         when(cutMapper.updateStatusToDone(eq(80001L), any(Date.class), any(BigDecimal.class),
             any(), any(), eq(9001L))).thenReturn(1);
         when(barInfoMapper.updateStatusToCutDone(eq(70001L), any(Date.class), any(BigDecimal.class),
@@ -462,7 +465,7 @@ class PigCutRecordServiceImplTest {
     @Test
     @DisplayName("按产出行领用 happy（F0-1+F0-2）：只按行 id 扣所选白条篮（行 B 余量不变，绝不走组维度扣）+ cut_out 流水 change_num 为负 + 半只 cut_record 即建")
     void testPickupByRow_DeductsSelectedRowOnly_FlowNegative() {
-        when(barInfoMapper.selectById(70001L)).thenReturn(sampleBar());
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(sampleBar());
         when(productInhouseMapper.selectById(60001L)).thenReturn(inhouseRowA());
         when(productInhouseMapper.selectList(any())).thenReturn(List.of());   // 已领行合计 = 0
         when(productInhouseMapper.update(any(), any())).thenReturn(1);        // 乐观锁置行已领
@@ -510,7 +513,7 @@ class PigCutRecordServiceImplTest {
     @Test
     @DisplayName("按产出行领用（F0-2）：白条篮扣减 affected=0（并发抢占/余量不足）→ 抛异常回滚，流水与 cut_record 零写入（防单边分叉）")
     void testPickupByRow_DeductLost_Throws_NoFlow() {
-        when(barInfoMapper.selectById(70001L)).thenReturn(sampleBar());
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(sampleBar());
         when(productInhouseMapper.selectById(60001L)).thenReturn(inhouseRowA());
         when(productInhouseMapper.selectList(any())).thenReturn(List.of());
         when(productInhouseMapper.update(any(), any())).thenReturn(1);
@@ -533,7 +536,7 @@ class PigCutRecordServiceImplTest {
         row.setLocationId(null);   // 旧数据：燎毛产出行缺库位
         LocationStock stockA = barStockRowA();
         stockA.setLocationId(90005L);
-        when(barInfoMapper.selectById(70001L)).thenReturn(sampleBar());
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(sampleBar());
         when(productInhouseMapper.selectById(60001L)).thenReturn(row);
         when(productInhouseMapper.selectList(any())).thenReturn(List.of());
         when(productInhouseMapper.update(any(), any())).thenReturn(1);
@@ -557,7 +560,7 @@ class PigCutRecordServiceImplTest {
     @Test
     @DisplayName("按产出行领用（邓博 row17）：领用后篮内残量>0 → 同事务二次扣减清零 + 补 flow_type=loss 出库流水（残量=入库重−领用重）")
     void testPickupByRow_ResidualDrainedToLossFlow() {
-        when(barInfoMapper.selectById(70001L)).thenReturn(sampleBar());
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(sampleBar());
         when(productInhouseMapper.selectById(60001L)).thenReturn(inhouseRowA());
         when(productInhouseMapper.selectList(any())).thenReturn(List.of());
         when(productInhouseMapper.update(any(), any())).thenReturn(1);
@@ -597,6 +600,41 @@ class PigCutRecordServiceImplTest {
         assertThat(lossFlow.getChangeQuantity()).isEqualByComparingTo("2.000");
         assertThat(lossFlow.getWhiteBarNo()).isEqualTo("WB-A");
         assertThat(lossFlow.getRemark()).contains("残量转损耗出库");
+    }
+
+    @Test
+    @DisplayName("工作台：40kg全重领用 + 两次5kg产物，白条OT仍仅40kg且只领用一次")
+    void workbenchOutputsNeverRepeatWhiteBarOutflow() {
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(sampleBar());
+        ProductInhouse source=inhouseRowA(); source.setProductWeight(new BigDecimal("40"));
+        when(productInhouseMapper.selectById(60001L)).thenReturn(source);
+        when(productInhouseMapper.selectList(any())).thenReturn(List.of());
+        when(productInhouseMapper.update(any(),any())).thenReturn(1);
+        LocationStock whiteStock=barStockRowA(); whiteStock.setProductStock(new BigDecimal("40"));
+        when(locationStockMapper.selectOne(any())).thenReturn(whiteStock);
+        when(locationStockMapper.deductStockById(eq(111L),any(),eq(9001L))).thenReturn(1);
+        when(cutMapper.insert(any(PigCutRecord.class))).thenAnswer(i -> {
+            PigCutRecord created=i.getArgument(0); created.setId(80001L); return 1;
+        });
+        service.submitPickup(pickupRowBo());
+        PigCutRecord record=sampleRecord("picked"); record.setWhiteBarNo("WB-A"); record.setPickupWeight(new BigDecimal("40"));
+        when(cutMapper.selectById(80001L)).thenReturn(record);
+        when(cutMapper.updateStatusToCutting(any(),any(),any())).thenReturn(1);
+        when(flowMapper.sumCutOutByWhiteBarNo("WB-A")).thenReturn(BigDecimal.ZERO,new BigDecimal("5"));
+        when(locationInfoMapper.selectById(90002L)).thenReturn(new LocationInfo());
+        var bo=sampleCutOutBo(); bo.setPartItems(List.of(bo.getPartItems().getFirst()));
+        bo.getPartItems().getFirst().setProductWeight(new BigDecimal("5"));
+        service.submitCutOutWithReceipt(bo);
+        record.setCutStatus("cutting");
+        service.submitCutOutWithReceipt(bo);
+        var flows=ArgumentCaptor.forClass(StockFlow.class); verify(flowMapper,times(3)).insert(flows.capture());
+        var whiteOut=flows.getAllValues().stream().filter(f -> "cut_out".equals(f.getFlowType())).toList();
+        assertThat(whiteOut).hasSize(1);
+        assertThat(whiteOut.getFirst().getChangeQuantity()).isEqualByComparingTo("40");
+        assertThat(flows.getAllValues().stream().filter(f -> "cut_out_in".equals(f.getFlowType()))
+            .map(StockFlow::getChangeQuantity).reduce(BigDecimal.ZERO,BigDecimal::add)).isEqualByComparingTo("10");
+        verify(locationStockMapper,times(1)).deductStockById(eq(111L),eq(new BigDecimal("40")),eq(9001L));
+        verify(cutMapper,times(1)).insert(any(PigCutRecord.class));
     }
 
 }

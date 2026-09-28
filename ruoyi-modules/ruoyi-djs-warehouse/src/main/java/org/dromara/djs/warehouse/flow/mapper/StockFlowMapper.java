@@ -22,6 +22,24 @@ import java.util.List;
  */
 public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> {
 
+    /** 历史流水没有 white_bar_id 时，由同租户白条流水号关联原始产出行（包括已消费软删行）。 */
+    @Select("<script>SELECT COALESCE(f.white_bar_id, i.white_bar_id) AS bar_info_id, "
+        + "f.product_id, f.white_bar_no, f.change_quantity AS weight, f.flow_date AS flow_time "
+        + "FROM t_warehouse_stock_flow f LEFT JOIN "
+        + "(SELECT tenant_id, white_bar_no, MAX(white_bar_id) AS white_bar_id FROM t_warehouse_product_inhouse "
+        + "WHERE white_bar_id IS NOT NULL GROUP BY tenant_id, white_bar_no) i "
+        + "ON f.white_bar_id IS NULL AND i.white_bar_no = f.white_bar_no AND i.tenant_id = f.tenant_id "
+        + "WHERE f.del_flag='0' AND f.flow_type='slaughter_burn' AND f.inout_type='IN' "
+        + "AND COALESCE(f.white_bar_id, i.white_bar_id) IN "
+        + "<foreach collection='barIds' item='id' open='(' separator=',' close=')'>#{id}</foreach> "
+        + "ORDER BY f.id FOR UPDATE</script>")
+    List<org.dromara.djs.warehouse.burn.domain.vo.BurnInboundVo> selectBurnInbounds(
+        @Param("barIds") java.util.Collection<Long> barIds);
+
+    /** 当前读确保等待整猪锁后能看见刚完成的幂等回执。 */
+    @Select("SELECT * FROM t_warehouse_stock_flow WHERE request_key=#{key} AND del_flag='0' FOR UPDATE")
+    StockFlow selectRequestReceipt(@Param("key") String key);
+
     /**
      * 按当前用户 + 产品 + 流水类型 + 今日（{@code DATE(flow_date)=CURDATE()}）SUM change_quantity。
      *
@@ -227,7 +245,7 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
         + "  FROM t_warehouse_stock_flow "
         + " WHERE flow_type    = 'cut_out_in' "
         + "   AND white_bar_id = #{whiteBarId} "
-        + "   AND del_flag     = '0'")
+        + "   AND del_flag     = '0' FOR UPDATE")
     BigDecimal sumCutOutByWhiteBarId(@Param("whiteBarId") Long whiteBarId);
 
     /**
@@ -244,7 +262,7 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
         + "  FROM t_warehouse_stock_flow "
         + " WHERE flow_type     = 'cut_out_in' "
         + "   AND white_bar_no  = #{whiteBarNo} "
-        + "   AND del_flag      = '0'")
+        + "   AND del_flag      = '0' FOR UPDATE")
     BigDecimal sumCutOutByWhiteBarNo(@Param("whiteBarNo") String whiteBarNo);
 
     /**

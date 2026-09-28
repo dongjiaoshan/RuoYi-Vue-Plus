@@ -361,7 +361,17 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
     public List<Long> productOut(StockOutBo bo) {
         List<Long> flowIds = new ArrayList<>();
         for (Map.Entry<Long, BigDecimal> e : allocateFifo(bo.getStockIds(), bo.getQuantity()).entrySet()) {
-            flowIds.add(productOutOneBasket(bo, e.getKey(), e.getValue()));
+            flowIds.add(productOutOneBasket(bo, e.getKey(), e.getValue(), FLOW_BACKSTAGE_OUT));
+        }
+        return flowIds;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public List<Long> cutRoomOut(StockOutBo bo) {
+        List<Long> flowIds = new ArrayList<>();
+        for (Map.Entry<Long, BigDecimal> e : allocateFifo(bo.getStockIds(), bo.getQuantity()).entrySet()) {
+            flowIds.add(productOutOneBasket(bo, e.getKey(), e.getValue(), "cut_room_out"));
         }
         return flowIds;
     }
@@ -373,7 +383,7 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
      * 组级分配与单篮扣减必须分层：混在一起写，扣到一半失败时报的错会指向某一个篮的余额，
      * 与页面上那一行显示的合计对不上。</p>
      */
-    private Long productOutOneBasket(StockOutBo bo, Long stockId, BigDecimal quantity) {
+    private Long productOutOneBasket(StockOutBo bo, Long stockId, BigDecimal quantity, String flowType) {
         // 1. 取库存行，解析 locationId + productId（按行出库，避免前端透传可篡改的 location/product）
         LocationStock stock = baseMapper.selectById(stockId);
         if (stock == null) {
@@ -409,7 +419,9 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         flow.setProductId(productId);
         flow.setWarehouseId(locationId);
         flow.setInoutType(INOUT_OUT);
-        flow.setFlowType(FLOW_BACKSTAGE_OUT);
+        flow.setFlowType(flowType);
+        flow.setEarNo(stock.getEarNo());
+        flow.setWhiteBarNo(stock.getWhiteBarNo());
         flow.setStockOutDest(bo.getStockOutDest());
         flow.setChangeNum(quantity.negate());
         flow.setChangeQuantity(quantity);

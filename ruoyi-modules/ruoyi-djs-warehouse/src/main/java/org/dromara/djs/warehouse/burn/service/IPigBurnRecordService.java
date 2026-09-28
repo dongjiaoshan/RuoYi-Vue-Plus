@@ -62,6 +62,10 @@ public interface IPigBurnRecordService {
      */
     void finishBurn(Long barInfoId, Long operatorId);
 
+    void finishBurn(Long barInfoId, Long operatorId, Boolean confirmAbnormalWeight);
+
+    org.dromara.djs.warehouse.inout.domain.vo.CompletionCheckVo finishCheck(Long barInfoId);
+
     /**
      * 已出栏待燎毛入库白条列表（bar_info status IN ('pending_singe','singing')，按出栏时间倒序）。
      *

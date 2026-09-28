@@ -125,9 +125,15 @@ public class AppletPigBurnRecordController extends BaseController {
      * {@code singed}（燎毛处理完成终态），从待燎毛列表移除。处理完成人取当前登录人。</p>
      */
     @SaCheckLogin
+    @GetMapping("/finish-check")
+    public R<org.dromara.djs.warehouse.inout.domain.vo.CompletionCheckVo> finishCheck(@RequestParam Long barInfoId) {
+        return R.ok(service.finishCheck(barInfoId));
+    }
+
+    @SaCheckLogin
     @PostMapping("/finish")
     public R<Void> finish(@Valid @RequestBody PigBurnFinishBo bo) {
-        service.finishBurn(bo.getBarInfoId(), LoginHelper.getUserId());
+        service.finishBurn(bo.getBarInfoId(), LoginHelper.getUserId(), bo.getConfirmAbnormalWeight());
         return R.ok();
     }
 

@@ -97,6 +97,7 @@ class PigBurnRecordServiceImplTest {
     @Mock
     private org.dromara.djs.warehouse.loss.service.ILossFlowService lossFlowService;
 
+    @Mock private org.dromara.common.core.service.DictService dictService;
     private TestablePigBurnRecordServiceImpl service;
 
     private static final Long BAR_ID = 5001L;
@@ -126,8 +127,9 @@ class PigBurnRecordServiceImplTest {
                                          IBizCodeGenerator g, IStockCheckService cs,
                                          org.dromara.djs.warehouse.trace.service.ITraceService ts,
                                          org.dromara.djs.common.image.service.ImageUrlResolver ir,
-                                         org.dromara.djs.warehouse.loss.service.ILossFlowService lfs) {
-            super(b, f, bi, ih, ls, l, pm, g, cs, ts, ir, lfs);
+                                         org.dromara.djs.warehouse.loss.service.ILossFlowService lfs,
+                                         org.dromara.djs.warehouse.inout.service.WeightCompletionPolicy policy) {
+            super(b, f, bi, ih, ls, l, pm, g, cs, ts, ir, lfs, policy);
         }
 
         @Override
@@ -154,7 +156,10 @@ class PigBurnRecordServiceImplTest {
         service = new TestablePigBurnRecordServiceImpl(
             burnMapper, flowMapper, barInfoMapper, productInhouseMapper, locationStockMapper,
             locationInfoMapper, productInfoMapper, bizCodeGenerator, stockCheckService, traceService, imageUrlResolver,
-            lossFlowService);
+            lossFlowService, new org.dromara.djs.warehouse.inout.service.WeightCompletionPolicy(dictService));
+        var threshold = new org.dromara.common.core.domain.dto.DictDataDTO();
+        threshold.setDictValue("50"); threshold.setIsDefault("Y");
+        when(dictService.getDictData(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(threshold));
     }
 
     private BarInfo sampleBar(String status) {
@@ -216,7 +221,7 @@ class PigBurnRecordServiceImplTest {
     @Test
     @DisplayName("submitBurnRecord: happy → 2 product_inhouse + 2 IN 流水 + bar 推进 in_stock(乐观锁 in_weight 合计)")
     void testSubmit_Happy() {
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBar("pending_singe"));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBar("pending_singe"));
         when(locationInfoMapper.selectById(LOCATION_ID)).thenReturn(new LocationInfo());
         stubTypes();
         when(burnMapper.insert(any(PigBurnRecord.class))).thenAnswer(inv -> {
@@ -227,7 +232,7 @@ class PigBurnRecordServiceImplTest {
         when(bizCodeGenerator.generate(eq(BizCodeType.STOCK_FLOW_NO), anyMap())).thenReturn("F2606040IN0001");
         when(productInhouseMapper.insert(any(ProductInhouse.class))).thenReturn(1);
         when(flowMapper.insert(any(StockFlow.class))).thenReturn(1);
-        when(barInfoMapper.updateStatusToSinging(eq(BAR_ID), any(Date.class), eq(OPERATOR_ID)))
+        when(barInfoMapper.updateBurnProgress(eq(BAR_ID), any(BigDecimal.class), any(Date.class), eq(OPERATOR_ID)))
             .thenReturn(1);
 
         Long id = service.submitBurnRecord(sampleBo());
@@ -259,7 +264,7 @@ class PigBurnRecordServiceImplTest {
 
         // bar 推进 singing（燎毛中间态；FIX-WMS-MP-BURN-001 不再直推 in_stock）
         verify(barInfoMapper, times(1))
-            .updateStatusToSinging(eq(BAR_ID), any(Date.class), eq(OPERATOR_ID));
+            .updateBurnProgress(eq(BAR_ID), any(BigDecimal.class), any(Date.class), eq(OPERATOR_ID));
         verify(barInfoMapper, never())
             .updateStatusToInStock(eq(BAR_ID), any(BigDecimal.class), any(Date.class), eq(OPERATOR_ID));
     }
@@ -267,7 +272,7 @@ class PigBurnRecordServiceImplTest {
     @Test
     @DisplayName("submitBurnRecord: bar 状态不符(in_stock) → 抛 + 不写入")
     void testSubmit_BarStatusInvalid() {
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBar("in_stock"));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBar("in_stock"));
 
         assertThatThrownBy(() -> service.submitBurnRecord(sampleBo()))
             .isInstanceOf(ServiceException.class)
@@ -281,7 +286,7 @@ class PigBurnRecordServiceImplTest {
     @Test
     @DisplayName("submitBurnRecord: bar 不存在 → 抛 白条不存在")
     void testSubmit_BarNotFound() {
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(null);
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(null);
 
         assertThatThrownBy(() -> service.submitBurnRecord(sampleBo()))
             .isInstanceOf(ServiceException.class)
@@ -293,7 +298,7 @@ class PigBurnRecordServiceImplTest {
     @Test
     @DisplayName("submitBurnRecord: 无效产品类型 → 抛 + 燎毛记录不写")
     void testSubmit_InvalidProductType() {
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBar("pending_singe"));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBar("pending_singe"));
         when(locationInfoMapper.selectById(LOCATION_ID)).thenReturn(new LocationInfo());
         stubTypes();
 
@@ -316,15 +321,15 @@ class PigBurnRecordServiceImplTest {
         // r194/FIX-WMS-CUTPICKUP-SPLIT-001：重量上限口径 = bar_info.arrive_weight（头皮肉重量），
         // 非 bo.arriveWeight。单品 ≤ 头皮肉重量、累计（DB 已入库 + 本次）≤ 头皮肉重量。
         BarInfo bar = sampleBar("pending_singe");
-        bar.setArriveWeight(new BigDecimal("84.000")); // 单品 80.3 / 5.2 均 ≤ 84，累计 85.5 > 84
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar);
+        bar.setMarketingWeight(new BigDecimal("84.000")); // 单品 80.3 / 5.2 均 ≤ 84，累计 85.5 > 84
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar);
         when(locationInfoMapper.selectById(LOCATION_ID)).thenReturn(new LocationInfo());
         stubTypes();
         // productInhouseMapper.selectList 未 stub → 空列表（该白条尚无已入库产出行）
 
         assertThatThrownBy(() -> service.submitBurnRecord(sampleBo()))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("不能超过头皮肉重量");
+            .hasMessageContaining("不能超过出栏重量");
 
         verify(burnMapper, never()).insert(any(PigBurnRecord.class));
     }
@@ -340,10 +345,11 @@ class PigBurnRecordServiceImplTest {
         return bar;
     }
 
-    private ProductInhouse inhouse(Long productId, String weight) {
-        ProductInhouse ih = new ProductInhouse();
+    private org.dromara.djs.warehouse.burn.domain.vo.BurnInboundVo inhouse(Long productId, String weight) {
+        var ih = new org.dromara.djs.warehouse.burn.domain.vo.BurnInboundVo();
         ih.setProductId(productId);
-        ih.setProductWeight(new BigDecimal(weight));
+        ih.setWeight(new BigDecimal(weight));
+        ih.setBarInfoId(BAR_ID);
         return ih;
     }
 
@@ -351,8 +357,8 @@ class PigBurnRecordServiceImplTest {
     @Test
     @DisplayName("finishBurn: happy(半扇 2 扇合计 80.3 ≤ 头皮肉重 110.5) → bar singing→in_stock 回填 in_weight 合计")
     void testFinish_Happy() {
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "110.500"));
-        when(productInhouseMapper.selectList(any(LambdaQueryWrapper.class)))
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "110.500"));
+        when(flowMapper.selectBurnInbounds(any()))
             .thenReturn(List.of(inhouse(TYPE_HALF, "40.150"), inhouse(TYPE_HALF, "40.150")));
         when(productInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(sampleTypes());
         when(barInfoMapper.updateStatusToInStock(eq(BAR_ID), any(BigDecimal.class), any(Date.class), eq(OPERATOR_ID)))
@@ -368,14 +374,14 @@ class PigBurnRecordServiceImplTest {
     @Test
     @DisplayName("finishBurn: 累计总重 > 头皮肉重量 → 抛 不能超过头皮肉重量 + 不推进")
     void testFinish_TotalExceedsMarketing() {
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "100.000"));
-        when(productInhouseMapper.selectList(any(LambdaQueryWrapper.class)))
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "100.000"));
+        when(flowMapper.selectBurnInbounds(any()))
             .thenReturn(List.of(inhouse(TYPE_HALF, "60.000"), inhouse(TYPE_HALF, "60.000")));
         when(productInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(sampleTypes());
 
         assertThatThrownBy(() -> service.finishBurn(BAR_ID, OPERATOR_ID))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("不能超过头皮肉重量");
+            .hasMessageContaining("不能超过出栏重量");
 
         verify(barInfoMapper, never()).updateStatusToInStock(any(), any(), any(), any());
     }
@@ -389,8 +395,8 @@ class PigBurnRecordServiceImplTest {
         // 于是单头录错就能把当日出品率顶过 100%。这条锁的就是这个洞。
         BarInfo bar = sampleBarWithMarketWeight("singing", "100.000");
         bar.setArriveWeight(null);
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar);
-        when(productInhouseMapper.selectList(any(LambdaQueryWrapper.class)))
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar);
+        when(flowMapper.selectBurnInbounds(any()))
             .thenReturn(List.of(inhouse(TYPE_HALF, "60.000"), inhouse(TYPE_HALF, "60.000")));
         when(productInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(sampleTypes());
 
@@ -407,8 +413,8 @@ class PigBurnRecordServiceImplTest {
     void testFinish_NotWeighedWithinMarketingStillPasses() {
         BarInfo bar = sampleBarWithMarketWeight("singing", "200.000");
         bar.setArriveWeight(null);
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar);
-        when(productInhouseMapper.selectList(any(LambdaQueryWrapper.class)))
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar);
+        when(flowMapper.selectBurnInbounds(any()))
             .thenReturn(List.of(inhouse(TYPE_HALF, "60.000"), inhouse(TYPE_HALF, "60.000")));
         when(productInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(sampleTypes());
         when(barInfoMapper.updateStatusToInStock(any(), any(), any(), any())).thenReturn(1);
@@ -422,9 +428,9 @@ class PigBurnRecordServiceImplTest {
     @Test
     @DisplayName("finishBurn: 半扇只录 1 扇 → 抛 半只需录入 2 个")
     void testFinish_HalfNotPaired() {
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "200.000"));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "200.000"));
         when(productInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(sampleTypes());
-        when(productInhouseMapper.selectList(any(LambdaQueryWrapper.class)))
+        when(flowMapper.selectBurnInbounds(any()))
             .thenReturn(List.of(inhouse(TYPE_HALF, "50.000"), inhouse(TYPE_HEAD, "5.000")));
 
         assertThatThrownBy(() -> service.finishBurn(BAR_ID, OPERATOR_ID))
@@ -436,25 +442,24 @@ class PigBurnRecordServiceImplTest {
 
     @SuppressWarnings("unchecked")
     @Test
-    @DisplayName("finishBurn: 只录非白条燎毛间原材料(猪头) → 不受半只约束，正常推进 in_stock")
+    @DisplayName("finishBurn: 只录猪头，0半扇 → 拒绝完成")
     void testFinish_NonWhiteBarOnly() {
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "110.500"));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "110.500"));
         when(productInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(sampleTypes());
-        when(productInhouseMapper.selectList(any(LambdaQueryWrapper.class)))
+        when(flowMapper.selectBurnInbounds(any()))
             .thenReturn(List.of(inhouse(TYPE_HEAD, "5.200")));
         when(barInfoMapper.updateStatusToInStock(eq(BAR_ID), any(BigDecimal.class), any(Date.class), eq(OPERATOR_ID)))
             .thenReturn(1);
 
-        service.finishBurn(BAR_ID, OPERATOR_ID);
-
-        verify(barInfoMapper, times(1))
-            .updateStatusToInStock(eq(BAR_ID), eq(new BigDecimal("5.200")), any(Date.class), eq(OPERATOR_ID));
+        assertThatThrownBy(() -> service.finishBurn(BAR_ID, OPERATOR_ID))
+            .isInstanceOf(ServiceException.class).hasMessageContaining("当前已录 0/2");
+        verify(barInfoMapper, never()).updateStatusToInStock(any(), any(), any(), any());
     }
 
     @Test
     @DisplayName("finishBurn: bar 不在 singing 态 → 抛 白条状态不符")
     void testFinish_BarNotSinging() {
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("pending_singe", "110.500"));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBarWithMarketWeight("pending_singe", "110.500"));
 
         assertThatThrownBy(() -> service.finishBurn(BAR_ID, OPERATOR_ID))
             .isInstanceOf(ServiceException.class)
@@ -467,14 +472,127 @@ class PigBurnRecordServiceImplTest {
     @Test
     @DisplayName("finishBurn: 无任何产品入库 → 抛 尚未录入任何产品入库")
     void testFinish_NoInhouse() {
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "110.500"));
-        when(productInhouseMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of());
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "110.500"));
+        when(flowMapper.selectBurnInbounds(any())).thenReturn(List.of());
 
         assertThatThrownBy(() -> service.finishBurn(BAR_ID, OPERATOR_ID))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("尚未录入任何产品入库");
 
         verify(barInfoMapper, never()).updateStatusToInStock(any(), any(), any(), any());
+    }
+
+    @Test
+    void consumedHalfReceiptsStillPreventThirdEntry() {
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "200"));
+        when(locationInfoMapper.selectById(LOCATION_ID)).thenReturn(new LocationInfo());
+        stubTypes();
+        when(flowMapper.selectBurnInbounds(any())).thenReturn(List.of(inhouse(TYPE_HALF,"40"), inhouse(TYPE_HALF,"40")));
+        assertThatThrownBy(() -> service.submitBurnRecord(sampleBo())).hasMessageContaining("最多录入 2 次");
+        verify(burnMapper,never()).insert(any(PigBurnRecord.class));
+        verify(productInhouseMapper,never()).selectList(any(LambdaQueryWrapper.class));
+    }
+
+    @Test
+    void consumedOtherProductCannotBeRecordedAgain() {
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "200"));
+        when(locationInfoMapper.selectById(LOCATION_ID)).thenReturn(new LocationInfo());
+        stubTypes();
+        when(flowMapper.selectBurnInbounds(any())).thenReturn(List.of(inhouse(TYPE_HEAD,"5")));
+        assertThatThrownBy(() -> service.submitBurnRecord(sampleBo())).hasMessageContaining("只允许录入 1 次");
+        verify(burnMapper,never()).insert(any(PigBurnRecord.class));
+    }
+
+    @Test
+    void subsequentProductKeepsFirstReceiptTimeAndAddsWeight() {
+        BarInfo bar=sampleBarWithMarketWeight("singing", "200"); bar.setArriveWeight(new BigDecimal("40"));
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar);
+        when(locationInfoMapper.selectById(LOCATION_ID)).thenReturn(new LocationInfo()); stubTypes();
+        Date first=new Date(1000L);
+        var prior=inhouse(TYPE_HALF,"40"); prior.setFlowTime(first);
+        when(flowMapper.selectBurnInbounds(any())).thenReturn(List.of(prior));
+        when(barInfoMapper.updateBurnProgress(any(),any(),any(),any())).thenReturn(1);
+        var bo=sampleBo(); bo.setProductTypeItems(List.of(bo.getProductTypeItems().getFirst()));
+        bo.getProductTypeItems().getFirst().setWeight(new BigDecimal("40"));
+        service.submitBurnRecord(bo);
+        verify(barInfoMapper).updateBurnProgress(eq(BAR_ID),eq(new BigDecimal("80")),eq(first),eq(OPERATOR_ID));
+    }
+
+    @Test
+    void allDirectShippedHalvesFinishWithoutInventingInventory() {
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "100"));
+        stubTypes();
+        when(flowMapper.selectBurnInbounds(any())).thenReturn(List.of(inhouse(TYPE_HALF,"40"),inhouse(TYPE_HALF,"40")));
+        when(barInfoMapper.updateStatusToInStock(any(),any(),any(),any())).thenReturn(1);
+        when(barInfoMapper.fullyDirectShippedWeight(BAR_ID)).thenReturn(new BigDecimal("80"));
+        service.finishBurn(BAR_ID,OPERATOR_ID);
+        verify(barInfoMapper).updateStatusToShipOut(eq(BAR_ID),any(),eq(new BigDecimal("80")),eq(OPERATOR_ID));
+        verify(productInhouseMapper,never()).selectList(any(LambdaQueryWrapper.class));
+    }
+
+    @Test
+    void legacyStandaloneWeighDoesNotInventAReceiveTimeOrWeight() {
+        BarInfo bar=sampleBar("singing"); bar.setInTime(new Date(999L)); bar.setArriveWeight(new BigDecimal("100"));
+        when(barInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(bar));
+        var result=service.queryPendingBars().getFirst();
+        assertThat(result.getReceiveTime()).isNull();
+        assertThat(result.getArriveWeight()).isNull();
+        assertThat(result.getInboundedWeight()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void pendingCardUsesEarliestProductReceiptEvenIfStoredTimeWasOverwritten() {
+        BarInfo bar=sampleBar("singing"); bar.setInTime(new Date(9000L));
+        when(barInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(bar));
+        var first=inhouse(TYPE_HALF,"40"); first.setFlowTime(new Date(1000L));
+        var second=inhouse(TYPE_HALF,"41"); second.setFlowTime(new Date(2000L));
+        when(flowMapper.selectBurnInbounds(any())).thenReturn(List.of(second,first));
+        var result=service.queryPendingBars().getFirst();
+        assertThat(result.getReceiveTime()).isEqualTo(new Date(1000L));
+        assertThat(result.getArriveWeight()).isEqualByComparingTo("81");
+        assertThat(result.getInboundedWeight()).isEqualByComparingTo("81");
+    }
+
+    private void readyToFinish(String halfWeight) {
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "100"));
+        stubTypes();
+        when(flowMapper.selectBurnInbounds(any())).thenReturn(List.of(inhouse(TYPE_HALF,halfWeight),inhouse(TYPE_HALF,halfWeight)));
+        when(barInfoMapper.updateStatusToInStock(any(),any(),any(),any())).thenReturn(1);
+    }
+
+    @Test void lowBurnPreflightDoesNotWriteAndUnconfirmedFinishRefuses() {
+        readyToFinish("20");
+        var check=service.finishCheck(BAR_ID);
+        assertThat(check.confirmationRequired()).isTrue();
+        assertThat(check.message()).isEqualTo("请确认录入的接收重量信息是否正确。");
+        assertThatThrownBy(() -> service.finishBurn(BAR_ID,OPERATOR_ID,false)).hasMessage(check.message());
+        verify(barInfoMapper,never()).updateStatusToInStock(any(),any(),any(),any());
+    }
+    @Test void confirmedLowBurnCanFinishAndExactBoundaryNeedsNoConfirmation() {
+        readyToFinish("20"); service.finishBurn(BAR_ID,OPERATOR_ID,true);
+        verify(barInfoMapper).updateStatusToInStock(eq(BAR_ID),eq(new BigDecimal("40")),any(),eq(OPERATOR_ID));
+        readyToFinish("25"); assertThat(service.finishCheck(BAR_ID).confirmationRequired()).isFalse();
+        service.finishBurn(BAR_ID,OPERATOR_ID,false);
+        verify(barInfoMapper).updateStatusToInStock(eq(BAR_ID),eq(new BigDecimal("50")),any(),eq(OPERATOR_ID));
+    }
+    @Test void finishRechecksChangedDictionaryAndConfirmationCannotBypassBadConfiguration() {
+        readyToFinish("25"); assertThat(service.finishCheck(BAR_ID).confirmationRequired()).isFalse();
+        var threshold=new org.dromara.common.core.domain.dto.DictDataDTO(); threshold.setIsDefault("Y"); threshold.setDictValue("60");
+        when(dictService.getDictData(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(threshold));
+        assertThatThrownBy(() -> service.finishBurn(BAR_ID,OPERATOR_ID,false)).hasMessage("请确认录入的接收重量信息是否正确。");
+        when(dictService.getDictData(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of());
+        assertThatThrownBy(() -> service.finishBurn(BAR_ID,OPERATOR_ID,true)).hasMessageContaining("默认百分比");
+        verify(barInfoMapper,never()).updateStatusToInStock(any(),any(),any(),any());
+    }
+    @Test void confirmationNeverBypassesHalfCountStatusOrMarketingCap() {
+        readyToFinish("25");
+        when(flowMapper.selectBurnInbounds(any())).thenReturn(List.of(inhouse(TYPE_HALF,"25")));
+        assertThatThrownBy(() -> service.finishBurn(BAR_ID,OPERATOR_ID,true)).hasMessageContaining("当前已录 1/2");
+        readyToFinish("60");
+        assertThatThrownBy(() -> service.finishBurn(BAR_ID,OPERATOR_ID,true)).hasMessageContaining("不能超过出栏重量");
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBar("in_stock"));
+        assertThatThrownBy(() -> service.finishBurn(BAR_ID,OPERATOR_ID,true)).hasMessageContaining("状态不符");
+        verify(barInfoMapper,never()).updateStatusToInStock(any(),any(),any(),any());
     }
 
     private PigBurnWeighBo weighBo(String arriveWeight) {

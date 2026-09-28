@@ -1312,20 +1312,25 @@ class DashboardServiceImplTest {
 
     // ============================================================
     //  妊娠损失天数 → NPD / PSY；断奶两项改以明细为源
-    //  甲方 V6 行232 / 233 / 234 / 239（口径 D-0096 / D-0099 / D-0100 / D-0101 / D-0102）
+    //  甲方 V6 行232 / 233 / 234 / 239 / 261（口径 D-0096 / D-0129 / D-0100 / D-0101 / D-0102）
     // ============================================================
 
     @Test
-    @DisplayName("日表: 妊娠损失天数按「当日 [00:00, 次日 00:00)」取并落 preg_loss_days")
+    @DisplayName("日表: 当日妊娠损失单独落盘，NPD = 非生产母猪头数 + 妊娠损失天数（V6 行261）")
     void testDailyPregLossDaysPersisted() {
         stubAggregateSkeleton();
+        when(aggregateQueryMapper.snapshotByTypeStatusOnDate(anyString(), any()))
+            .thenReturn(List.of(mapOfAll("pigType", "sow", "cs", "KH", "cnt", 17)));
         when(aggregateQueryMapper.sumPregLossDaysForDay(anyString(), any(), any())).thenReturn(263);
 
         service.triggerAggregate(LocalDate.of(2026, 9, 13));
 
         ArgumentCaptor<FarmIndicatorRecord> cap = ArgumentCaptor.forClass(FarmIndicatorRecord.class);
         verify(farmIndicatorRecordMapper, atLeastOnce()).insert(cap.capture());
-        assertThat(cap.getAllValues()).extracting(FarmIndicatorRecord::getPregLossDays).contains(263);
+        FarmIndicatorRecord r = cap.getValue();
+        assertThat(r.getEndNonprodSowCount()).isEqualTo(17);
+        assertThat(r.getPregLossDays()).isEqualTo(263);
+        assertThat(r.getNpdDays()).isEqualTo(280);
 
         // 区间必须是 [statDate 00:00, 次日 00:00)：塌成同一时刻恒 0、放宽成整月会把别的天算进来
         ArgumentCaptor<java.time.LocalDateTime> from = ArgumentCaptor.forClass(java.time.LocalDateTime.class);
@@ -1333,6 +1338,33 @@ class DashboardServiceImplTest {
         verify(aggregateQueryMapper, atLeastOnce()).sumPregLossDaysForDay(anyString(), from.capture(), to.capture());
         assertThat(from.getValue()).isEqualTo(LocalDate.of(2026, 9, 13).atStartOfDay());
         assertThat(to.getValue()).isEqualTo(LocalDate.of(2026, 9, 14).atStartOfDay());
+    }
+
+    @Test
+    @DisplayName("日表: 重跑覆盖已有 NPD，妊娠损失不重复累加，零值能清除旧统计")
+    void testDailyNpdRecalculationOverwritesExistingValue() {
+        stubAggregateSkeleton();
+        LocalDate day = LocalDate.of(2026, 9, 13);
+        FarmIndicatorRecord existing = new FarmIndicatorRecord();
+        existing.setId(261L);
+        existing.setStatDate(day);
+        existing.setNpdDays(999);
+        existing.setPregLossDays(999);
+        when(farmIndicatorRecordMapper.selectOne(any())).thenReturn(existing);
+        when(aggregateQueryMapper.sumPregLossDaysForDay(anyString(), any(), any()))
+            .thenReturn(263, 263, 0);
+
+        service.triggerAggregate(day);
+        service.triggerAggregate(day);
+        service.triggerAggregate(day);
+
+        ArgumentCaptor<FarmIndicatorRecord> cap = ArgumentCaptor.forClass(FarmIndicatorRecord.class);
+        verify(farmIndicatorRecordMapper, org.mockito.Mockito.times(3)).updateById(cap.capture());
+        verify(farmIndicatorRecordMapper, never()).insert(any(FarmIndicatorRecord.class));
+        assertThat(cap.getAllValues()).extracting(FarmIndicatorRecord::getId).containsOnly(261L);
+        assertThat(cap.getAllValues()).extracting(FarmIndicatorRecord::getEndNonprodSowCount).containsOnly(0);
+        assertThat(cap.getAllValues()).extracting(FarmIndicatorRecord::getPregLossDays).containsExactly(263, 263, 0);
+        assertThat(cap.getAllValues()).extracting(FarmIndicatorRecord::getNpdDays).containsExactly(263, 263, 0);
     }
 
     @Test
@@ -1362,11 +1394,13 @@ class DashboardServiceImplTest {
     }
 
     @Test
-    @DisplayName("年度: 全年总NPD天数 = Σ日非生产母猪 + Σ妊娠损失天数（D-0099）")
+    @DisplayName("年度: 全年总NPD天数 = Σ日非生产母猪 + Σ妊娠损失天数，妊娠损失只计一次（D-0129）")
     void testAnnualTotalNpdAddsPregLoss() {
         stubAggregateSkeleton();
         when(aggregateQueryMapper.sumIndicatorRange(anyString(), any(), any()))
-            .thenReturn(mapOfAll("sumEndNonprodSow", 900, "sumPregLossDays", 263));
+            .thenReturn(mapOfAll("sumEndNonprodSow", 900, "sumPregLossDays", 263,
+                "sumEndProductionSow", 10000));
+        when(aggregateQueryMapper.countIndicatorDays(anyString(), any(), any())).thenReturn(100);
 
         service.triggerAggregate(LocalDate.of(2026, 9, 13));
 
@@ -1375,6 +1409,7 @@ class DashboardServiceImplTest {
         assertThat(cap.getValue().getTotalNpdDays())
             .as("漏掉妊娠损失项会退回 D-0064 那版口径")
             .isEqualTo(1163);
+        assertThat(cap.getValue().getAvgNpdDays()).isEqualByComparingTo("11.630");
     }
 
     @Test

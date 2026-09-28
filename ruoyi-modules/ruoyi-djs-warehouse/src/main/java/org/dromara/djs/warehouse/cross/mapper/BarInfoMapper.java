@@ -23,6 +23,23 @@ import java.util.Map;
  */
 public interface BarInfoMapper extends BaseMapperPlus<BarInfo, BarInfo> {
 
+    /** 所有同猪录入/完成/调整先锁整猪，后锁产出和库存，保持锁顺序一致。 */
+    @Select("SELECT * FROM t_warehouse_bar_info WHERE id=#{id} AND del_flag='0' FOR UPDATE")
+    BarInfo selectForUpdate(@Param("id") Long id);
+
+    @Select("SELECT CASE WHEN COUNT(*)=2 THEN SUM(c.pickup_weight) ELSE NULL END "
+        + "FROM t_warehouse_pig_cut_record c WHERE c.white_bar_id=#{id} AND c.out_type='ship' AND c.del_flag='0' "
+        + "AND EXISTS (SELECT 1 FROM t_warehouse_product_inhouse i JOIN t_warehouse_product_info p "
+        + "ON p.id=i.product_id AND p.tenant_id=i.tenant_id AND p.belong_type='white_bar' "
+        + "WHERE i.white_bar_no=c.white_bar_no AND i.tenant_id=c.tenant_id)")
+    BigDecimal fullyDirectShippedWeight(@Param("id") Long id);
+
+    @Update("UPDATE t_warehouse_bar_info SET status='singing', arrive_weight=#{weight}, "
+        + "arrive_time=#{firstTime}, in_time=#{firstTime}, in_method=1, update_by=#{userId}, update_time=NOW() "
+        + "WHERE id=#{id} AND status IN ('pending_singe','singing') AND del_flag='0'")
+    int updateBurnProgress(@Param("id") Long id, @Param("weight") BigDecimal weight,
+                          @Param("firstTime") Date firstTime, @Param("userId") Long userId);
+
     /**
      * 燎毛入库阶段乐观锁：bar_info.status pending_singe/singing → in_stock（D12X-MP-BURN-IA-001）。
      *
@@ -34,7 +51,7 @@ public interface BarInfoMapper extends BaseMapperPlus<BarInfo, BarInfo> {
     // 且 WHERE 的 status 守卫保证只写得进一次。in_time 不能当这个锚——它在称重、
     // 每次产品逐项入库、处理完成三处被反复覆写，日表按 DATE(in_time) 分桶因此不可复现。
     @Update("UPDATE t_warehouse_bar_info "
-        + "   SET status='in_stock', in_weight=#{inWeight}, in_time=#{inTime}, in_method=1,"
+        + "   SET status='in_stock', in_weight=#{inWeight}, in_time=COALESCE(in_time,#{inTime}), in_method=1,"
         + "       finish_time=#{inTime},"
         + "       update_by=#{userId}, update_time=NOW() "
         + " WHERE id = #{id} AND status IN ('pending_singe','singing') AND del_flag = '0'")

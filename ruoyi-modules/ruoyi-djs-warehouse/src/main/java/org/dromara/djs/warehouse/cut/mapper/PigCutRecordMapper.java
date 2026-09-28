@@ -18,6 +18,9 @@ import java.util.Date;
  */
 public interface PigCutRecordMapper extends BaseMapperPlus<PigCutRecord, PigCutRecordVo> {
 
+    @Select("SELECT * FROM t_warehouse_pig_cut_record WHERE id=#{id} AND del_flag='0' FOR UPDATE")
+    PigCutRecord selectForUpdate(@Param("id") Long id);
+
     /**
      * 查询今日（{@code cut_id LIKE 'CUT{yyMMdd}%'}）已用最大序号。
      *
