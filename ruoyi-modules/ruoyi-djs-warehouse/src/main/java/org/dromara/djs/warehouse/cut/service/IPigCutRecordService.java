@@ -78,6 +78,9 @@ public interface IPigCutRecordService {
      */
     List<BarPickupItemVo> queryPickupItems();
 
+    /** 白条出库按半扇实际入库时间倒序，分割领用仍采用原 FIFO 顺序。 */
+    List<BarPickupItemVo> queryBarOutItems();
+
     /**
      * 白条所有燎毛产出行都已处理（分割领用 / 发货软删）后收口（FIX-WMS-CUTPICKUP-SPLIT-001）。
      *

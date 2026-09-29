@@ -79,6 +79,9 @@ public class BarPickupItemVo implements Serializable {
      */
     private String productName;
 
+    /** 真实原材料产品 ID，供白条出库按品种筛选门店需求；旧整只兜底为空。 */
+    private Long productId;
+
     /**
      * 该产出行燎毛入库重量 kg（领用过磅默认值，前端可改）。整只兜底卡 = 出栏重量。
      */

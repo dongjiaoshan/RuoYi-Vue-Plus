@@ -12,7 +12,6 @@ import org.dromara.djs.warehouse.cut.domain.vo.BarPickupItemVo;
 import org.dromara.djs.warehouse.cut.service.IPigCutRecordService;
 import org.dromara.djs.warehouse.pack.domain.bo.WarehouseOutBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
-import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.springframework.validation.annotation.Validated;
@@ -61,7 +60,6 @@ public class AppletBarOutController extends BaseController {
 
     private final IPigCutRecordService pigCutService;
     private final IProductProductionService productionService;
-    private final ProductProductionMapper productProductionMapper;
 
     /** 读端点权限串（白条卡 / 门店 / 来源）。 */
     private static final String PERM_LIST = "djs:applet:warehouse:barOut:list";
@@ -90,20 +88,20 @@ public class AppletBarOutController extends BaseController {
     @SaCheckPermission(PERM_LIST)
     @GetMapping("/items")
     public R<List<BarPickupItemVo>> items() {
-        return R.ok(pigCutService.queryPickupItems());
+        return R.ok(pigCutService.queryBarOutItems());
     }
 
     /**
      * 「门店发货」可选门店（当天有已确认白条需求的门店 + 各店剩余未发份数）。
      *
-     * <p>口径见 {@link ProductProductionMapper#selectWhiteBarShipStores()}：需求发满即从列表消失。
+     * <p>按所选真实白条产品 ID 精确过滤当天及以后已确认未满足需求，需求发满即从列表消失。
      * 返回空 List = 当前没有任何门店有白条需求，前端据此禁用「门店发货」这条去向。</p>
      */
     @SaCheckLogin
     @SaCheckPermission(PERM_LIST)
     @GetMapping("/shipStores")
-    public R<List<Map<String, Object>>> shipStores() {
-        return R.ok(productProductionMapper.selectWhiteBarShipStores());
+    public R<List<Map<String, Object>>> shipStores(@org.springframework.web.bind.annotation.RequestParam(required = false) Long productId) {
+        return R.ok(productionService.listWhiteBarShipStores(productId));
     }
 
     /**

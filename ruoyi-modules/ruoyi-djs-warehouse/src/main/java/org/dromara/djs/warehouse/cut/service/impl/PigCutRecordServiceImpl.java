@@ -1063,6 +1063,15 @@ public class PigCutRecordServiceImpl
 
     @Override
     public List<BarPickupItemVo> queryPickupItems() {
+        return queryPickupItems(false);
+    }
+
+    @Override
+    public List<BarPickupItemVo> queryBarOutItems() {
+        return queryPickupItems(true);
+    }
+
+    private List<BarPickupItemVo> queryPickupItems(boolean newestFirst) {
         // 邓博 row14 按半只 surface：一头猪部分半只已领(bar 转 pending_cut/cutting) 后，剩余未领半只仍要能继续领——
         // 故 picker 含 in_stock/pending_cut/cutting 三态（仅展示各 bar 的未领产出行；无未领行的不出卡）。
         // 按入库时间升序 = 先进先出（row93：默认选最早进分割库的白条优先处理，前端默认选中第一张卡即最早）；
@@ -1071,7 +1080,7 @@ public class PigCutRecordServiceImpl
             new LambdaQueryWrapper<BarInfo>()
                 .in(BarInfo::getStatus, BAR_STATUS_IN_STOCK, BAR_STATUS_PENDING_CUT, BAR_STATUS_CUTTING)
                 .orderByAsc(BarInfo::getInTime)
-                .last("LIMIT 50"));
+                .last(!newestFirst, "LIMIT 50"));
         if (bars.isEmpty()) {
             return List.of();
         }
@@ -1121,6 +1130,14 @@ public class PigCutRecordServiceImpl
                 // pending_cut/cutting 且无未领行 = 已全部领完 → 不再出卡（避免全领 bar 冒出空整只卡）。
                 result.add(toPickupItem(bar, null, whiteBarNameById, ageByMarketing));
             }
+        }
+        if (newestFirst) {
+            // 先按每条产出真实入库时间排序再截断，避免整猪完成时间提前截掉最新入库的半扇。
+            result.sort(java.util.Comparator.comparing(BarPickupItemVo::getInTime,
+                java.util.Comparator.nullsLast(java.util.Comparator.reverseOrder()))
+                .thenComparing(BarPickupItemVo::getInhouseId, java.util.Comparator.nullsLast(java.util.Comparator.reverseOrder()))
+                .thenComparing(BarPickupItemVo::getBarInfoId, java.util.Comparator.reverseOrder()));
+            return result.stream().limit(50).toList();
         }
         return result;
     }
@@ -1183,6 +1200,7 @@ public class PigCutRecordServiceImpl
         vo.setAgeDays(ageByMarketing.get(marketingKey(bar.getEarNo(), bar.getMarketingTime())));
         if (row != null) {
             vo.setInhouseId(row.getId());
+            vo.setProductId(row.getProductId());
             vo.setWhiteBarNo(row.getWhiteBarNo());
             // row146：优先实时产品配置名（改名即时生效）；产品被删/无映射 → 回落燎毛入库快照名，不显空。
             vo.setProductName(nameById.getOrDefault(row.getProductId(), row.getProductName()));

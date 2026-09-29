@@ -226,8 +226,10 @@ public class PigBurnRecordServiceImpl
         List<BurnInboundVo> prior = stockFlowMapper.selectBurnInbounds(List.of(bar.getId()));
         Map<Long, Long> counts = prior.stream().collect(Collectors.groupingBy(
             BurnInboundVo::getProductId, Collectors.counting()));
-        long halfCount = prior.stream().filter(r -> typeMap.containsKey(r.getProductId())
-            && PRODUCT_TYPE_HALF.equals(resolveProductType(typeMap.get(r.getProductId())))).count();
+        Map<Long, ProductInfo> receiptTypes = loadReceiptTypes(prior, typeMap);
+        java.util.Set<String> recordedSides = recordedWhiteBarSides(prior, receiptTypes);
+        long halfCount = prior.stream().filter(r -> WHITE_BAR_BELONG_TYPE.equals(
+            receiptTypes.get(r.getProductId()).getBelongType())).count();
         BigDecimal existing = prior.stream().map(BurnInboundVo::getWeight)
             .filter(Objects::nonNull).reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal inWeightTotal = BigDecimal.ZERO;
@@ -236,13 +238,22 @@ public class PigBurnRecordServiceImpl
             if (type == null) {
                 throw new ServiceException("无效的白条产品类型：" + item.getProductId());
             }
+            if (!isNewInboundProduct(type)) {
+                throw new ServiceException("该白条产品仅保留历史，新增入库请选择左半扇或右半扇");
+            }
             if (item.getWeight() == null || item.getWeight().signum() <= 0 || item.getWeight().scale() > 3) {
                 throw new ServiceException("产品重量须大于 0，最多三位小数");
             }
             boolean half = PRODUCT_TYPE_HALF.equals(resolveProductType(type));
             long count = counts.merge(item.getProductId(), 1L, Long::sum);
-            if (count > (half ? 2 : 1) || (half && ++halfCount > 2)) {
-                throw new ServiceException(half ? "半扇最多录入 2 次" : "该产品已处理，只允许录入 1 次");
+            if (count > 1) {
+                throw new ServiceException("该产品已处理，只允许录入 1 次");
+            }
+            if (half && ++halfCount > 2) {
+                throw new ServiceException("白条产品合计最多录入 2 次");
+            }
+            if (half && !recordedSides.add(type.getProductName())) {
+                throw new ServiceException(type.getProductName() + "只允许录入 1 次");
             }
             inWeightTotal = inWeightTotal.add(item.getWeight());
         }
@@ -386,7 +397,14 @@ public class PigBurnRecordServiceImpl
 
     @Override
     public List<BurnProductTypeVo> queryProductTypes(Long barInfoId) {
-        List<ProductInfo> types = loadWhiteBarTypes();
+        List<ProductInfo> types = new ArrayList<>(loadWhiteBarTypes());
+        java.util.Set<Long> activeIds = types.stream().map(ProductInfo::getId).collect(Collectors.toSet());
+        List<BurnInboundVo> recorded = barInfoId == null ? List.of()
+            : stockFlowMapper.selectBurnInbounds(List.of(barInfoId));
+        Map<Long, ProductInfo> receiptTypes = loadReceiptTypes(recorded, types.stream()
+            .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a)));
+        receiptTypes.values().stream().filter(p -> !activeIds.contains(p.getId())).forEach(types::add);
+        java.util.Set<String> recordedSides = recordedWhiteBarSides(recorded, receiptTypes);
         // IMG-LIB-001：批量解析产品图，禁 N+1。
         // L1 优先用户上传的缩略图 product_thumb（admin 产品表单唯一图片入口），退回自动匹配的 image_oss_id；
         // 再 L2 white_bar 默认图 → L3 全局兜底。
@@ -396,8 +414,6 @@ public class PigBurnRecordServiceImpl
         List<String> urls = imageUrlResolver.resolveList(items);
         boolean urlsAligned = urls.size() == types.size();
         // 入库事实计数不会随直发、打包等后续消耗消失；每个产品同时返回累计实重。
-        List<BurnInboundVo> recorded = barInfoId == null ? List.of()
-            : stockFlowMapper.selectBurnInbounds(List.of(barInfoId));
         Map<Long, Integer> recordedCountMap = new HashMap<>();
         Map<Long, BigDecimal> recordedWeights = new HashMap<>();
         for (BurnInboundVo r : recorded) {
@@ -407,6 +423,10 @@ public class PigBurnRecordServiceImpl
         List<BurnProductTypeVo> result = new ArrayList<>(types.size());
         for (int i = 0; i < types.size(); i++) {
             ProductInfo p = types.get(i);
+            boolean eligibleProduct = activeIds.contains(p.getId()) && isNewInboundProduct(p);
+            if (!eligibleProduct && !recordedCountMap.containsKey(p.getId())) { continue; }
+            boolean canRecord = eligibleProduct && !(WHITE_BAR_BELONG_TYPE.equals(p.getBelongType())
+                && recordedSides.contains(p.getProductName()));
             BurnProductTypeVo vo = new BurnProductTypeVo();
             vo.setProductId(p.getId());
             vo.setProductCode(p.getProductId());
@@ -417,7 +437,8 @@ public class PigBurnRecordServiceImpl
             vo.setRecordedWeight(recordedWeights.getOrDefault(p.getId(), BigDecimal.ZERO));
             boolean whiteBar = WHITE_BAR_BELONG_TYPE.equals(p.getBelongType());
             vo.setIsWhiteBar(whiteBar);
-            vo.setMaxCount(whiteBar ? 2 : 1);
+            vo.setMaxCount(1);
+            vo.setCanRecord(canRecord);
             List<LocationPickerVo> locations = queryProductInboundLocations(p.getId());
             if (!locations.isEmpty()) {
                 vo.setDefaultLocationId(locations.getFirst().getId());
@@ -613,18 +634,23 @@ public class PigBurnRecordServiceImpl
         if (inbounds.isEmpty()) {
             throw new ServiceException("尚未录入任何产品入库，无法处理完成");
         }
-        Map<Long, ProductInfo> typeMap = loadWhiteBarTypeMap();
+        Map<Long, ProductInfo> typeMap = loadReceiptTypes(inbounds, loadWhiteBarTypeMap());
         BigDecimal inWeightTotal = BigDecimal.ZERO;
         int halfCount = 0;
+        int leftCount = 0;
+        int rightCount = 0;
         for (BurnInboundVo inbound : inbounds) {
             inWeightTotal = inWeightTotal.add(inbound.getWeight() == null ? BigDecimal.ZERO : inbound.getWeight());
             ProductInfo type = typeMap.get(inbound.getProductId());
             if (type != null && PRODUCT_TYPE_HALF.equals(resolveProductType(type))) {
                 halfCount++;
+                if ("左半扇".equals(type.getProductName())) { leftCount++; }
+                else if ("右半扇".equals(type.getProductName())) { rightCount++; }
+                else { throw new ServiceException("存在旧半扇入库记录，请核对历史后再处理完成"); }
             }
         }
-        if (halfCount != 2) {
-            throw new ServiceException("半只需录入 2 个才能处理完成，当前已录 " + halfCount + "/2");
+        if (halfCount != 2 || leftCount != 1 || rightCount != 1) {
+            throw new ServiceException("左半扇和右半扇须各录入 1 个才能处理完成，当前已录 " + halfCount + "/2");
         }
         // 完成时再次校验累计不超过出栏重；缺失基准重量由比例判定作为数据异常拒绝。
         BigDecimal marketingWeight = bar.getMarketingWeight();
@@ -637,6 +663,33 @@ public class PigBurnRecordServiceImpl
         return new BurnCompletionState(bar, inWeightTotal);
     }
 
+    /** 新增仅允许明确左右两种白条；其他燎毛副产品沿用产品配置。 */
+    private static boolean isNewInboundProduct(ProductInfo product) {
+        return !WHITE_BAR_BELONG_TYPE.equals(product.getBelongType())
+            || "左半扇".equals(product.getProductName()) || "右半扇".equals(product.getProductName());
+    }
+
+    /** 同侧产品即使存在多个 ID，也只能形成一次入库事实，避免录满两条左扇后无法完成。 */
+    private static java.util.Set<String> recordedWhiteBarSides(List<BurnInboundVo> receipts, Map<Long, ProductInfo> types) {
+        return receipts.stream().map(r -> types.get(r.getProductId()))
+            .filter(p -> WHITE_BAR_BELONG_TYPE.equals(p.getBelongType()))
+            .map(ProductInfo::getProductName).collect(Collectors.toSet());
+    }
+
+    /** 历史入库事实不能随候选产品被隐藏/停用而失去计数；找不到主数据时阻止继续入库。 */
+    private Map<Long, ProductInfo> loadReceiptTypes(List<BurnInboundVo> receipts, Map<Long, ProductInfo> activeTypes) {
+        Map<Long, ProductInfo> types = new HashMap<>(activeTypes);
+        List<Long> missing = receipts.stream().map(BurnInboundVo::getProductId).filter(id -> !types.containsKey(id))
+            .distinct().toList();
+        if (!missing.isEmpty()) {
+            for (ProductInfo product : productInfoMapper.selectBatchIds(missing)) { types.put(product.getId(), product); }
+            if (missing.stream().anyMatch(id -> !types.containsKey(id))) {
+                throw new ServiceException("历史入库产品档案缺失，请核对历史后继续操作");
+            }
+        }
+        return types;
+    }
+
     /**
      * 按产品主数据判定结构化产品类别（FIX-WMS-MP-BURN-001 录入约束用）。
      *
@@ -644,7 +697,7 @@ public class PigBurnRecordServiceImpl
      * 增删改都不该要求改代码：</p>
      * <ul>
      *   <li>{@code belong_type='white_bar'}（产品类别=白条产品）= 燎毛产出的白条本体，
-     *       一头猪出左右两扇 → {@link #PRODUCT_TYPE_HALF}，限录 2 次、须集齐 2 扇才能处理完成；</li>
+     *       一头猪出左右两扇 → {@link #PRODUCT_TYPE_HALF}，每产品仅一次、总共两次、须左右各一扇才能完成；</li>
      *   <li>其余配在燎毛间的原材料（猪头 / 猪脚 等 {@code belong_type='pork'}）→ {@code null}，
      *       不参与半只约束，前端按产品名回落判类别。</li>
      * </ul>
@@ -678,9 +731,9 @@ public class PigBurnRecordServiceImpl
      * 原材料（如 GF0002 五花肉 belong_type='pork'，是燎毛间原材料但被 white_bar 过滤误挡）。</p>
      *
      * <p>只取 {@code product_attr=2}（原材料）；{@code product_attr=1} 生产产品 = 对外打包后的成品，
-     * 不在燎毛入库。白条本体（{@code belong_type='white_bar'}，甲方主数据里是「半扇」）+ 其它配在燎毛间的
+     * 不在燎毛入库。白条本体（{@code belong_type='white_bar'}，含左右半扇及旧半扇档案）+ 其它配在燎毛间的
      * 原材料（猪头 / 猪脚 等 {@code belong_type='pork'}）都进；
-     * {@link #resolveProductType} 只对白条本体返 half，其余返 null，前端回落按名称判类别。</p>
+     * {@link #resolveProductType} 只对白条本体返 half，其余返 null；新增入口另由 {@link #isNewInboundProduct} 限定左右。</p>
      */
     private List<ProductInfo> loadWhiteBarTypes() {
         return productInfoMapper.selectList(

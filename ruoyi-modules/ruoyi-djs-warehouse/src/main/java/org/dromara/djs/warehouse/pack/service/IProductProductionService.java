@@ -64,6 +64,9 @@ public interface IProductProductionService {
      */
     Long submitWhiteBarOut(WhiteBarOutBo bo);
 
+    /** 白条出库只返回所选真实产品的未满足门店需求；缺少产品不返回聚合门店。 */
+    List<Map<String, Object>> listWhiteBarShipStores(Long productId);
+
     /**
      * 白条/猪肉「仓库出库」（row17）：inhouse → product_production（前缀 B/Z），出库不发往门店，
      * 记出库去向（字典 {@code djs_bar_out_dest}）+ 出库方式=后台出库，补记预冷损耗。返新建 production.id。

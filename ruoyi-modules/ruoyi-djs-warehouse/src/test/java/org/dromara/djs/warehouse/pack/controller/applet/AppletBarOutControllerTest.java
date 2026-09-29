@@ -51,7 +51,7 @@ class AppletBarOutControllerTest {
 
     @BeforeEach
     void setup() {
-        controller = new AppletBarOutController(pigCutService, productionService, productProductionMapper);
+        controller = new AppletBarOutController(pigCutService, productionService);
     }
 
     @Test
@@ -61,7 +61,7 @@ class AppletBarOutControllerTest {
         vo.setEarNo("E0001");
         vo.setArriveTime(new java.util.Date(1_700_000_000_000L));
         vo.setArriveWeight(new java.math.BigDecimal("101.500"));
-        when(pigCutService.queryPickupItems()).thenReturn(List.of(vo));
+        when(pigCutService.queryBarOutItems()).thenReturn(List.of(vo));
 
         R<List<BarPickupItemVo>> r = controller.items();
 
@@ -69,20 +69,20 @@ class AppletBarOutControllerTest {
         assertThat(r.getData()).hasSize(1);
         assertThat(r.getData().get(0).getArriveTime()).isNotNull();
         assertThat(r.getData().get(0).getArriveWeight()).isEqualByComparingTo("101.500");
-        verify(pigCutService).queryPickupItems();
+        verify(pigCutService).queryBarOutItems();
     }
 
     @Test
     @DisplayName("门店发货可选门店透传 selectWhiteBarShipStores（无需求 → 空 List）")
     void shipStoresPassthrough() {
-        when(productProductionMapper.selectWhiteBarShipStores())
+        when(productionService.listWhiteBarShipStores(101L))
             .thenReturn(List.of(Map.of("storeId", "9301000000000001", "storeName", "大冶门店", "demandQty", 3)));
 
-        R<List<Map<String, Object>>> r = controller.shipStores();
+        R<List<Map<String, Object>>> r = controller.shipStores(101L);
 
         assertThat(r.getData()).hasSize(1);
         assertThat(r.getData().get(0)).containsEntry("storeName", "大冶门店");
-        verify(productProductionMapper).selectWhiteBarShipStores();
+        verify(productionService).listWhiteBarShipStores(101L);
     }
 
     @Test

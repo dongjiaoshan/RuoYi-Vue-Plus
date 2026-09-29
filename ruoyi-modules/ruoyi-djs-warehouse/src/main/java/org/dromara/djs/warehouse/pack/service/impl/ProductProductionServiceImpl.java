@@ -502,7 +502,11 @@ public class ProductProductionServiceImpl
         // 实称对打包计量规则的校验（下限硬拒 / 超 3% 可确认继续）：肉品无条件套用；
         // 其他产品（egg/dry_good/other）按甲方 V6 row45 口径补齐 —— 仅「原材料单位 = KG 的重量模式」才套，
         // 打包量 / 份数模式录的是件数不是重量，套上必误判（详见 isOtherPackKgMeasureMode）。
-        if (BELONG_TYPE_PORK.equals(product.getBelongType())
+        if (cutStore && isKgUnit(product.getProductUnit())) {
+            BigDecimal remainingWeight = todayDemands.stream().map(ProductProductionServiceImpl::rowRemain)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+            validateMeasuredWeight(remainingWeight, bo.getProductWeight(), bo.getAllowOverMeasure(), "门店当天剩余需求");
+        } else if (BELONG_TYPE_PORK.equals(product.getBelongType())
             || isOtherPackKgMeasureMode(product, src, bo)) {
             validatePackMeasureRule(product, bo.getProductWeight(), bo.getAllowOverMeasure());
         }
@@ -842,6 +846,15 @@ public class ProductProductionServiceImpl
         if (store == null) {
             throw new ServiceException("发货门店不存在或已删除：" + bo.getStoreId());
         }
+        List<DemandManage> whiteBarDemands = List.of();
+        if (BELONG_TYPE_WHITE_BAR.equals(belongType)) {
+            whiteBarDemands = demandManageMapper.selectUncompletedDemands(product.getId(), bo.getStoreId());
+            BigDecimal remaining = whiteBarDemands.stream().map(ProductProductionServiceImpl::rowRemain)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+            if (remaining.compareTo(BigDecimal.ONE) < 0) {
+                throw new ServiceException("所选门店没有该白条产品的未满足需求，请刷新后重选");
+            }
+        }
         requireInhouseEnough(src, bo.getProductWeight());
         // D-2：来源 inhouse 所在库位盘点锁定中 → 拒绝出库（白条整只 inhouse 常无 locationId，
         // assertLocationUnlocked 对 null 安全跳过）
@@ -869,7 +882,8 @@ public class ProductProductionServiceImpl
         p.setProofOssIds(bo.getProofOssIds());
         p.setRemark(bo.getRemark());
         // R161：白条按头下单 = 抵 1 头；按 kg 计价的猪肉 = 抵本次出库重量
-        p.setDemandDeductQty(demandDeductQtyOf(p.getProductUnit(), bo.getProductWeight()));
+        p.setDemandDeductQty(BELONG_TYPE_WHITE_BAR.equals(belongType) ? BigDecimal.ONE
+            : demandDeductQtyOf(p.getProductUnit(), bo.getProductWeight()));
         baseMapper.insert(p);
 
         // row42：生产产品不入库（直送发货月台，不进 location_stock / 不写入库流水）。
@@ -934,7 +948,12 @@ public class ProductProductionServiceImpl
         // 前移到履约源头：打包品在 submit*Pack 扣，白条在此出库扣；发货确认（CROSS-FLOW-003）不再扣，
         // 三者互斥不双扣。store_id 上方已校验门店存在（必填）。扣减量按需求单位口径
         // （白条整只=只-单位 → 1 次出库 = 1 只；按重量白条/猪肉 → 按重量）。
-        deductDemandOnPack(product.getId(), bo.getStoreId(), resolveDemandDeductQty(product, bo.getProductWeight()));
+        if (BELONG_TYPE_WHITE_BAR.equals(belongType)) {
+            // 使用提交前已验证的候选需求，原子上界守卫负责并发，不能在并发发满后悄悄跳过扣减。
+            deductDemandRows(product.getId(), bo.getStoreId(), BigDecimal.ONE, whiteBarDemands);
+        } else {
+            deductDemandOnPack(product.getId(), bo.getStoreId(), resolveDemandDeductQty(product, bo.getProductWeight()));
+        }
 
         log.info("[WMS-WHITEBAR-SHIP-001] white_bar/pork out done id={} produceNo={} belongType={} weight={} store={} traceCode={}",
             p.getId(), p.getProduceNo(), belongType, bo.getProductWeight(), bo.getStoreId(), p.getTraceCode());
@@ -1457,6 +1476,24 @@ public class ProductProductionServiceImpl
                 .apply("DATE(produce_date) = CURDATE()")
                 .orderByDesc(ProductInhouse::getId)
                 .last(SOURCE_PICKER_LIMIT));
+    }
+
+    @Override
+    public List<Map<String, Object>> listWhiteBarShipStores(Long productId) {
+        if (productId == null) { return List.of(); }
+        ProductInfo product = productInfoMapper.selectById(productId);
+        if (product == null || !BELONG_TYPE_WHITE_BAR.equals(product.getBelongType())
+            || !Integer.valueOf(0).equals(product.getProductStatus())) { return List.of(); }
+        List<Map<String, Object>> result = new java.util.ArrayList<>();
+        for (StoreDemandCopiesVo demand : listStoreDemandCopies(productId)) {
+            if (demand.getCopies() == null || demand.getCopies().compareTo(BigDecimal.ONE) < 0) { continue; }
+            Map<String, Object> item = new java.util.LinkedHashMap<>();
+            item.put("storeId", String.valueOf(demand.getStoreId()));
+            item.put("storeName", demand.getStoreName());
+            item.put("demandQty", demand.getCopies());
+            result.add(item);
+        }
+        return result;
     }
 
     @Override
@@ -2498,7 +2535,10 @@ public class ProductProductionServiceImpl
      * </ul>
      */
     private void validatePackMeasureRule(ProductInfo product, BigDecimal actualWeight, Boolean allowOverMeasure) {
-        BigDecimal rule = product.getMaterialNum();
+        validateMeasuredWeight(product.getMaterialNum(), actualWeight, allowOverMeasure, "打包规则");
+    }
+
+    private void validateMeasuredWeight(BigDecimal rule, BigDecimal actualWeight, Boolean allowOverMeasure, String ruleName) {
         if (rule == null || rule.signum() <= 0 || actualWeight == null) {
             return;
         }
@@ -2506,7 +2546,7 @@ public class ProductProductionServiceImpl
         String ruleTxt = rule.stripTrailingZeros().toPlainString();
         // ① 低于规则重量 -> 硬拒（allowOverMeasure 也放不过去）
         if (actualWeight.compareTo(rule) < 0) {
-            throw new ServiceException("实称 " + actualTxt + "kg 低于打包规则 " + ruleTxt
+            throw new ServiceException("实称 " + actualTxt + "kg 低于" + ruleName + " " + ruleTxt
                 + "kg，不能少于规则重量，请重新称重", 400);
         }
         // ② 落在 [rule, rule×1.03] -> 通过
@@ -2515,12 +2555,11 @@ public class ProductProductionServiceImpl
         }
         // ③ 超出上限 -> 提示 + 二次确认可继续
         if (Boolean.TRUE.equals(allowOverMeasure)) {
-            log.warn("[WMS-PACK-001] 实称超打包规则 {}%（操作员已确认放行）productId={} productCode={} productName={} actualWeight={}kg rule={}kg",
-                PACK_MEASURE_OVER_TOLERANCE_PERCENT, product.getId(), product.getProductId(), product.getProductName(),
-                actualTxt, ruleTxt);
+            log.warn("[WMS-PACK-001] 实称超{} {}%（操作员已确认放行）actualWeight={}kg rule={}kg",
+                ruleName, PACK_MEASURE_OVER_TOLERANCE_PERCENT, actualTxt, ruleTxt);
             return;
         }
-        throw new ServiceException("实称 " + actualTxt + "kg 比打包规则 " + ruleTxt + "kg "
+        throw new ServiceException("实称 " + actualTxt + "kg 比" + ruleName + " " + ruleTxt + "kg "
             + PACK_MEASURE_DEVIATION_MARKER + "，确认继续？", 400);
     }
 

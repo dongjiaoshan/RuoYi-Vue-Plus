@@ -48,11 +48,11 @@ public class BurnProductTypeVo implements Serializable {
      * 结构化产品类别（FIX-WMS-MP-BURN-001 录入约束用）：{@code half}=白条半只。
      *
      * <p>按产品主数据 {@code belong_type} 判定 —— {@code white_bar}（产品类别=白条产品）即白条本体，
-     * 一头猪出左右两扇 → mp 限录 2 次、后端 finishBurn 须集齐 2 扇才放行。判据不绑业务码，
+     * 一头猪出左右两扇 → 每产品限录 1 次、白条合计 2 次，finishBurn 须左右各一扇。判据不绑业务码，
      * 甲方在 admin 增删白条产品无需改代码。</p>
      *
      * <p>其余燎毛间原材料（猪头 / 猪脚 等 {@code belong_type='pork'}）返回 {@code null}，
-     * 不限次；mp 端按 productName 回落判是否隐藏白条编码。</p>
+     * 每产品也只允许入库一次；mp 端按 productName 回落判是否隐藏白条编码。</p>
      */
     private String productType;
 
@@ -60,7 +60,7 @@ public class BurnProductTypeVo implements Serializable {
      * 该产品在当前白条已入库份数（row171）。
      *
      * <p>仅当 {@code productTypes} 端点带 {@code barInfoId} 入参时回填 = 该白条 {@code product_inhouse}
-     * 对应入库流水中该 productId 的次数（含已消耗/直发记录；未录 → 0）。用于 mp 卡片「已入库 x/2」计数在
+     * 对应入库流水中该 productId 的次数（含已消耗/直发记录；未录 → 0）。用于 mp 卡片「已入库 x」计数在
      * 页面重进 / 热重载后仍准确（不再仅靠前端 session Map，重进 singing 白条时 session 为空会丢计数）。
      * 不带 barInfoId 时恒 0。</p>
      */
@@ -68,6 +68,8 @@ public class BurnProductTypeVo implements Serializable {
 
     private java.math.BigDecimal recordedWeight;
     private Integer maxCount;
+    /** 是否允许新增入库；旧半扇仅在已有入库事实时返回只读卡。 */
+    private Boolean canRecord;
     @com.fasterxml.jackson.annotation.JsonProperty("isWhiteBar")
     private Boolean isWhiteBar;
     private Long defaultLocationId;

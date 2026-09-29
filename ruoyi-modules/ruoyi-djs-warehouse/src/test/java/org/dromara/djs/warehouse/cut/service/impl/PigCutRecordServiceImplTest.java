@@ -151,6 +151,27 @@ class PigCutRecordServiceImplTest {
         }
     }
 
+    @Test void barOutCardsUseActualInboundTimeAcrossPigsAndRetainRawProductId() {
+        BarInfo olderPig=new BarInfo(); olderPig.setId(1L); olderPig.setStatus("in_stock"); olderPig.setInTime(new Date(1000L));
+        BarInfo newerPig=new BarInfo(); newerPig.setId(2L); newerPig.setStatus("in_stock"); newerPig.setInTime(new Date(3000L));
+        ProductInhouse latestHalf=new ProductInhouse(); latestHalf.setId(11L); latestHalf.setWhiteBarId(1L);
+        latestHalf.setProductId(101L); latestHalf.setProductName("左半扇"); latestHalf.setProduceTime(new Date(4000L));
+        ProductInhouse earlierHalf=new ProductInhouse(); earlierHalf.setId(12L); earlierHalf.setWhiteBarId(2L);
+        earlierHalf.setProductId(102L); earlierHalf.setProductName("右半扇"); earlierHalf.setProduceTime(new Date(2000L));
+        ProductInfo left=new ProductInfo(); left.setId(101L); left.setProductName("左半扇");
+        ProductInfo right=new ProductInfo(); right.setId(102L); right.setProductName("右半扇");
+        when(barInfoMapper.selectList(any())).thenReturn(List.of(olderPig,newerPig));
+        when(productInhouseMapper.selectList(any())).thenReturn(List.of(earlierHalf,latestHalf));
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(left,right));
+        var items=service.queryBarOutItems();
+        assertThat(items).extracting(org.dromara.djs.warehouse.cut.domain.vo.BarPickupItemVo::getInhouseId).containsExactly(11L,12L);
+        assertThat(items.getFirst().getProductId()).isEqualTo(101L);
+        assertThat(items.getFirst().getProductName()).isEqualTo("左半扇");
+        var query=ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.Wrapper.class);
+        verify(barInfoMapper).selectList(query.capture());
+        assertThat(query.getValue().getSqlSegment()).doesNotContain("LIMIT 50");
+    }
+
     @BeforeAll
     static void initMpEntityCache() {
         // MyBatis-Plus 单测 entity cache 预热（coder-mp-entity-cache-test）：submitPickup/submitCutOut/submitCutDone

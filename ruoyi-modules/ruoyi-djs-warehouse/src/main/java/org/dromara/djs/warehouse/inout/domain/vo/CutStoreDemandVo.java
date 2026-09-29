@@ -12,7 +12,7 @@ public class CutStoreDemandVo {
     private String productName;
     private String productUnit;
     private BigDecimal demandQuantity;
-    /** KG 产品按最早一行需求校验，与肉品打包相同；非 KG 按每份计量规则校验。 */
+    /** KG 产品按该门店该成品当天合计剩余需求校验；非 KG 按每份计量规则校验。 */
     private BigDecimal minimumWeight;
     private BigDecimal measureWeight;
 }

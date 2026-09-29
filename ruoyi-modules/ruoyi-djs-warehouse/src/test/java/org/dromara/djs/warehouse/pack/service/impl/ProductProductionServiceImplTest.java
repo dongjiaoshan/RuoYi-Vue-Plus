@@ -602,6 +602,44 @@ class ProductProductionServiceImplTest {
         d.setDemandDate(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).plusDays(today?0:1)); d.setDemandQuantity(new BigDecimal("0.500")); d.setShippedCount(BigDecimal.ZERO);
         when(demandManageMapper.selectUncompletedDemands(60010L,7L)).thenReturn(List.of(d)); return bo;
     }
+    @Test void cutStoreKgCannotConfirmBelowCombinedRemainingDemand() {
+        var bo=cutStorePack("0.600",true); bo.setAllowOverMeasure(true);
+        var first=demandManageMapper.selectUncompletedDemands(60010L,7L).getFirst();
+        var second=new org.dromara.djs.warehouse.demand.domain.DemandManage();
+        second.setId(78L); second.setDemandDate(first.getDemandDate()); second.setDemandQuantity(new BigDecimal("0.500"));
+        when(demandManageMapper.selectUncompletedDemands(60010L,7L)).thenReturn(List.of(first,second));
+        assertThatThrownBy(() -> service.submitCutStorePack(bo)).hasMessageContaining("不能少于");
+        verify(productionMapper,never()).insert(any(ProductProduction.class));
+    }
+    @Test void cutStoreKgUsesDemandInsteadOfLargerMaterialRule() {
+        var bo=cutStorePack("0.510",true);
+        productInfoMapper.selectById(60010L).setMaterialNum(new BigDecimal("10"));
+        when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
+        when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv->{((ProductProduction)inv.getArgument(0)).setId(801L);return 1;});
+        when(demandManageMapper.incrementShipped(eq(77L),any(),any())).thenReturn(1);
+        assertThat(service.submitCutStorePack(bo)).isEqualTo(801L);
+    }
+
+    @Test void cutStoreKgThreePercentBoundaryAndConfirmationAreDemandBased() {
+        var bo=cutStorePack("0.515",true);
+        productInfoMapper.selectById(60010L).setMaterialNum(new BigDecimal("0.100"));
+        when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
+        when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv->{((ProductProduction)inv.getArgument(0)).setId(801L);return 1;});
+        when(demandManageMapper.incrementShipped(eq(77L),any(),any())).thenReturn(1);
+        assertThat(service.submitCutStorePack(bo)).isEqualTo(801L);
+        bo.setProductWeight(new BigDecimal("0.516"));
+        assertThatThrownBy(() -> service.submitCutStorePack(bo)).hasMessageContaining("超出3%");
+        bo.setAllowOverMeasure(true);
+        assertThat(service.submitCutStorePack(bo)).isEqualTo(801L);
+    }
+    @Test void nonKgCutStoreKeepsSinglePortionMeasureRule() {
+        var bo=cutStorePack("0.499",true); bo.setAllowOverMeasure(true);
+        productInfoMapper.selectById(60010L).setProductUnit("份");
+        demandManageMapper.selectUncompletedDemands(60010L,7L).getFirst().setDemandQuantity(new BigDecimal("20"));
+        assertThatThrownBy(() -> service.submitCutStorePack(bo)).hasMessageContaining("打包规则").hasMessageContaining("不能少于");
+        verify(productionMapper,never()).insert(any(ProductProduction.class));
+    }
+
     @Test void cutStorePackRejectsTomorrowOnlyAndWrongMaterialBeforeWriting() {
         var bo=cutStorePack("0.510",false);
         assertThatThrownBy(() -> service.submitCutStorePack(bo)).hasMessageContaining("当天未满足");
@@ -798,6 +836,30 @@ class ProductProductionServiceImplTest {
     // white_bar / pork out (WMS-WHITEBAR-SHIP-001)
     // ============================================================
 
+    @Test void whiteBarStoreOptionsAreScopedToRawProductAndKeepSnowflakeStrings() {
+        var left=new ProductInfo(); left.setId(101L); left.setProductName("左半扇"); left.setBelongType("white_bar"); left.setProductStatus(0);
+        var right=new ProductInfo(); right.setId(102L); right.setProductName("右半扇"); right.setBelongType("white_bar"); right.setProductStatus(0);
+        when(productInfoMapper.selectById(101L)).thenReturn(left); when(productInfoMapper.selectById(102L)).thenReturn(right);
+        var demand=new org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo();
+        demand.setStoreId(2104385571342807042L); demand.setStoreName("浦东店"); demand.setCopies(new BigDecimal("2.000"));
+        when(demandManageMapper.selectStoreDemandCopies(eq(101L),any())).thenReturn(List.of(demand));
+        assertThat(service.listWhiteBarShipStores(101L)).hasSize(1);
+        assertThat(service.listWhiteBarShipStores(101L).getFirst()).containsEntry("storeId","2104385571342807042").containsEntry("demandQty",new BigDecimal("2.000"));
+        assertThat(service.listWhiteBarShipStores(102L)).isEmpty();
+        assertThat(service.listWhiteBarShipStores(null)).isEmpty();
+    }
+
+    @Test void whiteBarShipRejectsStoreWithNoRemainingDemandForThisExactProduct() {
+        var src=sampleVegSource(); when(inhouseMapper.selectById(70001L)).thenReturn(src);
+        var product=sampleVegProduct(); product.setId(60001L); product.setBelongType("white_bar");
+        product.setProductName("右半扇"); when(productInfoMapper.selectById(60001L)).thenReturn(product);
+        when(storeMapper.selectById(9L)).thenReturn(new org.dromara.djs.common.store.domain.Store());
+        var bo=new WhiteBarOutBo(); bo.setSourceInhouseId(70001L); bo.setStoreId(9L); bo.setProductWeight(new BigDecimal("12"));
+        assertThatThrownBy(() -> service.submitWhiteBarOut(bo)).hasMessageContaining("该白条产品");
+        verify(productionMapper,never()).insert(any(ProductProduction.class));
+        verify(inhouseMapper,never()).deductWeightById(any(),any());
+    }
+
     @Test
     @DisplayName("submitWhiteBarOut: happy 白条 inhouse → production B 前缀 + 不校验 is_delivery（白条 SKU is_delivery=0 仍出库）+ consumeInhouse")
     void testWhiteBarOut_Happy() {
@@ -824,6 +886,10 @@ class ProductProductionServiceImplTest {
         bo.setStoreId(9L);
         when(storeMapper.selectById(9L)).thenReturn(new org.dromara.djs.common.store.domain.Store());
 
+        var demand=new org.dromara.djs.warehouse.demand.domain.DemandManage();
+        demand.setId(99L); demand.setDemandQuantity(BigDecimal.ONE); demand.setProductId(60001L); demand.setStoreId(9L);
+        when(demandManageMapper.selectUncompletedDemands(60001L,9L)).thenReturn(List.of(demand));
+        when(demandManageMapper.incrementShipped(eq(99L),any(),eq(BigDecimal.ONE))).thenReturn(1);
         Long id = service.submitWhiteBarOut(bo);
 
         assertThat(id).isEqualTo(80500L);
@@ -831,7 +897,8 @@ class ProductProductionServiceImplTest {
         verify(productionMapper).insert(cap.capture());
         ProductProduction saved = cap.getValue();
         assertThat(saved.getProduceNo()).isEqualTo("P2606280001"); // PRODUCE_NO 共用计数器（非业态前缀分桶）
-        assertThat(saved.getProductId()).isEqualTo(60001L); // 直接用来源 inhouse 的 product_id
+        assertThat(saved.getProductId()).isEqualTo(60001L); // 真实需求引用原材料 ID，保留该身份
+        assertThat(saved.getDemandDeductQty()).isEqualByComparingTo("1");
         assertThat(saved.getStoreId()).isEqualTo(9L);
         assertThat(saved.getEarNo()).isEqualTo("010126050101");
         assertThat(saved.getProductWeight()).isEqualByComparingTo("12.000");

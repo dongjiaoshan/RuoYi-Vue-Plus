@@ -13,9 +13,8 @@ public interface InoutWorkbenchMapper {
     @Select("""
         WITH eligible AS (
           SELECT p.tenant_id, dm.store_id, s.store_name, p.id AS product_id, p.product_name, p.product_unit,
-                 p.material_num AS measure_weight,
-                 dm.demand_quantity-COALESCE(dm.shipped_count,0) AS remaining,
-                 ROW_NUMBER() OVER (PARTITION BY p.id,dm.store_id ORDER BY dm.id) AS rn
+                 p.material_num AS configured_measure_weight,
+                 dm.demand_quantity-COALESCE(dm.shipped_count,0) AS remaining
           FROM t_warehouse_product_info p
           JOIN t_warehouse_demand_manage dm ON dm.product_id=p.id AND dm.tenant_id=p.tenant_id
           JOIN t_md_store s ON s.id=dm.store_id AND s.tenant_id=dm.tenant_id AND s.del_flag='0'
@@ -26,13 +25,14 @@ public interface InoutWorkbenchMapper {
             AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')
             AND dm.demand_quantity>COALESCE(dm.shipped_count,0)
         )
-        SELECT store_id,store_name,product_id,product_name,product_unit,measure_weight,
+        SELECT store_id,store_name,product_id,product_name,product_unit,
                SUM(remaining) AS demand_quantity,
-               GREATEST(COALESCE(measure_weight,0),
-                 CASE WHEN LOWER(TRIM(product_unit)) IN ('kg','公斤')
-                   THEN MAX(CASE WHEN rn=1 THEN remaining END) ELSE 0 END) AS minimum_weight
+               CASE WHEN LOWER(TRIM(product_unit)) IN ('kg','公斤') THEN SUM(remaining)
+                 ELSE COALESCE(configured_measure_weight,0) END AS measure_weight,
+               CASE WHEN LOWER(TRIM(product_unit)) IN ('kg','公斤') THEN SUM(remaining)
+                 ELSE COALESCE(configured_measure_weight,0) END AS minimum_weight
         FROM eligible
-        GROUP BY store_id,store_name,product_id,product_name,product_unit,measure_weight
+        GROUP BY store_id,store_name,product_id,product_name,product_unit,configured_measure_weight
         ORDER BY store_name,product_name,product_id,store_id
         """)
     List<CutStoreDemandVo> selectCutStoreDemands(@Param("materialProductId") Long materialProductId,
