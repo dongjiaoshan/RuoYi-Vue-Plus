@@ -591,6 +591,43 @@ class ProductProductionServiceImplTest {
         return bo;
     }
 
+    private DryPackBo cutStorePack(String weight, boolean today) {
+        var bo=stubPorkDryPackWithMeasureRule(weight); bo.setStoreId(7L); bo.setDeliverDest("platform");
+        var src=sampleVegSource(); src.setPlotId(null); src.setMaterialId(60001L); src.setWhiteBarNo("HALF-1");
+        when(inhouseMapper.selectById(70001L)).thenReturn(src);
+        var product=sampleVegProduct(); product.setBelongType("pork"); product.setProductAttr(1); product.setProductStatus(0);
+        product.setIsMaterialSold(1); product.setProductMaterial(60001L); product.setMaterialNum(new BigDecimal("0.500"));
+        when(productInfoMapper.selectById(60010L)).thenReturn(product);
+        var d=new org.dromara.djs.warehouse.demand.domain.DemandManage(); d.setId(77L); d.setStoreId(7L); d.setProductId(60010L);
+        d.setDemandDate(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).plusDays(today?0:1)); d.setDemandQuantity(new BigDecimal("0.500")); d.setShippedCount(BigDecimal.ZERO);
+        when(demandManageMapper.selectUncompletedDemands(60010L,7L)).thenReturn(List.of(d)); return bo;
+    }
+    @Test void cutStorePackRejectsTomorrowOnlyAndWrongMaterialBeforeWriting() {
+        var bo=cutStorePack("0.510",false);
+        assertThatThrownBy(() -> service.submitCutStorePack(bo)).hasMessageContaining("当天未满足");
+        var invalid=cutStorePack("0.510",true); var p=productInfoMapper.selectById(60010L); p.setProductMaterial(999L);
+        assertThatThrownBy(() -> service.submitCutStorePack(invalid)).hasMessageContaining("不支持");
+        verify(productionMapper,never()).insert(any(ProductProduction.class));
+    }
+    @Test void cutStorePackConsumesExactSourceAndPreservesHalfTrace() {
+        var bo=cutStorePack("0.510",true); when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
+        when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv->{((ProductProduction)inv.getArgument(0)).setId(801L);return 1;});
+        when(demandManageMapper.incrementShipped(eq(77L),any(),any())).thenReturn(1);
+        assertThat(service.submitCutStorePack(bo)).isEqualTo(801L);
+        var saved=ArgumentCaptor.forClass(ProductProduction.class); verify(productionMapper).insert(saved.capture());
+        assertThat(saved.getValue().getWhiteBarNo()).isEqualTo("HALF-1");
+        assertThat(saved.getValue().getMaterialId()).isEqualTo(60001L);
+        verify(inhouseMapper).deductWeightById(70001L,new BigDecimal("0.510"));
+        verify(inhouseMapper,never()).selectList(any());
+    }
+    @Test void cutStorePackUsesExistingMeasureWarningAndNeverAllowsShortWeightOverride() {
+        var bo=cutStorePack("0.516",true);
+        assertThatThrownBy(() -> service.submitCutStorePack(bo)).hasMessageContaining("超出3%");
+        var shortWeight=cutStorePack("0.499",true); shortWeight.setAllowOverMeasure(true);
+        assertThatThrownBy(() -> service.submitCutStorePack(shortWeight)).hasMessageContaining("不能少于");
+        verify(productionMapper,never()).insert(any(ProductProduction.class));
+    }
+
     @Test
     @DisplayName("submitDryPack: 肉品实称超允许上界（0.560 > 0.515）且未确认 → fail-fast，文案带二次确认标识")
     void testDryPack_PorkOverToleranceRequiresConfirmation() {

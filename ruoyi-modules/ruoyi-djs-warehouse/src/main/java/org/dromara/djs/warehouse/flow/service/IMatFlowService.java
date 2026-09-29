@@ -31,6 +31,9 @@ public interface IMatFlowService {
      */
     Long pick(MatPickBo bo);
 
+    /** 分割工作台精确领用本次入库产物，返回新建待生产来源 ID。仅供内部事务编排。 */
+    Long pickCutOutput(Long stockId, Long cutFlowId);
+
     /**
      * 物资退回（入库）。
      *

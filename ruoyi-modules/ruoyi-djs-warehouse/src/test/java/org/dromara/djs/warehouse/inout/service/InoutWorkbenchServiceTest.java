@@ -20,6 +20,7 @@ import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.inout.domain.bo.*;
 import org.dromara.djs.warehouse.inout.domain.vo.CutWorkbenchBarVo;
+import org.dromara.djs.warehouse.inout.domain.vo.CutStoreDemandVo;
 import org.dromara.djs.warehouse.inout.mapper.InoutWorkbenchMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
@@ -49,6 +50,7 @@ class InoutWorkbenchServiceTest {
     @Mock IPigBurnRecordService burnService;
     @Mock IPigCutRecordService cutService;
     @Mock IProductProductionService productionService;
+    @Mock org.dromara.djs.warehouse.flow.service.IMatFlowService matFlowService;
     @Mock ILocationStockService stockService;
     @Mock BarInfoMapper barMapper;
     @Mock PigCutRecordMapper cutMapper;
@@ -160,6 +162,43 @@ class InoutWorkbenchServiceTest {
         var out=ArgumentCaptor.forClass(StockOutBo.class); verify(stockService).cutRoomOut(out.capture());
         assertThat(out.getValue().getStockIds()).containsExactly(13L);
         assertThat(out.getValue().getQuantity()).isEqualByComparingTo("5");
+    }
+    CutWorkbenchSubmitBo storeCutBo() {
+        var bo=new CutWorkbenchSubmitBo(); bo.setCutRecordId(20L); bo.setProductId(2L); bo.setWeight(new BigDecimal("5"));
+        bo.setDestination("store"); bo.setStoreId(30L); bo.setProductionProductId(40L); bo.setRequestId(KEY);
+        var record=new PigCutRecord(); record.setId(20L); record.setWhiteBarId(1L); when(cutMapper.selectById(20L)).thenReturn(record);
+        var product=new CutProductTypeVo(); product.setProductId(2L); product.setDefaultLocationId(10L);
+        when(cutService.queryCutProductTypes()).thenReturn(List.of(product));
+        var demand=new CutStoreDemandVo(); demand.setProductId(40L); demand.setStoreId(30L); demand.setMinimumWeight(new BigDecimal("5")); demand.setProductUnit("kg");
+        when(workbenchMapper.selectCutStoreDemands(eq(2L),any())).thenReturn(List.of(demand)); return bo;
+    }
+    @Test void storeCutUsesOnlyReceiptBasketAndCreatesMappedProductionBeforeSavingReceipt() {
+        var bo=storeCutBo();
+        when(cutService.submitCutOutWithReceipt(any())).thenReturn(List.of(new CutPartReceipt(500L,13L)));
+        when(matFlowService.pickCutOutput(13L,500L)).thenReturn(55L);
+        when(flowMapper.selectById(500L)).thenReturn(receipt(null)); when(flowMapper.updateById(any(StockFlow.class))).thenReturn(1);
+        assertThat(service.submitCut(bo).cutRecordId()).isEqualTo(20L);
+        var pack=ArgumentCaptor.forClass(org.dromara.djs.warehouse.pack.domain.bo.DryPackBo.class);
+        verify(productionService).submitCutStorePack(pack.capture());
+        assertThat(pack.getValue().getProductId()).isEqualTo(40L);
+        assertThat(pack.getValue().getSourceInhouseId()).isEqualTo(55L);
+        assertThat(pack.getValue().getStoreId()).isEqualTo(30L);
+        assertThat(pack.getValue().getDeliverDest()).isEqualTo("platform");
+        verifyNoInteractions(stockService);
+    }
+    @Test void staleStoreDemandAndInsufficientWeightCannotStartCut() {
+        var bo=storeCutBo(); bo.setWeight(new BigDecimal("4.999"));
+        assertThatThrownBy(() -> service.submitCut(bo)).hasMessageContaining("未满足");
+        bo.setWeight(new BigDecimal("5")); bo.setProductionProductId(41L);
+        assertThatThrownBy(() -> service.submitCut(bo)).hasMessageContaining("当天未满足");
+        verify(cutService,never()).submitCutOutWithReceipt(any()); verifyNoInteractions(matFlowService,productionService);
+    }
+    @Test void failedProductionCannotSaveSuccessfulReceipt() {
+        var bo=storeCutBo(); when(cutService.submitCutOutWithReceipt(any())).thenReturn(List.of(new CutPartReceipt(500L,13L)));
+        when(matFlowService.pickCutOutput(13L,500L)).thenReturn(55L);
+        when(productionService.submitCutStorePack(any())).thenThrow(new ServiceException("需求并发变化"));
+        assertThatThrownBy(() -> service.submitCut(bo)).hasMessageContaining("并发");
+        verify(flowMapper,never()).updateById(any(StockFlow.class));
     }
     @Test void failureAtDirectOutputCannotSaveSuccessfulReceipt() {
         var product=new BurnProductTypeVo(); product.setProductId(2L); product.setIsWhiteBar(false); product.setDefaultLocationId(10L);

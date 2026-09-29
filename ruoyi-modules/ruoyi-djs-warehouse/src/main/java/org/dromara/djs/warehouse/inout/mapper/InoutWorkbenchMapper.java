@@ -5,9 +5,39 @@ import org.apache.ibatis.annotations.Param;
 import java.math.BigDecimal;
 import org.dromara.djs.warehouse.inout.domain.vo.CutWorkbenchBarVo;
 import org.dromara.djs.warehouse.inout.domain.vo.RecentOutDestVo;
+import org.dromara.djs.warehouse.inout.domain.vo.CutStoreDemandVo;
+import java.time.LocalDate;
 import java.util.List;
 
 public interface InoutWorkbenchMapper {
+    @Select("""
+        WITH eligible AS (
+          SELECT p.tenant_id, dm.store_id, s.store_name, p.id AS product_id, p.product_name, p.product_unit,
+                 p.material_num AS measure_weight,
+                 dm.demand_quantity-COALESCE(dm.shipped_count,0) AS remaining,
+                 ROW_NUMBER() OVER (PARTITION BY p.id,dm.store_id ORDER BY dm.id) AS rn
+          FROM t_warehouse_product_info p
+          JOIN t_warehouse_demand_manage dm ON dm.product_id=p.id AND dm.tenant_id=p.tenant_id
+          JOIN t_md_store s ON s.id=dm.store_id AND s.tenant_id=dm.tenant_id AND s.del_flag='0'
+          WHERE p.product_material=#{materialProductId} AND p.product_attr=1
+            AND p.is_material_sold=1 AND p.is_delivery=1 AND p.product_status=0
+            AND p.belong_type='pork' AND p.del_flag='0' AND p.tenant_id='1001'
+            AND dm.demand_date=#{today} AND dm.del_flag='0'
+            AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')
+            AND dm.demand_quantity>COALESCE(dm.shipped_count,0)
+        )
+        SELECT store_id,store_name,product_id,product_name,product_unit,measure_weight,
+               SUM(remaining) AS demand_quantity,
+               GREATEST(COALESCE(measure_weight,0),
+                 CASE WHEN LOWER(TRIM(product_unit)) IN ('kg','公斤')
+                   THEN MAX(CASE WHEN rn=1 THEN remaining END) ELSE 0 END) AS minimum_weight
+        FROM eligible
+        GROUP BY store_id,store_name,product_id,product_name,product_unit,measure_weight
+        ORDER BY store_name,product_name,product_id,store_id
+        """)
+    List<CutStoreDemandVo> selectCutStoreDemands(@Param("materialProductId") Long materialProductId,
+                                               @Param("today") LocalDate today);
+
     /** 列表与完成判定共用原始入库重：原入库事实→同半扇源行→领用时冻结重量+预冷损耗。 */
     String CUT_ORIGINAL_IN_WEIGHT_SQL = "COALESCE("
         + "(SELECT SUM(bf.change_quantity) FROM t_warehouse_stock_flow bf "
@@ -47,6 +77,7 @@ public interface InoutWorkbenchMapper {
         + "FROM t_warehouse_pig_cut_record c JOIN t_warehouse_bar_info b "
         + "ON b.id=c.white_bar_id AND b.tenant_id=c.tenant_id AND b.del_flag='0' "
         + "LEFT JOIN t_warehouse_product_inhouse i ON i.white_bar_no=c.white_bar_no AND i.tenant_id=c.tenant_id "
+        + "AND i.white_bar_id=c.white_bar_id AND i.material_id IS NULL "
         + "WHERE c.del_flag='0' AND c.out_type='cut' AND c.cut_status IN ('picked','cutting') "
         + "ORDER BY in_time DESC, c.id DESC")
     List<CutWorkbenchBarVo> selectPickedBars();

@@ -20,7 +20,7 @@ class InoutMapperSqlTest {
         for (var method : InoutWorkbenchMapper.class.getMethods()) {
             Select select = method.getAnnotation(Select.class);
             if (select == null) { continue; }
-            String rewritten = tenant.parserSingle(String.join(" ",select.value()).replace("#{cutRecordId}","20"),null);
+            String rewritten = tenant.parserSingle(String.join(" ",select.value()).replaceAll("#\\{[^}]+}","?"),null);
             assertThat(rewritten).contains("tenant_id = '1001'");
             assertThat(rewritten).doesNotContain("tenant_id = null");
         }
@@ -32,5 +32,11 @@ class InoutMapperSqlTest {
         String rewritten=tenant.parserSingle(sql,null);
         assertThat(rewritten).endsWith("FOR UPDATE").contains("MAX(white_bar_id)")
             .contains("GROUP BY tenant_id, white_bar_no").doesNotContain("i.del_flag");
+    }
+    @Test void cutDemandCteExposesTenantAndUsesOnlyTodayEligibleProduction() throws Exception {
+        String sql=String.join(" ",InoutWorkbenchMapper.class.getMethod("selectCutStoreDemands",Long.class,java.time.LocalDate.class).getAnnotation(Select.class).value());
+        assertThat(sql).contains("SELECT p.tenant_id,", "dm.demand_date=#{today}", "p.product_material=#{materialProductId}",
+            "p.is_material_sold=1", "p.product_attr=1", "p.product_status=0", "p.is_delivery=1");
+        assertThat(sql).doesNotContain("dm.demand_date>=", "'COMPLETED'");
     }
 }

@@ -47,6 +47,12 @@ public class InoutWorkbenchController {
     public R<List<CutProductTypeVo>> cutProducts() { return R.ok(service.cutProducts()); }
 
     @SaCheckPermission("djs:warehouse:inout:query")
+    @GetMapping("/cut/store-demands")
+    public R<List<CutStoreDemandVo>> cutStoreDemands(@RequestParam Long materialProductId) {
+        return R.ok(service.cutStoreDemands(materialProductId));
+    }
+
+    @SaCheckPermission("djs:warehouse:inout:query")
     @GetMapping("/shipStores")
     public R<List<StoreDemandCopiesVo>> shipStores(@RequestParam Long productId) { return R.ok(service.shipStores(productId)); }
 

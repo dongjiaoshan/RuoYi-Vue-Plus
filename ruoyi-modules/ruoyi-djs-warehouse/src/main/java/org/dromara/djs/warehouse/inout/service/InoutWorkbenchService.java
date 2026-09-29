@@ -19,6 +19,7 @@ import org.dromara.djs.warehouse.cut.mapper.PigCutRecordMapper;
 import org.dromara.djs.warehouse.cut.service.IPigCutRecordService;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
+import org.dromara.djs.warehouse.flow.service.IMatFlowService;
 import org.dromara.djs.warehouse.inout.domain.bo.BurnWorkbenchSubmitBo;
 import org.dromara.djs.warehouse.inout.domain.bo.CutWorkbenchSubmitBo;
 import org.dromara.djs.warehouse.inout.domain.vo.*;
@@ -26,6 +27,7 @@ import org.dromara.djs.warehouse.inout.mapper.InoutWorkbenchMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
+import org.dromara.djs.warehouse.pack.domain.bo.DryPackBo;
 import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
@@ -51,6 +53,7 @@ public class InoutWorkbenchService {
     private final IPigBurnRecordService burnService;
     private final IPigCutRecordService cutService;
     private final IProductProductionService productionService;
+    private final IMatFlowService matFlowService;
     private final ILocationStockService stockService;
     private final BarInfoMapper barMapper;
     private final PigCutRecordMapper cutMapper;
@@ -65,6 +68,12 @@ public class InoutWorkbenchService {
     public List<BarPendingVo> burnPigs() { return burnService.queryPendingBars(); }
     public List<BurnProductTypeVo> burnProducts(Long barInfoId) { return burnService.queryProductTypes(barInfoId); }
     public List<CutProductTypeVo> cutProducts() { return cutService.queryCutProductTypes(); }
+    public List<CutStoreDemandVo> cutStoreDemands(Long materialProductId) {
+        if (materialProductId == null || cutProducts().stream().noneMatch(p -> Objects.equals(p.getProductId(), materialProductId))) {
+            throw new ServiceException("请选择有效的分割原材料");
+        }
+        return workbenchMapper.selectCutStoreDemands(materialProductId, java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")));
+    }
     public List<StoreDemandCopiesVo> shipStores(Long productId) { return productionService.listStoreDemandCopies(productId); }
 
     public List<CutWorkbenchBarVo> cutBars() {
@@ -150,8 +159,12 @@ public class InoutWorkbenchService {
             throw new ServiceException("请选择一条在库白条或已领用白条");
         }
         String key = requestKey(bo.getRequestId());
-        String hash = fingerprint("cut", bo.getInhouseId(), bo.getCutRecordId(), bo.getProductId(),
-            normalized(bo.getWeight()), bo.getDestination(), bo.getOutDest(), LoginHelper.getUserId());
+        // 保留旧去向回执的指纹，新增门店分支绑定门店、成品与计量确认，重试不可换单。
+        String hash = "store".equals(bo.getDestination())
+            ? fingerprint("cut-store", bo.getInhouseId(), bo.getCutRecordId(), bo.getProductId(),
+                normalized(bo.getWeight()), bo.getStoreId(), bo.getProductionProductId(), Boolean.TRUE.equals(bo.getAllowOverMeasure()), LoginHelper.getUserId())
+            : fingerprint("cut", bo.getInhouseId(), bo.getCutRecordId(), bo.getProductId(),
+                normalized(bo.getWeight()), bo.getDestination(), bo.getOutDest(), LoginHelper.getUserId());
         StockFlow receipt = existing(key);
         if (receipt != null) { return replayCut(receipt, hash, bo.getCutRecordId()); }
         ProductInhouse source = bo.getInhouseId() == null ? null : inhouseMapper.selectById(bo.getInhouseId());
@@ -163,8 +176,19 @@ public class InoutWorkbenchService {
         CutProductTypeVo product = cutProducts().stream().filter(p -> Objects.equals(p.getProductId(), bo.getProductId()))
             .findFirst().orElseThrow(() -> new ServiceException("请选择有效的分割产品"));
         validateOutDest(bo.getDestination(), bo.getOutDest());
+        CutStoreDemandVo demand = null;
+        if ("store".equals(bo.getDestination())) {
+            demand = cutStoreDemands(bo.getProductId()).stream()
+                .filter(d -> Objects.equals(d.getStoreId(), bo.getStoreId()) && Objects.equals(d.getProductId(), bo.getProductionProductId()))
+                .findFirst().orElseThrow(() -> new ServiceException("所选门店没有该原材料外售产品的当天未满足需求，请刷新后重选"));
+            if (bo.getWeight().compareTo(demand.getMinimumWeight()) < 0) {
+                throw new ServiceException("重量未满足需求或生产计量规则，请处理后再试");
+            }
+        } else if (bo.getStoreId() != null || bo.getProductionProductId() != null || Boolean.TRUE.equals(bo.getAllowOverMeasure())) {
+            throw new ServiceException("该去向不接受门店生产参数");
+        }
         Long locationId = switch (bo.getDestination()) {
-            case "outbound" -> requireConfiguredLocation(product.getDefaultLocationId());
+            case "outbound", "store" -> requireConfiguredLocation(product.getDefaultLocationId());
             case "fresh" -> requireNamedLocation("猪肉鲜品库");
             case "frozen" -> requireNamedLocation("冻品库");
             default -> throw new ServiceException("无效的产品去向");
@@ -196,6 +220,14 @@ public class InoutWorkbenchService {
         if (produced.size() != 1) { throw new ServiceException("分割入库回执异常，操作已撤销"); }
         if ("outbound".equals(bo.getDestination())) {
             directOut(produced.getFirst().stockId(), bo.getWeight(), bo.getOutDest());
+        } else if ("store".equals(bo.getDestination())) {
+            Long materialSourceId = matFlowService.pickCutOutput(produced.getFirst().stockId(), produced.getFirst().flowId());
+            DryPackBo pack = new DryPackBo();
+            pack.setSourceInhouseId(materialSourceId); pack.setProductId(bo.getProductionProductId());
+            pack.setStoreId(bo.getStoreId()); pack.setProductWeight(bo.getWeight());
+            pack.setProductUnit(demand.getProductUnit()); pack.setAllowOverMeasure(bo.getAllowOverMeasure());
+            pack.setDeliverDest("platform");
+            productionService.submitCutStorePack(pack);
         }
         receipt = flowMapper.selectById(produced.getFirst().flowId());
         return persistReceipt(receipt, key, hash, cutId);

@@ -469,11 +469,36 @@ public class ProductProductionServiceImpl
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long submitDryPack(DryPackBo bo) {
+        return submitDryPackInternal(bo, false);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long submitCutStorePack(DryPackBo bo) {
+        return submitDryPackInternal(bo, true);
+    }
+
+    private Long submitDryPackInternal(DryPackBo bo, boolean cutStore) {
         Long userId = currentUserIdSafe();
         Date now = new Date();
 
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
+        List<DemandManage> todayDemands = List.of();
+        if (cutStore) {
+            if (!BELONG_TYPE_PORK.equals(product.getBelongType()) || !Integer.valueOf(1).equals(product.getProductAttr())
+                || !Integer.valueOf(1).equals(product.getIsMaterialSold()) || !Integer.valueOf(0).equals(product.getProductStatus())
+                || !java.util.Objects.equals(product.getProductMaterial(), src.getProductId())
+                || !java.util.Objects.equals(src.getMaterialId(), src.getProductId())
+                || bo.getStoreId() == null || !"platform".equals(bo.getDeliverDest())) {
+                throw new ServiceException("所选生产产品不支持该原材料外售，请刷新后重选");
+            }
+            todayDemands = demandManageMapper.selectUncompletedDemands(product.getId(), bo.getStoreId()).stream()
+                .filter(d -> LocalDate.now(PACK_TODAY_ZONE).equals(d.getDemandDate()) && rowRemain(d).signum() > 0).toList();
+            if (todayDemands.isEmpty()) {
+                throw new ServiceException("所选门店没有该产品的当天未满足需求，请刷新后重选");
+            }
+        }
         // 实称对打包计量规则的校验（下限硬拒 / 超 3% 可确认继续）：肉品无条件套用；
         // 其他产品（egg/dry_good/other）按甲方 V6 row45 口径补齐 —— 仅「原材料单位 = KG 的重量模式」才套，
         // 打包量 / 份数模式录的是件数不是重量，套上必误判（详见 isOtherPackKgMeasureMode）。
@@ -491,7 +516,7 @@ public class ProductProductionServiceImpl
         //   · egg/dry_good/other 来源 → 池按原材料（该页无地块/耳号选择器，卡片「领用剩余重量」本就按原材料
         //     跨行求和；旧的单条口径会复现 row60 那个「显示够、提交说不够」，因为 resolveAutoSource
         //     只挑余量最大的一条）。
-        List<ProductInhouse> srcPool = resolveSourcePool(src);
+        List<ProductInhouse> srcPool = cutStore ? List.of(src) : resolveSourcePool(src);
         requirePoolEnough(srcPool, bo.getProductWeight());
         // 入库库位（前端收银台不采集，可空 → 默认取产品配置库位/首个可用库位兜底）
         Long locationId = resolveLocationId(bo.getLocationId(), product);
@@ -505,8 +530,9 @@ public class ProductProductionServiceImpl
         // demand_id IS NULL），所以扣满 N 行却只落 1 条记录时，多出来的需求会过了出车闸却无货可选、
         // 卡在车边。拆行让「产出记录数 ≡ 扣满的需求行数」，两边守恒。
         // 无匹配需求 / 礼盒 / 非 KG 未回传打包量 → 恒 1 条，行为与拆行前一致。
-        List<DemandManage> kgDemandRows = planKgDemandRows(product, bo.getStoreId(),
-            bo.getProductWeight(), bo.getDeliverDest());
+        List<DemandManage> kgDemandRows = cutStore && isKgUnit(product.getProductUnit())
+            ? planKgDemandRows(product, bo.getStoreId(), bo.getProductWeight(), bo.getDeliverDest(), todayDemands)
+            : planKgDemandRows(product, bo.getStoreId(), bo.getProductWeight(), bo.getDeliverDest());
         int splitCount = kgDemandRows.isEmpty()
             ? resolveDryProductionSplitCount(product, bo)
             : kgDemandRows.size();
@@ -528,6 +554,7 @@ public class ProductProductionServiceImpl
             // 规格恒取产品主数据，理由同 submitVegPack：打包页不该让工人手填产品属性。
             p.setProductSpec(product.getProductSpec());
             p.setEarNo(src.getEarNo());
+            if (cutStore) p.setWhiteBarNo(src.getWhiteBarNo());
             p.setProductSort(1);
             p.setProductWeight(consume);
             p.setProduceQuantity(consume); // D10 hotfix: SHIP 流水 changeNum 用
@@ -579,6 +606,8 @@ public class ProductProductionServiceImpl
         //     回落原口径「一次打包 = 扣 1 份」，行为不变。
         if (isKgUnit(product.getProductUnit())) {
             deductKgPlannedRows(kgDemandRows, product.getId(), bo.getStoreId(), bo.getProductWeight());
+        } else if (cutStore) {
+            deductDemandRows(product.getId(), bo.getStoreId(), BigDecimal.ONE, todayDemands);
         } else {
             fulfillDirectDemandOnPack(product.getId(), bo.getStoreId(),
                 resolveDryDemandDeductQty(product, bo.getPackQuantity()), bo.getDeliverDest());
@@ -2007,6 +2036,10 @@ public class ProductProductionServiceImpl
         // 「剩余 9，本次 17」拒掉 —— 屏幕说 17、系统只让打 9，无从解释。
         // 故一次读齐候选行、先校验总量、再按「需求日升序」逐行扣到打完为止。
         List<DemandManage> candidates = demandManageMapper.selectUncompletedDemands(productId, storeId);
+        deductDemandRows(productId, storeId, packQty, candidates);
+    }
+
+    private void deductDemandRows(Long productId, Long storeId, BigDecimal packQty, List<DemandManage> candidates) {
         if (candidates.isEmpty()) {
             log.warn("[PACK-DEMAND-DEDUCT] 打包未匹配到未完成需求，跳过扣减 productId={} storeId={} packQty={}",
                 productId, storeId, packQty);
@@ -2116,6 +2149,11 @@ public class ProductProductionServiceImpl
      */
     protected List<DemandManage> planKgDemandRows(ProductInfo product, Long storeId,
                                                   BigDecimal weighedKg, String deliverDest) {
+        return planKgDemandRows(product, storeId, weighedKg, deliverDest, null);
+    }
+
+    private List<DemandManage> planKgDemandRows(ProductInfo product, Long storeId,
+                                               BigDecimal weighedKg, String deliverDest, List<DemandManage> suppliedRows) {
         if (product == null || !isKgUnit(product.getProductUnit()) || weighedKg == null) {
             return List.of();
         }
@@ -2126,7 +2164,8 @@ public class ProductProductionServiceImpl
         if (storeId == null) {
             throw new ServiceException("请选择门店");
         }
-        List<DemandManage> candidates = demandManageMapper.selectUncompletedDemands(product.getId(), storeId);
+        List<DemandManage> candidates = suppliedRows == null
+            ? demandManageMapper.selectUncompletedDemands(product.getId(), storeId) : suppliedRows;
         if (candidates.isEmpty()) {
             return List.of();
         }

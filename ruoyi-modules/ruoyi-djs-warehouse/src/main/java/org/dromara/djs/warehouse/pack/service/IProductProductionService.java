@@ -50,6 +50,9 @@ public interface IProductProductionService {
      */
     Long submitDryPack(DryPackBo bo);
 
+    /** 原材料外售：只消耗本次领用行，只履约当天需求，其余计量与生产记录逻辑沿用肉品打包。 */
+    Long submitCutStorePack(DryPackBo bo);
+
     /**
      * 芹菜按重量打包提交 → 返新建 production.id。
      */

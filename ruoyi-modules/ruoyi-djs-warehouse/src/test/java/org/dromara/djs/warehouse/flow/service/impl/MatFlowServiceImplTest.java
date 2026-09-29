@@ -157,6 +157,37 @@ class MatFlowServiceImplTest {
         loginHelperMock.close();
     }
 
+    private void stubCutOutput() {
+        var flow=new StockFlow(); flow.setId(500L); flow.setProductId(PRODUCT_ID); flow.setWarehouseId(LOCATION_ID);
+        flow.setEarNo("EAR"); flow.setWhiteBarNo("HALF-LEFT"); flow.setWhiteBarId(77L);
+        flow.setInoutType("IN"); flow.setFlowType("cut_out_in"); flow.setChangeQuantity(new BigDecimal("15"));
+        when(stockFlowMapper.selectById(500L)).thenReturn(flow);
+        var stock=new LocationStock(); stock.setId(600L); stock.setProductId(PRODUCT_ID); stock.setLocationId(LOCATION_ID);
+        stock.setEarNo("EAR"); stock.setProductStock(new BigDecimal("24.999")); // 合并篮没有半扇标签，含9.999历史库存
+        when(locationStockMapper.selectById(600L)).thenReturn(stock);
+        var product=new ProductInfo(); product.setId(PRODUCT_ID); product.setBelongType("pork"); product.setProductAttr(2); product.setProductUnit("kg");
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product);
+    }
+    @Test void cutOutputPickUsesReceiptWeightHalfLabelAndCurrentOperator() {
+        stubCutOutput(); when(locationStockMapper.deductStockById(600L,new BigDecimal("15"),USER_ID)).thenReturn(1);
+        when(productInhouseMapper.insert(any(ProductInhouse.class))).thenAnswer(i->{((ProductInhouse)i.getArgument(0)).setId(800L);return 1;});
+        assertThat(service.pickCutOutput(600L,500L)).isEqualTo(800L);
+        var pick=ArgumentCaptor.forClass(StockFlow.class); verify(stockFlowMapper).insert(pick.capture());
+        assertThat(pick.getValue().getWhiteBarNo()).isEqualTo("HALF-LEFT");
+        assertThat(pick.getValue().getOperatorId()).isEqualTo(USER_ID);
+        assertThat(pick.getValue().getFlowType()).isEqualTo("prod_pick_out");
+        assertThat(pick.getValue().getChangeQuantity()).isEqualByComparingTo("15");
+        var source=ArgumentCaptor.forClass(ProductInhouse.class); verify(productInhouseMapper).insert(source.capture());
+        assertThat(source.getValue().getWhiteBarNo()).isEqualTo("HALF-LEFT");
+        assertThat(source.getValue().getProductWeight()).isEqualByComparingTo("15");
+        verify(locationStockMapper,never()).selectList(any());
+    }
+    @Test void cutOutputPickStockFailureNeverCreatesProductionSource() {
+        stubCutOutput();
+        assertThatThrownBy(()->service.pickCutOutput(600L,500L)).hasMessageContaining("已被占用");
+        verify(productInhouseMapper,never()).insert(any(ProductInhouse.class));
+    }
+
     private MatPickBo pickBo(BigDecimal qty) {
         MatPickBo bo = new MatPickBo();
         bo.setProductId(PRODUCT_ID);

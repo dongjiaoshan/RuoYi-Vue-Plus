@@ -11,7 +11,10 @@ public class CutWorkbenchSubmitBo {
     private Long cutRecordId;
     @NotNull private Long productId;
     @NotNull @DecimalMin("0.001") @Digits(integer=9, fraction=3) private BigDecimal weight;
-    @NotBlank @Pattern(regexp="fresh|frozen|outbound") private String destination;
+    @NotBlank @Pattern(regexp="fresh|frozen|outbound|store") private String destination;
+    private Long storeId;
+    private Long productionProductId;
+    private Boolean allowOverMeasure;
     @Size(max=32) private String outDest;
     @NotBlank @Pattern(regexp="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
     private String requestId;

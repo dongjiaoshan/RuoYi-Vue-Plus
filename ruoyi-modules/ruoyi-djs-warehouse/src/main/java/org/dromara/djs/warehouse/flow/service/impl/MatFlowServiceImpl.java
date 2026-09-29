@@ -380,6 +380,50 @@ public class MatFlowServiceImpl implements IMatFlowService {
      *       {@code earNo=篮.ear_no}。</li>
      * </ol>
      */
+    /** 原材料外售只领用本次产物；半扇标签从入库流水取，不能从合并库存篮推断。 */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long pickCutOutput(Long stockId, Long cutFlowId) {
+        StockFlow origin = stockFlowMapper.selectById(cutFlowId);
+        LocationStock basket = locationStockMapper.selectById(stockId);
+        if (origin == null || basket == null || !"cut_out_in".equals(origin.getFlowType())
+            || !"IN".equals(origin.getInoutType()) || origin.getChangeQuantity() == null
+            || origin.getChangeQuantity().signum() <= 0
+            || !java.util.Objects.equals(origin.getProductId(), basket.getProductId())
+            || !java.util.Objects.equals(origin.getWarehouseId(), basket.getLocationId())
+            || !java.util.Objects.equals(origin.getEarNo(), basket.getEarNo())) {
+            throw new ServiceException("本次分割产物与库存回执不一致，操作已撤销");
+        }
+        ProductInfo product = productInfoMapper.selectById(origin.getProductId());
+        if (product == null || !"pork".equals(product.getBelongType()) || !Integer.valueOf(2).equals(product.getProductAttr())) {
+            throw new ServiceException("请选择有效的猪肉原材料");
+        }
+        Long operator = LoginHelper.getUserId();
+        BigDecimal quantity = origin.getChangeQuantity();
+        stockCheckService.assertLocationUnlocked(basket.getLocationId());
+        StockFlow pick = new StockFlow();
+        pick.setFlowNo(generateFlowNo(INOUT_OUT)); pick.setFlowDate(new Date());
+        pick.setProductId(origin.getProductId()); pick.setWarehouseId(basket.getLocationId());
+        pick.setEarNo(origin.getEarNo()); pick.setWhiteBarNo(origin.getWhiteBarNo());
+        pick.setWhiteBarId(origin.getWhiteBarId()); pick.setThirdPhase(LocationStock.thirdPhaseOf(basket));
+        pick.setInoutType(INOUT_OUT); pick.setFlowType("prod_pick_out"); pick.setStockOutDest("prod_pick");
+        pick.setChangeNum(quantity.negate()); pick.setChangeQuantity(quantity); pick.setOperatorId(operator);
+        pick.setRemark("原材料外售生产领用 cut_flow_id=" + cutFlowId);
+        stockFlowMapper.insert(pick);
+        if (locationStockMapper.deductStockById(stockId, quantity, operator) != 1) {
+            throw new ServiceException("本次原料库存已被占用，操作已撤销");
+        }
+        ProductInhouse source = new ProductInhouse();
+        source.setProduceDate(java.sql.Date.valueOf(LocalDate.now())); source.setProduceTime(new Date());
+        source.setProductId(product.getId()); source.setProductName(product.getProductName());
+        source.setProductType(product.getProductType()); source.setProductUnit(product.getProductUnit());
+        source.setProductWeight(quantity); source.setMaterialId(product.getId()); source.setMaterialConsume(quantity);
+        source.setEarNo(origin.getEarNo()); source.setWhiteBarNo(origin.getWhiteBarNo());
+        source.setSource("warehouse"); source.setLocationId(basket.getLocationId());
+        productInhouseMapper.insert(source);
+        return source.getId();
+    }
+
     private Long pickByBatch(MatPickBo bo) {
         LocationStock basket = locationStockMapper.selectById(bo.getBatchId());
         if (basket == null || !"0".equals(basket.getDelFlag())) {
