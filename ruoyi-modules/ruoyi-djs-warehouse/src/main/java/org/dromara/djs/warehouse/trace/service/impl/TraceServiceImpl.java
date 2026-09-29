@@ -197,20 +197,10 @@ public class TraceServiceImpl
         traceCode.setRemark(buildOnsiteRemark(cutLabel, weight));
         insertTraceCode(traceCode);
 
-        // c. 写 arrival(到店) + in_stock 事件锚定现场生码时刻（operator=当前门店操作员）。
-        //    arrival 必写：猪肉追溯码管理列表按「到店日期」= arrival 事件过滤，门店现做码若无 arrival 事件
-        //    永远被日期区间排除（DENGBO-R34：门店打包生码后应在猪肉追溯码管理可见，来源=门店）。
-        //    门店现做 = 白条已到店后现场分割，到店时刻即生码时刻。
-        recordEvent(produceCode, TraceContentConst.ARRIVAL);
+        // 现场生产时间仅用于 in_stock；到店/运输继承当前门店上游仓库码的真实事件。
         recordEvent(produceCode, TraceContentConst.IN_STOCK);
-
-        // d. 按耳号回填上游 4 事件（marketing/singe/slaughter/acid，真实时间戳），补齐链路
         backfillEarNoEvents(produceCode, earNo);
-
-        // e. 回填「冷链发货」（V6 row116）。门店现场码的原材料是**已冷链发到店的白条**，那趟发货挂在上游
-        //    白条产出行自己的码上，本码出生时不会再触发一次 ShipTraceEventListener → C 端时间线在「屠宰完成」
-        //    之后直接跳到「到店」，中间缺一节。按同耳号已有码上的 ship 事件时刻回填（真实发货时刻，不是当前时间）。
-        backfillOnsiteShipEvent(produceCode, earNo);
+        backfillOnsiteDeliveryEvents(produceCode, earNo, storeId);
 
         log.info("[STORE-TRACE-ONSITE-001] genPorkOnsiteCode produceCode={} productionCode={} earNo={} cut={} weight={}",
             produceCode, productionCode, earNo, cutLabel, weight);
@@ -218,60 +208,78 @@ public class TraceServiceImpl
     }
 
     /**
-     * 门店现场码回填「冷链发货」节点（V6 row116）。
-     *
-     * <p>只用于 {@link #genPorkOnsiteCode}：门店现场分割/打包的前提就是白条已冷链发到店，所以这条 ship
-     * 一定发生过、且一定早于本码出生。时刻取<b>同一头猪已有追溯码上最近一条 {@code ship} 事件</b>
-     * （即那趟把白条送到店的发货），不取当前时间。</p>
-     *
-     * <p>不放进 {@link #backfillEarNoEvents} 的原因：那个方法同时服务仓库打包生码，而同一头猪
-     * 「半扇 A 已发门店、半扇 B 还在仓库分割」是正常情况 —— 在仓库产品的码上回填 A 的发货时刻，
-     * 等于给一件还没出仓的货盖了发货戳。</p>
-     *
-     * <p>查不到（该猪还没有任何码发过货 / 数据缺失）→ 不写，不造假。幂等：本码已有 ship 则跳过。
-     * 整体 try-catch swallow，回填失败不拖垮门店打包主事务。</p>
+     * 现场码按同耳号、同门店的仓库码继承最近一次真实到店时间。
+     * product_id 非空限定仓库生码，避免从其他现场码继承错误的到店时间。
+     * 运输事件取同一个上游码，缺失的事件留空，不以现场生产时间代替。
      */
-    private void backfillOnsiteShipEvent(String produceCode, String earNo) {
+    private void backfillOnsiteDeliveryEvents(String produceCode, String earNo, Long storeId) {
+        if (storeId == null) {
+            return;
+        }
         try {
-            if (!findExistingContents(produceCode, Set.of(TraceContentConst.SHIP)).isEmpty()) {
+            Set<String> existing = findExistingContents(produceCode,
+                Set.of(TraceContentConst.ARRIVAL, TraceContentConst.SHIP));
+            if (existing.containsAll(Set.of(TraceContentConst.ARRIVAL, TraceContentConst.SHIP))) {
                 return;
             }
-            List<TraceCode> siblings = baseMapper.selectList(
+            List<String> siblingCodes = baseMapper.selectList(
                 new LambdaQueryWrapper<TraceCode>()
                     .select(TraceCode::getProduceCode)
                     .eq(TraceCode::getPigEarNo, earNo)
-                    .ne(TraceCode::getProduceCode, produceCode)
-                    .orderByDesc(TraceCode::getId)
-                    .last("LIMIT 200"));
-            List<String> siblingCodes = siblings.stream()
-                .map(TraceCode::getProduceCode)
-                .filter(StringUtils::isNotBlank)
-                .toList();
+                    .eq(TraceCode::getStoreId, storeId)
+                    .eq(TraceCode::getCodeType, TraceCodeTypeConst.PORK)
+                    .isNotNull(TraceCode::getProductId)
+                    .ne(TraceCode::getProduceCode, produceCode))
+                .stream().map(TraceCode::getProduceCode).filter(StringUtils::isNotBlank).toList();
             if (siblingCodes.isEmpty()) {
                 return;
             }
-            TraceEvent ship = traceEventMapper.selectOne(
+            TraceEvent arrival = traceEventMapper.selectOne(
                 new LambdaQueryWrapper<TraceEvent>()
-                    .select(TraceEvent::getTraceTime)
                     .in(TraceEvent::getProduceCode, siblingCodes)
-                    .eq(TraceEvent::getTraceContent, TraceContentConst.SHIP)
+                    .eq(TraceEvent::getTraceContent, TraceContentConst.ARRIVAL)
+                    .isNotNull(TraceEvent::getTraceTime)
+                    .le(TraceEvent::getTraceTime, LocalDateTime.now())
                     .orderByDesc(TraceEvent::getTraceTime)
+                    .orderByDesc(TraceEvent::getId)
                     .last("LIMIT 1"));
-            if (ship == null || ship.getTraceTime() == null) {
-                log.info("[STORE-TRACE-ONSITE-001] 无上游 ship 事件可回填 produceCode={} earNo={}", produceCode, earNo);
+            if (arrival == null || arrival.getTraceTime() == null
+                || StringUtils.isBlank(arrival.getProduceCode())) {
+                log.info("[STORE-TRACE-ONSITE-001] 无上游到店事件 produceCode={} earNo={} storeId={}",
+                    produceCode, earNo, storeId);
                 return;
             }
-            TraceEvent event = new TraceEvent();
-            event.setProduceCode(produceCode);
-            event.setTraceContent(TraceContentConst.SHIP);
-            event.setTraceTime(ship.getTraceTime());
-            insertTraceEvent(event);
-            log.info("[STORE-TRACE-ONSITE-001] 回填冷链发货 produceCode={} earNo={} shipTime={}",
-                produceCode, earNo, ship.getTraceTime());
+            if (!existing.contains(TraceContentConst.ARRIVAL)) {
+                copyOnsiteDeliveryEvent(produceCode, arrival);
+            }
+            if (!existing.contains(TraceContentConst.SHIP)) {
+                TraceEvent ship = traceEventMapper.selectOne(
+                    new LambdaQueryWrapper<TraceEvent>()
+                        .eq(TraceEvent::getProduceCode, arrival.getProduceCode())
+                        .eq(TraceEvent::getTraceContent, TraceContentConst.SHIP)
+                        .isNotNull(TraceEvent::getTraceTime)
+                        .le(TraceEvent::getTraceTime, arrival.getTraceTime())
+                        .orderByDesc(TraceEvent::getTraceTime)
+                        .orderByDesc(TraceEvent::getId)
+                        .last("LIMIT 1"));
+                if (ship != null && ship.getTraceTime() != null) {
+                    copyOnsiteDeliveryEvent(produceCode, ship);
+                }
+            }
         } catch (Exception e) {
-            log.warn("[STORE-TRACE-ONSITE-001] 回填冷链发货失败(跳过) produceCode={} earNo={}: {}",
-                produceCode, earNo, e.getMessage());
+            log.warn("[STORE-TRACE-ONSITE-001] 回填到店/运输失败(跳过) produceCode={} earNo={} storeId={}: {}",
+                produceCode, earNo, storeId, e.getMessage());
         }
+    }
+
+    private void copyOnsiteDeliveryEvent(String produceCode, TraceEvent source) {
+        TraceEvent event = new TraceEvent();
+        event.setProduceCode(produceCode);
+        event.setTraceContent(source.getTraceContent());
+        event.setTraceTime(source.getTraceTime());
+        event.setOperatorId(source.getOperatorId());
+        // 不复制上游白条重量，避免把整扇重量显示成现场打包产品重量。
+        insertTraceEvent(event);
     }
 
     /**

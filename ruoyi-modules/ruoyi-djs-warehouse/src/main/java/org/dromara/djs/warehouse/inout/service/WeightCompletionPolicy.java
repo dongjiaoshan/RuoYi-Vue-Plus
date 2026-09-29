@@ -15,7 +15,7 @@ import java.util.List;
 public class WeightCompletionPolicy {
     public static final String BURN_DICT = "djs_burn_yield_threshold";
     public static final String CUT_DICT = "djs_cut_yield_threshold";
-    public static final String BURN_MESSAGE = "请确认录入的接收重量信息是否正确。";
+    public static final String BURN_MESSAGE = "当前白条重量有误，请联系管理员处理。";
     public static final String CUT_MESSAGE = "请确认白条是否已分割完成。";
     private final DictService dictService;
 

@@ -626,13 +626,15 @@ class PigBurnRecordServiceImplTest {
         readyToFinish("20");
         var check=service.finishCheck(BAR_ID);
         assertThat(check.confirmationRequired()).isTrue();
-        assertThat(check.message()).isEqualTo("请确认录入的接收重量信息是否正确。");
+        assertThat(check.message()).isEqualTo("当前白条重量有误，请联系管理员处理。");
         assertThatThrownBy(() -> service.finishBurn(BAR_ID,OPERATOR_ID,false)).hasMessage(check.message());
         verify(barInfoMapper,never()).updateStatusToInStock(any(),any(),any(),any());
     }
-    @Test void confirmedLowBurnCanFinishAndExactBoundaryNeedsNoConfirmation() {
-        readyToFinish("20"); service.finishBurn(BAR_ID,OPERATOR_ID,true);
-        verify(barInfoMapper).updateStatusToInStock(eq(BAR_ID),eq(new BigDecimal("40")),any(),eq(OPERATOR_ID));
+    @Test void confirmedLowBurnCannotFinishAndExactBoundaryStillPasses() {
+        readyToFinish("20");
+        assertThatThrownBy(() -> service.finishBurn(BAR_ID,OPERATOR_ID,true))
+            .hasMessage("当前白条重量有误，请联系管理员处理。");
+        verify(barInfoMapper,never()).updateStatusToInStock(any(),any(),any(),any());
         readyToFinish("25"); assertThat(service.finishCheck(BAR_ID).confirmationRequired()).isFalse();
         service.finishBurn(BAR_ID,OPERATOR_ID,false);
         verify(barInfoMapper).updateStatusToInStock(eq(BAR_ID),eq(new BigDecimal("50")),any(),eq(OPERATOR_ID));
@@ -641,7 +643,7 @@ class PigBurnRecordServiceImplTest {
         readyToFinish("25"); assertThat(service.finishCheck(BAR_ID).confirmationRequired()).isFalse();
         var threshold=new org.dromara.common.core.domain.dto.DictDataDTO(); threshold.setIsDefault("Y"); threshold.setDictValue("60");
         when(dictService.getDictData(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(threshold));
-        assertThatThrownBy(() -> service.finishBurn(BAR_ID,OPERATOR_ID,false)).hasMessage("请确认录入的接收重量信息是否正确。");
+        assertThatThrownBy(() -> service.finishBurn(BAR_ID,OPERATOR_ID,false)).hasMessage("当前白条重量有误，请联系管理员处理。");
         when(dictService.getDictData(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of());
         assertThatThrownBy(() -> service.finishBurn(BAR_ID,OPERATOR_ID,true)).hasMessageContaining("默认百分比");
         verify(barInfoMapper,never()).updateStatusToInStock(any(),any(),any(),any());

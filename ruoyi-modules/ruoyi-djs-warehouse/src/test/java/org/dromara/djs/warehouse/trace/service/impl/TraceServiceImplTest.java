@@ -32,6 +32,9 @@ import org.mockito.quality.Strictness;
 
 import java.util.List;
 import java.util.Map;
+import java.time.LocalDateTime;
+import java.math.BigDecimal;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -253,6 +256,121 @@ class TraceServiceImplTest {
     }
 
     // ============================ 耳号事件回填（核心 bug 修复） ============================
+
+    private void prepareOnsiteCode() {
+        when(bizCodeGenerator.generate(eq(BizCodeType.TRACE_CODE), anyMap())).thenReturn("ONSITE");
+        doNothing().when(service).insertTraceCode(any(TraceCode.class));
+        doNothing().when(service).insertTraceEvent(any(TraceEvent.class));
+        doReturn(null).when(service).findBarByEarNo("EAR");
+    }
+
+    private TraceEvent upstreamEvent(String content, LocalDateTime time) {
+        TraceEvent event = new TraceEvent();
+        event.setProduceCode("WAREHOUSE");
+        event.setTraceContent(content);
+        event.setTraceTime(time);
+        event.setOperatorId(123L);
+        event.setEventData("{\"weight\":\"60.940\"}");
+        return event;
+    }
+
+    @Test
+    @DisplayName("现场码继承同耳号同门店仓库码的到店时间，运输取同一个上游码")
+    void onsite_inheritsWarehouseArrivalAndShip() {
+        prepareOnsiteCode();
+        TraceCode warehouse = new TraceCode();
+        warehouse.setProduceCode("WAREHOUSE");
+        when(traceCodeMapper.selectList(any())).thenAnswer(invocation -> {
+            LambdaQueryWrapper<TraceCode> query = invocation.getArgument(0);
+            assertThat(query.getSqlSegment()).contains("store_id =", "product_id IS NOT NULL");
+            assertThat(query.getParamNameValuePairs().values()).contains(7001L, "EAR");
+            return List.of(warehouse);
+        });
+        LocalDateTime arrival = LocalDateTime.of(2026, 9, 29, 6, 55, 18);
+        LocalDateTime ship = LocalDateTime.of(2026, 9, 29, 3, 42, 26);
+        when(traceEventMapper.selectOne(any())).thenAnswer(invocation -> {
+            LambdaQueryWrapper<TraceEvent> query = invocation.getArgument(0);
+            query.getSqlSegment();
+            if (query.getParamNameValuePairs().containsValue(TraceContentConst.ARRIVAL)) {
+                return upstreamEvent(TraceContentConst.ARRIVAL, arrival);
+            }
+            assertThat(query.getParamNameValuePairs().values()).contains("WAREHOUSE");
+            return upstreamEvent(TraceContentConst.SHIP, ship);
+        });
+
+        service.genPorkOnsiteCode("EAR", "背膘", new BigDecimal("0.51"), 7001L, "JX2609290001");
+
+        ArgumentCaptor<TraceEvent> events = ArgumentCaptor.forClass(TraceEvent.class);
+        verify(service, times(3)).insertTraceEvent(events.capture());
+        assertThat(events.getAllValues()).allMatch(e -> "ONSITE".equals(e.getProduceCode()));
+        assertThat(events.getAllValues()).filteredOn(e -> TraceContentConst.ARRIVAL.equals(e.getTraceContent()))
+            .singleElement().satisfies(e -> {
+                assertThat(e.getTraceTime()).isEqualTo(arrival);
+                assertThat(e.getOperatorId()).isEqualTo(123L);
+                assertThat(e.getEventData()).isNull();
+            });
+        assertThat(events.getAllValues()).filteredOn(e -> TraceContentConst.SHIP.equals(e.getTraceContent()))
+            .singleElement().satisfies(e -> assertThat(e.getTraceTime()).isEqualTo(ship));
+        assertThat(events.getAllValues()).filteredOn(e -> TraceContentConst.IN_STOCK.equals(e.getTraceContent()))
+            .singleElement().satisfies(e -> assertThat(e.getTraceTime()).isAfter(arrival));
+    }
+
+    @Test
+    @DisplayName("现场码缺失上游记录时不把生码时间写成到店时间")
+    void onsite_withoutUpstream_doesNotInventArrival() {
+        prepareOnsiteCode();
+        when(traceCodeMapper.selectList(any())).thenReturn(List.of());
+
+        service.genPorkOnsiteCode("EAR", "背膘", new BigDecimal("0.51"), 7001L, "JX2609290001");
+
+        ArgumentCaptor<TraceEvent> events = ArgumentCaptor.forClass(TraceEvent.class);
+        verify(service, times(1)).insertTraceEvent(events.capture());
+        assertThat(events.getValue().getTraceContent()).isEqualTo(TraceContentConst.IN_STOCK);
+    }
+
+    @Test
+    @DisplayName("有仓库码但未到店时，不生成到店或运输事件")
+    void onsite_withoutArrival_doesNotInventDelivery() {
+        prepareOnsiteCode();
+        TraceCode warehouse = new TraceCode();
+        warehouse.setProduceCode("WAREHOUSE");
+        when(traceCodeMapper.selectList(any())).thenReturn(List.of(warehouse));
+        when(traceEventMapper.selectOne(any())).thenReturn(null);
+
+        service.genPorkOnsiteCode("EAR", "背膘", new BigDecimal("0.51"), 7001L, "JX2609290001");
+
+        ArgumentCaptor<TraceEvent> events = ArgumentCaptor.forClass(TraceEvent.class);
+        verify(service, times(1)).insertTraceEvent(events.capture());
+        assertThat(events.getValue().getTraceContent()).isEqualTo(TraceContentConst.IN_STOCK);
+    }
+
+    @Test
+    @DisplayName("门店未知时不跨门店继承事件，现场生码仍可完成")
+    void onsite_withoutStore_doesNotSearchOtherStores() {
+        prepareOnsiteCode();
+
+        assertThat(service.genPorkOnsiteCode("EAR", "背膘", new BigDecimal("0.51"), null, null))
+            .isEqualTo("ONSITE");
+
+        verify(traceCodeMapper, never()).selectList(any());
+        ArgumentCaptor<TraceEvent> events = ArgumentCaptor.forClass(TraceEvent.class);
+        verify(service, times(1)).insertTraceEvent(events.capture());
+        assertThat(events.getValue().getTraceContent()).isEqualTo(TraceContentConst.IN_STOCK);
+    }
+
+    @Test
+    @DisplayName("上游查询失败时不虚构到店事件，也不阻断现场生码")
+    void onsite_upstreamQueryFails_stillGeneratesCode() {
+        prepareOnsiteCode();
+        when(traceCodeMapper.selectList(any())).thenThrow(new RuntimeException("db down"));
+
+        assertThat(service.genPorkOnsiteCode("EAR", "背膘", new BigDecimal("0.51"), 7001L, "JX2609290001"))
+            .isEqualTo("ONSITE");
+
+        ArgumentCaptor<TraceEvent> events = ArgumentCaptor.forClass(TraceEvent.class);
+        verify(service, times(1)).insertTraceEvent(events.capture());
+        assertThat(events.getValue().getTraceContent()).isEqualTo(TraceContentConst.IN_STOCK);
+    }
 
     private BarInfo barWithLifecycle(String earNo) {
         BarInfo bar = new BarInfo();

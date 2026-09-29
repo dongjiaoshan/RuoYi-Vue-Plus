@@ -589,8 +589,11 @@ public class PigBurnRecordServiceImpl
         BurnCompletionState state = loadBurnCompletion(barInfoId);
         BarInfo bar = state.bar();
         BigDecimal inWeightTotal = state.receivedWeight();
-        WeightCompletionPolicy.requireConfirmation(
-            completionPolicy.burn(inWeightTotal, bar.getMarketingWeight()), confirmAbnormalWeight);
+        // V6-R275/R278：低出品率是硬拦截，旧客户端的确认标记也不能豁免。
+        CompletionCheckVo check = completionPolicy.burn(inWeightTotal, bar.getMarketingWeight());
+        if (check.confirmationRequired()) {
+            throw new ServiceException(check.message());
+        }
 
         // ---------- Step 3：UPDATE bar status singing → in_stock（燎毛处理完成=已入库，乐观锁）----------
         // 下游分割 availableBars / 库存自检均认 in_stock，故燎毛终态直接落 in_stock，
