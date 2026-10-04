@@ -89,6 +89,19 @@ class BurnInhouseAdjustMapperSqlContractTest {
     }
 
     @Test
+    @DisplayName("row279: 调整上限有出栏重契约，累计来自全历史燎毛入库流水")
+    void listIncludesMarketingWeightAndCumulativeInboundFlows() throws Exception {
+        String sql = renderWithAllFilters();
+        assertThat(sql).contains("b.marketing_weight as marketingweight");
+        assertThat(sql).contains("sum(f.change_quantity)");
+        assertThat(sql).contains("f.flow_type = 'slaughter_burn'");
+        assertThat(sql).contains("f.inout_type = 'in'");
+        // 旧流水没有 white_bar_id 时，仍按同租户白条号关联，包括已消费的产出行。
+        assertThat(sql).contains("max(white_bar_id)");
+        assertThat(sql).doesNotContain("sum(x.product_weight)");
+    }
+
+    @Test
     @DisplayName("改流水只改「燎毛入库」那一条：同一 white_bar_no 的领用出库 / 分割流水不能被一起改")
     void flowUpdateIsScopedToBurnInbound() throws Exception {
         Method target = org.dromara.djs.warehouse.flow.mapper.StockFlowMapper.class.getMethod(

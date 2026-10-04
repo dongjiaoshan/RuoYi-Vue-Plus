@@ -94,6 +94,19 @@ public interface WarehouseStatAggregateMapper {
     BigDecimal sumArriveWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
     /**
+     * 接收均重分母（V6-R280）：当日燎毛产出记录的耳号去重数。
+     * 日期明确按 burn_time 自然日，不能替换成 bar.arrive_time；一头多条产出记录只计一头。
+     * SQL COUNT(DISTINCT ear_no) 自然排除 NULL 耳号，不引入 burn_id 等替代标识。
+     */
+    @Select("""
+        SELECT COUNT(DISTINCT ear_no) FROM t_warehouse_pig_burn_record
+        WHERE del_flag = '0' AND tenant_id = #{tenantId}
+          AND DATE(burn_time) = #{statDate}
+        """)
+    int countArrivePigs(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+
+    /**
      * 屠宰率的分子分母（称重 cohort 里<b>有出栏重量</b>的子集，一起取保证同一批猪）。
      *
      * <p>分子 {@code rateArrive} = Σ 到场重；分母 {@code rateBase} = Σ 出栏重量

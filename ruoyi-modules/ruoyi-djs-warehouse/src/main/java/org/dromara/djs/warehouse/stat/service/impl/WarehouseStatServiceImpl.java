@@ -125,6 +125,11 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         // 称重 cohort（当日在燎毛间完成称重的那批猪）：接收重量 + 屠宰率
         BigDecimal arrive = scale3(aggregateMapper.sumArriveWeight(tenantId, statDate));
         r.setArriveWeight(arrive);
+        // V6-R280：新接收均重分母按 burn_time 自然日 COUNT(DISTINCT ear_no)，
+        // 与现有接收重量的 arrive_time cohort 独立，不能改旧总重口径来凑同批。
+        int arrivePigCount = aggregateMapper.countArrivePigs(tenantId, statDate);
+        r.setArrivePigCount(arrivePigCount);
+        r.setAvgArriveWeight(divideOrNull(arrive, BigDecimal.valueOf(arrivePigCount)));
         // 屠宰率 = 接收重量 ÷ 完成接收重量的猪只出栏重量之和 × 100（口径#1，V6-R172）。
         // 分子分母都只算「称重 cohort 里有出栏重量」的那部分猪，取不到出栏重量的从两边同时剔除；
         // 它的到场重仍算在上面的接收重量里，所以分子 ≤ 接收重量，两者刻意不等。

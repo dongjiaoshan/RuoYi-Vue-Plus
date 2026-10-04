@@ -195,6 +195,11 @@ public class BurnInhouseAdjustServiceImpl implements IBurnInhouseAdjustService {
             stockCheckService.assertLocationUnlocked(row.getLocationId());
         }
 
+        BigDecimal marketingWeight = bar.getMarketingWeight();
+        if (marketingWeight == null || marketingWeight.signum() <= 0) {
+            throw new ServiceException("该猪只缺少有效出栏重量，请先补录出栏重量再调整");
+        }
+
         if (delta.signum() == 0) {
             // 重量没变 = 什么都不用做。不打「已调整」标记：那个标记要回答的是「这条数据被人改过没有」，
             // 提交一个一模一样的值并没有改动过数据。
@@ -202,11 +207,10 @@ public class BurnInhouseAdjustServiceImpl implements IBurnInhouseAdjustService {
         }
 
         // 接收重量本身已改为产品累计；调整后的全历史累计只与出栏重比较。
-        BigDecimal marketingWeight = bar.getMarketingWeight();
         var received = stockFlowMapper.selectBurnInbounds(List.of(row.getWhiteBarId()));
         BigDecimal total = received.stream().map(org.dromara.djs.warehouse.burn.domain.vo.BurnInboundVo::getWeight)
             .filter(java.util.Objects::nonNull).reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (marketingWeight != null && total.add(delta).compareTo(marketingWeight) > 0) {
+        if (total.add(delta).compareTo(marketingWeight) > 0) {
             BigDecimal maxAllowed = marketingWeight.subtract(total.subtract(oldWeight)).max(BigDecimal.ZERO);
             throw new ServiceException("调整后入库重量不能超过 " + maxAllowed.stripTrailingZeros().toPlainString()
                 + "kg（猪只出栏重量 " + marketingWeight.stripTrailingZeros().toPlainString() + "kg）");

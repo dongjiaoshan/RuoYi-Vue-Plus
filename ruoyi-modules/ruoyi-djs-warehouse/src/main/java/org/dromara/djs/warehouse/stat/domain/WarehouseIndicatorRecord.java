@@ -52,6 +52,11 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     // ---- 称重 cohort（bar.arrive_time：当日在燎毛间完成称重的那批猪）----
     /** 接收重量（当日燎毛间完成称重的猪只总重 = Σ bar.arrive_weight）。 */
     private BigDecimal arriveWeight;
+    /** 接收均重分母：当日 burn_time 自然日内猪只耳号去重数（V6-R280）。 */
+    private Integer arrivePigCount;
+    /** 接收均重 = 日表接收重量/当日燎毛记录耳号去重数；分母0 → null。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal avgArriveWeight;
     /** 屠宰率分子（称重 cohort 里有出栏重量的那部分，Σ 到场重）。 */
     private BigDecimal slaughterRateArriveWeight;
     /** 屠宰率分母（同一部分猪的 Σ 出栏重量；自养 marketing_weight / 外购生猪 pig_weight）。 */

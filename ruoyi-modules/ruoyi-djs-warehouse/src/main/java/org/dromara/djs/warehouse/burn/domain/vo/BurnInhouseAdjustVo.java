@@ -106,13 +106,17 @@ public class BurnInhouseAdjustVo implements Serializable {
     private String adjustByName;
 
     /**
-     * 猪只接收重量 kg（= {@code bar_info.arrive_weight}，燎毛间称重录的头皮肉重量；未称重为空）。
-     * 调整弹框顶部只读展示。
+     * 猪只接收重量 kg（= {@code bar_info.arrive_weight}，全历史产品累计入库重量）。
      */
     private BigDecimal arriveWeight;
 
     /**
-     * 该白条已入库产品重量合计 kg（含本行）。
+     * 猪只出栏重量 kg（{@code bar_info.marketing_weight}）；累计接收重量不得超过此值。
+     */
+    private BigDecimal marketingWeight;
+
+    /**
+     * 该白条全历史燎毛入库流水累计重量 kg（含本行，也含已消费产品）。
      */
     private BigDecimal inboundedWeight;
 

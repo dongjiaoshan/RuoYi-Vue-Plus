@@ -385,17 +385,13 @@ class BurnInhouseAdjustServiceImplTest {
     }
 
     @Test
-    @DisplayName("adjustWeight: 未称重(接收重量为空)时跳过上限校验，仍可调整")
-    void testAdjust_SkipCapWhenNotWeighed() {
+    @DisplayName("row279: 缺出栏重量不能校验累计上限，拒绝且不写入")
+    void testAdjust_RejectMissingMarketingWeight() {
         when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
         when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("pending_singe", null));
-        stubAllWritesOk();
-
-        service.adjustWeight(bo(NEW_WEIGHT));
-
-        verify(adjustMapper).applyAdjust(INHOUSE_ID, OLD_WEIGHT, NEW_WEIGHT, USER_ID);
-        // 未称重时不需要读其它产出行做上限校验
-        verify(productInhouseMapper, never()).selectList(any(LambdaQueryWrapper.class));
+        assertThatThrownBy(() -> service.adjustWeight(bo(NEW_WEIGHT)))
+            .isInstanceOf(ServiceException.class).hasMessageContaining("出栏重量");
+        verifyNoInteractions(adjustMapper, locationStockMapper, stockFlowMapper);
     }
 
     @Test
@@ -428,6 +424,49 @@ class BurnInhouseAdjustServiceImplTest {
         service.adjustWeight(bo(NEW_WEIGHT));
 
         verify(adjustMapper).applyAdjust(INHOUSE_ID, OLD_WEIGHT, NEW_WEIGHT, USER_ID);
+        verify(barInfoMapper).updateBurnProgress(eq(BAR_ID), eq(new BigDecimal("108.500")), any(), eq(USER_ID));
+    }
+
+    @Test
+    @DisplayName("row279: 累计接收重可以调大到出栏重，旧接收重不是上限")
+    void testAdjust_CumulativeWeightCanReachMarketingWeight() {
+        when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.300"), "150.000"));
+        stubOtherRows("30.000");
+        stubAllWritesOk();
+
+        service.adjustWeight(bo(new BigDecimal("120.000")));
+
+        verify(adjustMapper).applyAdjust(INHOUSE_ID, OLD_WEIGHT, new BigDecimal("120.000"), USER_ID);
+        verify(barInfoMapper).updateBurnProgress(eq(BAR_ID), eq(new BigDecimal("150.000")), any(), eq(USER_ID));
+    }
+
+    @Test
+    @DisplayName("row279: 同产品并发调整旧值锁失败时不推进库存与累计接收重")
+    void testAdjust_RejectStaleProductWeight() {
+        when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
+        stubOtherRows("30.000");
+        when(adjustMapper.applyAdjust(INHOUSE_ID, OLD_WEIGHT, NEW_WEIGHT, USER_ID)).thenReturn(0);
+
+        assertThatThrownBy(() -> service.adjustWeight(bo(NEW_WEIGHT)))
+            .isInstanceOf(ServiceException.class).hasMessageContaining("已被他人修改");
+        verifyNoInteractions(locationStockMapper);
+        verify(barInfoMapper, never()).updateBurnProgress(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("row279: 累计接收重同步失败必须抛出并回滚整笔调整")
+    void testAdjust_RejectWhenCumulativeProgressUpdateLost() {
+        when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
+        stubOtherRows("30.000");
+        stubAllWritesOk();
+        when(barInfoMapper.updateBurnProgress(any(), any(), any(), any())).thenReturn(0);
+
+        assertThatThrownBy(() -> service.adjustWeight(bo(NEW_WEIGHT)))
+            .isInstanceOf(ServiceException.class).hasMessageContaining("猪只状态已变更");
+        verify(warehouseStatService, never()).aggregate(any());
     }
 
     @Test

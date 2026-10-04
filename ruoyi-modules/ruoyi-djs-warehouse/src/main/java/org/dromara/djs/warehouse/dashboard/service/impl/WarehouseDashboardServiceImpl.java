@@ -167,17 +167,9 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
     /**
      * {@inheritDoc}
      *
-     * <p><b>屠宰率 / 白条出品率三处同源（V6-R172）</b>：年度 KPI（本方法）、月度趋势折线（月表
-     * {@code t_warehouse_monthly_record}）、日矩阵行（日表 {@code t_warehouse_indicator_record}）
-     * 全部是「Σ分子基数 ÷ Σ分母基数 ×100」，只是 Σ 的区间不同（年 / 月 / 单日）：</p>
-     * <ul>
-     *   <li>屠宰率 = Σ{@code slaughter_rate_arrive_weight} ÷ Σ{@code slaughter_rate_base_weight}</li>
-     *   <li>白条出品率 = Σ{@code bar_yield_numer_weight} ÷ Σ{@code bar_yield_base_weight}</li>
-     * </ul>
-     * <p>这四列是日表落盘时按「同一批猪」算好的 cohort 基数。既<b>不</b>是日率的算术平均（各日头数不同，
-     * 平均会失真），也<b>不</b>能拿 {@code arrive_weight} / {@code bar_total_weight} / {@code slaughter_weight}
-     * 这些展示列相除——它们各属不同 cohort 的全量，跨 cohort 相除的猪不是同一批，率会破 100%
-     * （row172 甲方最初抱怨的现象）。年度卡与月度折线因此天然自洽。</p>
+     * <p>V6-R281：年度送宰均重 / 屠宰出品率 / 白条出品率分别取有值日记录的算术平均。
+     * 有值以非 NULL 为准，真实 0 也计入，每个指标独立计有效日数；全 NULL 返回 NULL。
+     * 月度趋势仍直读月表的基数重算率，矩阵累计仍按各指标已定口径，不随年度公式改变。</p>
      */
     @Override
     public WarehousePorkEfficiencyVo getPorkEfficiency(Integer year, String month) {
@@ -193,21 +185,13 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
             tenantId, LocalDate.of(y, 1, 1), LocalDate.of(y, 12, 31));
 
         int slaughterCount = sumInt(yearRows, WarehouseIndicatorRecord::getSlaughterCount);
-        BigDecimal slaughterWeight = sumDec(yearRows, WarehouseIndicatorRecord::getSlaughterWeight);
         BigDecimal cutBarCount = sumDec(yearRows, WarehouseIndicatorRecord::getCutBarCount);
         BigDecimal cutBarWeight = sumDec(yearRows, WarehouseIndicatorRecord::getCutBarWeight);
         BigDecimal cutProductWeight = sumDec(yearRows, WarehouseIndicatorRecord::getCutProductWeight);
-        // 屠宰率 / 白条出品率取日表落下的 cohort 基数列（分子分母同一批猪），与日表 / 月表同源，
-        // 见本方法 javadoc。分母 Σ 为 0（当年无数据）→ pct 返 null，前端显「—」，不造 0。
-        BigDecimal rateArriveWeight = sumDec(yearRows, WarehouseIndicatorRecord::getSlaughterRateArriveWeight);
-        BigDecimal rateBaseWeight = sumDec(yearRows, WarehouseIndicatorRecord::getSlaughterRateBaseWeight);
-        BigDecimal barYieldNumerWeight = sumDec(yearRows, WarehouseIndicatorRecord::getBarYieldNumerWeight);
-        BigDecimal barYieldBaseWeight = sumDec(yearRows, WarehouseIndicatorRecord::getBarYieldBaseWeight);
-
         vo.setSlaughterCount(slaughterCount);
-        vo.setAvgSlaughterWeight(rate(slaughterWeight, BigDecimal.valueOf(slaughterCount), 2));
-        vo.setSlaughterRate(pct(rateArriveWeight, rateBaseWeight));
-        vo.setBarYieldRate(pct(barYieldNumerWeight, barYieldBaseWeight));
+        vo.setAvgSlaughterWeight(meanNonNull(yearRows, WarehouseIndicatorRecord::getAvgSlaughterWeight));
+        vo.setSlaughterRate(meanNonNull(yearRows, WarehouseIndicatorRecord::getSlaughterRate));
+        vo.setBarYieldRate(meanNonNull(yearRows, WarehouseIndicatorRecord::getBarYieldRate));
         vo.setCutBarCount(cutBarCount);
         vo.setCutBarWeightTon(toTon(cutBarWeight));
         vo.setCutProductWeightTon(toTon(cutProductWeight));
@@ -274,7 +258,7 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
     private static final List<PorkMetric> PORK_METRICS = List.of(
         new PorkMetric("屠宰头数", WarehouseIndicatorRecord::getSlaughterCount, false),
         new PorkMetric("送宰均重", WarehouseIndicatorRecord::getAvgSlaughterWeight, true),
-        new PorkMetric("接收均重", WarehouseIndicatorRecord::getArriveWeight, true),
+        new PorkMetric("接收均重", WarehouseIndicatorRecord::getAvgArriveWeight, true),
         new PorkMetric("屠宰率", WarehouseIndicatorRecord::getSlaughterRate, true),
         // 甲方 2026-09-08 圈的整行含最右「累计」格：白条均重 = 白条总重/当日入白条库的猪只耳号去重数，
         // 累计同一个公式（Σ白条总重 ÷ Σ去重耳号数），不是「日均重再求平均」。
@@ -562,6 +546,20 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
             sum = sum.add(nzd(getter.apply(r)));
         }
         return sum;
+    }
+
+    /** 年度日均值：仅排除 NULL，真实 0 计为一天，各指标单独统计有值日数。 */
+    private <T> BigDecimal meanNonNull(List<T> rows, Function<T, BigDecimal> getter) {
+        BigDecimal sum = BigDecimal.ZERO;
+        int days = 0;
+        for (T r : rows) {
+            BigDecimal value = getter.apply(r);
+            if (value != null) {
+                sum = sum.add(value);
+                days++;
+            }
+        }
+        return days == 0 ? null : sum.divide(BigDecimal.valueOf(days), 2, RoundingMode.HALF_UP);
     }
 
     /**

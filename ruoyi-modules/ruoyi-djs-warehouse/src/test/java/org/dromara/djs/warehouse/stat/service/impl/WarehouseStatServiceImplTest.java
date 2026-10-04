@@ -320,6 +320,39 @@ class WarehouseStatServiceImplTest {
         assertThat(m.getCutYieldRate()).isNull();
     }
 
+    @Test
+    @DisplayName("接收均重落盘：305kg/燎毛记录去重耳号3头=101.667，独立于送宰头数")
+    void testArriveAverageUsesBurnEarCount() {
+        stubEmptyFinishedCohort(7, bd("305"), bd("210"), bd("230"));
+        when(aggregateMapper.countArrivePigs(TENANT, DATE_STR)).thenReturn(3);
+
+        WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
+
+        assertThat(saved.getArriveWeight()).isEqualByComparingTo("305.000");
+        assertThat(saved.getArrivePigCount()).isEqualTo(3);
+        assertThat(saved.getAvgArriveWeight()).isEqualByComparingTo("101.667");
+    }
+
+    @Test
+    @DisplayName("接收均重分母0时落NULL，更新可覆盖历史旧均重")
+    void testArriveAverageZeroDenominatorWritesNullOnUpdate() {
+        stubEmptyFinishedCohort(7, bd("305"), bd("210"), bd("230"));
+        when(aggregateMapper.countArrivePigs(TENANT, DATE_STR)).thenReturn(0);
+        WarehouseIndicatorRecord existing = new WarehouseIndicatorRecord();
+        existing.setId(1L);
+        existing.setAvgArriveWeight(bd("123"));
+        when(indicatorMapper.selectOne(any())).thenReturn(existing);
+
+        service.aggregate(DATE);
+
+        ArgumentCaptor<WarehouseIndicatorRecord> captor = ArgumentCaptor.forClass(WarehouseIndicatorRecord.class);
+        verify(indicatorMapper).updateById(captor.capture());
+        WarehouseIndicatorRecord saved = captor.getValue();
+        assertThat(saved.getId()).isEqualTo(1L);
+        assertThat(saved.getArrivePigCount()).isZero();
+        assertThat(saved.getAvgArriveWeight()).isNull();
+    }
+
     // ============================================================
     //  helpers
     // ============================================================

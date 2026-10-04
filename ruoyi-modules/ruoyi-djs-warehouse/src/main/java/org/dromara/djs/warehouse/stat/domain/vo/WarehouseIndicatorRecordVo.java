@@ -36,6 +36,10 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     private BigDecimal avgSlaughterWeight;
     /** 接收重量（当日燎毛间完成称重的猪只总重）。 */
     private BigDecimal arriveWeight;
+    /** 接收均重分母：当日燎毛记录耳号去重数。 */
+    private Integer arrivePigCount;
+    /** 接收均重（日表接收重量/当日燎毛记录耳号去重数；分母0 → null）。 */
+    private BigDecimal avgArriveWeight;
     /** 屠宰率分子（称重 cohort 里有出栏重量那部分的 Σ 到场重）。 */
     private BigDecimal slaughterRateArriveWeight;
     /** 屠宰率分母（同一部分猪的 Σ 出栏重量）。 */

@@ -39,8 +39,8 @@ public interface BurnInhouseAdjustMapper {
     /**
      * 列表分页查询。
      *
-     * <p>{@code inboundedWeight} 用相关子查询而非 JOIN 派生表：相关子查询只对当前页那几行求值，
-     * 且走 {@code idx_white_bar(tenant_id, white_bar_id)}；派生表要先把整张 inhouse 聚合一遍。</p>
+     * <p>{@code inboundedWeight} 与调整校验同源，累计全历史燎毛入库流水；已消费的产出行不再存在，
+     * 不能只累计当前在库产出行。历史流水没有 white_bar_id 时，按同租户白条流水号关联原始产出行。</p>
      *
      * <p>{@code tenant_id = '1001'} 显式写死：V1 单租户，原生 SQL 不走 MP 租户拦截器注入
      *（与 {@code VegOutMapper} / {@code BarInfoMapper} 同口径）。</p>
@@ -61,12 +61,18 @@ public interface BurnInhouseAdjustMapper {
                ih.adjust_time              AS adjustTime,
                ih.adjust_by                AS adjustBy,
                b.arrive_weight             AS arriveWeight,
-               (SELECT COALESCE(SUM(x.product_weight), 0)
-                  FROM t_warehouse_product_inhouse x
-                 WHERE x.tenant_id = '1001' AND x.del_flag = '0'
-                   AND x.white_bar_id = ih.white_bar_id
-                   AND x.material_id IS NULL
-                   AND x.source = 'warehouse')  AS inboundedWeight
+               b.marketing_weight          AS marketingWeight,
+               (SELECT COALESCE(SUM(f.change_quantity), 0)
+                  FROM t_warehouse_stock_flow f
+                  LEFT JOIN (SELECT tenant_id, white_bar_no, MAX(white_bar_id) AS white_bar_id
+                               FROM t_warehouse_product_inhouse
+                              WHERE white_bar_id IS NOT NULL
+                              GROUP BY tenant_id, white_bar_no) legacy
+                    ON f.white_bar_id IS NULL AND legacy.white_bar_no = f.white_bar_no
+                   AND legacy.tenant_id = f.tenant_id
+                 WHERE f.tenant_id = '1001' AND f.del_flag = '0'
+                   AND f.flow_type = 'slaughter_burn' AND f.inout_type = 'IN'
+                   AND COALESCE(f.white_bar_id, legacy.white_bar_id) = ih.white_bar_id) AS inboundedWeight
           FROM t_warehouse_product_inhouse ih
           LEFT JOIN t_warehouse_bar_info b         ON b.id  = ih.white_bar_id    AND b.del_flag = '0'
           LEFT JOIN t_warehouse_location_info l    ON l.id  = ih.location_id     AND l.del_flag = '0'
