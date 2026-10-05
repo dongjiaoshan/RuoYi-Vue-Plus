@@ -60,6 +60,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -304,6 +305,40 @@ class FarmRecordsServiceImplTest {
         // 校验不过 → 不留「退了但没生效」的农事记录，也不动地块
         verify(baseMapper, never()).insert(any(FarmRecords.class));
         verify(plotInfoMapper, never()).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    @DisplayName("退茬在产判定排除待种植计划：下一茬已排到本地块但未播种时不拦（否则与播种须空地互锁）")
+    void submitRotation_unfinished_check_excludes_pending_plan() {
+        RotationRecordBo bo = new RotationRecordBo();
+        bo.setPlantId(7L);
+        bo.setPlotId(1L);
+        bo.setCropId(2L);
+        bo.setFarmBy(10L);
+        bo.setFarmDate(LocalDate.now());
+
+        PlotInfo activePlot = new PlotInfo();
+        activePlot.setId(1L);
+        activePlot.setPlotStatus(3);
+        when(plotInfoMapper.selectById(1L)).thenReturn(activePlot);
+        when(plantDetailsMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of());
+        PlantDetails target = new PlantDetails();
+        target.setId(900L);
+        when(plantDetailsMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(target);
+        when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
+            FarmRecords r = inv.getArgument(0);
+            r.setId(204L);
+            return 1;
+        });
+
+        service.submitRotation(bo);
+
+        ArgumentCaptor<Wrapper> cap = ArgumentCaptor.forClass(Wrapper.class);
+        verify(plantDetailsMapper, atLeastOnce()).selectList(cap.capture());
+        LambdaQueryWrapper<PlantDetails> w = (LambdaQueryWrapper<PlantDetails>) cap.getValue();
+        assertThat(w.getCustomSqlSegment()).contains("harvest_status").contains("plant_status");
+        assertThat(w.getParamNameValuePairs().values()).contains("completed", "pending");
     }
 
     @Test

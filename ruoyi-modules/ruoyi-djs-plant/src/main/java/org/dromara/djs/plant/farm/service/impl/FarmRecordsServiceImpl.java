@@ -104,6 +104,9 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     /** 采摘完成态（字典 djs_pick_status）：退茬候选与在产判定共用，避免字面量散落。 */
     private static final String HARVEST_STATUS_COMPLETED = "completed";
 
+    /** 待种植态（字典 djs_plant_status）：计划已排到地块上但还没播种，不算在产。 */
+    private static final String PLANT_STATUS_PENDING = "pending";
+
     private final PlotInfoMapper plotInfoMapper;
     private final PlotZoneMapper plotZoneMapper;
     private final CropInfoMapper cropInfoMapper;
@@ -419,6 +422,9 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
      *   <li><b>在产明细拦截（PLT-ROTATE-ONCE-001）</b>：地块上还有没采完的作物时拒绝退茬 ——
      *       退茬的副作用是<b>地块级</b>的（{@code plot_status=1}），而候选判定是<b>作物级</b>的，
      *       两者错位会把「正在采摘的另一茬」连带退掉。文案带上作物名，让工人知道该先去完成谁。</li>
+     *   <li><b>待种植计划不算在产</b>：下一茬计划提前排到本地块（{@code plant_status=pending}）时不拦。
+     *       播种要求地块先退茬成空地（{@code PlantPlanServiceImpl#assertPlotsIdle}），这里再拿它挡退茬就成了死锁；
+     *       退茬副作用只动已采完的那一茬和地块状态，待种植计划不受影响。</li>
      * </ol>
      */
     private void requireRotatable(Long plotId) {
@@ -435,7 +441,9 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         List<PlantDetails> unfinished = plantDetailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
                 .eq(PlantDetails::getPlotId, plotId)
-                .ne(PlantDetails::getHarvestStatus, HARVEST_STATUS_COMPLETED));
+                .ne(PlantDetails::getHarvestStatus, HARVEST_STATUS_COMPLETED)
+                .and(w -> w.ne(PlantDetails::getPlantStatus, PLANT_STATUS_PENDING)
+                    .or().isNull(PlantDetails::getPlantStatus)));
         if (CollUtil.isNotEmpty(unfinished)) {
             String names = unfinished.stream()
                 .map(d -> resolveCropName(d.getCropId()))
@@ -444,7 +452,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                 .collect(Collectors.joining("、"));
             throw new ServiceException(StringUtils.isBlank(names)
                 ? "该地块上仍有作物未采摘完成，不能退茬"
-                : "该地块上「" + names + "」仍在采摘中，不能退茬");
+                : "该地块上「" + names + "」还未采摘完成，不能退茬");
         }
     }
 
