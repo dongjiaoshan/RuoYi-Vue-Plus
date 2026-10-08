@@ -177,6 +177,7 @@ Three-layer Maven hierarchy — keep new code in the layer that matches its role
 | 9230-9248 | 生产记录 / 入出库记录 / 包材库 | WMS-PACK-001 |
 | 9250-9265 | 库存盘点（admin + mp 录入）| WMS-STOCK-001（D11）|
 | 9270-9275 | 需求调度（mp 调度员）| WMS-DEMAND-002（D11）|
+| 9310-9329 | 出入库管理工作台（猪只入库 / 白条分割出库 / 果蔬出库 / 果蔬入库）| V6-R263~R265 用 9310-9316；V6-R282/R283 用 9317-9321 |
 | 9400-9499 | 仓库看板（dashboard）| W22-006（D11）|
 
 门店+追溯+DSH 域 10000-10999 二级分段（D12 closing 固化）：

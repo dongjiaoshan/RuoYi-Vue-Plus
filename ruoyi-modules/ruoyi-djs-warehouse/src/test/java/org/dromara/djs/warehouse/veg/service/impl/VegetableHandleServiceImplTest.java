@@ -114,6 +114,8 @@ class VegetableHandleServiceImplTest {
 
     @BeforeEach
     void setup() {
+        when(plantingRecordMapper.selectForHarvestUpdate(anyLong()))
+            .thenAnswer(invocation -> plantingRecordMapper.selectById(invocation.getArgument(0, Long.class)));
         service = new VegetableHandleServiceImpl(
             handleMapper, recordMapper, recordTeamMapper, plantingRecordMapper, stockFlowMapper,
             locationInfoMapper, bizCodeGenerator, imageUrlResolver, cropInfoMapper, feedLogMapper,
@@ -886,6 +888,9 @@ class VegetableHandleServiceImplTest {
         when(bizCodeGenerator.generate(eq(BizCodeType.STOCK_FLOW_NO), anyMap())).thenReturn("F20260831IN0001");
 
         service.submitHarvest(harvestBo("30.000", 0, List.of(30001L)));
+
+        verify(plantingRecordMapper).selectForHarvestUpdate(60001L);
+        verify(recordTeamMapper, never()).physicalDeleteByRecordId(any());
 
         // 一条入库流水（落 L0006、带地块、带产品）
         ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);

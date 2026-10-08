@@ -1,5 +1,9 @@
 package org.dromara.djs.warehouse.stat.service.impl;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.warehouse.loss.service.IProductionLossService;
 import org.dromara.djs.warehouse.stat.domain.WarehouseIndicatorRecord;
@@ -9,6 +13,7 @@ import org.dromara.djs.warehouse.stat.mapper.WarehouseIndicatorRecordMapper;
 import org.dromara.djs.warehouse.stat.mapper.WarehouseMonthlyRecordMapper;
 import org.dromara.djs.warehouse.stat.mapper.WarehouseStatAggregateMapper;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -29,21 +34,23 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * {@link WarehouseStatServiceImpl} 单测（仓库日指标猪肉段取数口径）。
+ * {@link WarehouseStatServiceImpl} 单测（仓库日指标猪肉段：接收 cohort，D-0140 / 甲方 V6 行284）。
  *
  * <ol>
- *   <li>屠宰率只算称重 cohort 里「有出栏重量」的子集；接收重量仍算整批</li>
- *   <li>白条总重 = 当日入白条库的白条产品入库量；白条均重的分母是当日入白条库的猪只耳号去重数；
- *       白条出品率 = 同一个白条总重 ÷ 屠宰率那个分母（一个白条总重、三处共用）</li>
+ *   <li>猪肉段全部取「当日接收」的那批猪：屠宰头数 / 送宰均重 / 接收均重 / 白条均重都以接收头数为分母</li>
+ *   <li>屠宰出品率、白条出品率取完整接收批次的重量之和</li>
  *   <li>处理完成头数 / 其接收重量之和只落盘，不参与任何比率或均值</li>
- *   <li>各 cohort 为空 / 分母 0 → 比率落 null（不造假）</li>
- *   <li>月表比率从日表落下的 cohort 基数列 Σ 后重算</li>
+ *   <li>cohort 为空 / 分母 0 → 比率与均值落 null（不造假）</li>
+ *   <li>回补只改猪肉段那几列（不把日表其它段清空），并刷新涉及的月表</li>
+ *   <li>月表比率从日表落下的基数列 Σ 后重算</li>
  * </ol>
  *
  * @author djs
@@ -52,7 +59,7 @@ import static org.mockito.Mockito.when;
 @Tag("dev")
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
-@DisplayName("WarehouseStatServiceImpl 单元测试（猪肉段取数口径）")
+@DisplayName("WarehouseStatServiceImpl 单元测试（猪肉段接收 cohort）")
 class WarehouseStatServiceImplTest {
 
     private static final String TENANT = "1001";
@@ -77,13 +84,20 @@ class WarehouseStatServiceImplTest {
     /** TenantHelper 是静态工具且依赖 Spring 上下文，单测里固定成 V1 租户 '1001'。 */
     private MockedStatic<TenantHelper> tenantHelper;
 
+    @BeforeAll
+    static void initMpEntityCache() {
+        // 回补用 LambdaUpdateWrapper<WarehouseIndicatorRecord> 按列 SET，无 Spring 上下文时先注册 TableInfo
+        MybatisConfiguration cfg = new MybatisConfiguration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        TableInfoHelper.initTableInfo(assistant, WarehouseIndicatorRecord.class);
+    }
+
     @BeforeEach
     void setUp() {
         tenantHelper = Mockito.mockStatic(TenantHelper.class);
         tenantHelper.when(TenantHelper::getTenantId).thenReturn(TENANT);
         // 非本次关注的聚合项统一给 0/空，聚焦猪肉段三 cohort
-        when(aggregateMapper.sumMarketingWeight(anyString(), anyString())).thenReturn(BigDecimal.ZERO);
-        when(aggregateMapper.sumOutsourceWeight(anyString(), anyString())).thenReturn(BigDecimal.ZERO);
         when(aggregateMapper.countCutBar(anyString(), anyString())).thenReturn(BigDecimal.ZERO);
         when(aggregateMapper.sumCutBarWeight(anyString(), anyString())).thenReturn(BigDecimal.ZERO);
         when(aggregateMapper.sumCutProductWeight(anyString(), anyString())).thenReturn(BigDecimal.ZERO);
@@ -106,173 +120,158 @@ class WarehouseStatServiceImplTest {
     }
 
     /**
-     * 称重 cohort 3 头（接收重 90+95+120=305），其中只有 2 头有出栏重量（90+120=210 / 100+130=230）。
-     * 屠宰率只能用那 2 头：210/230×100 = 91.304%；接收重量仍是 3 头的 305。
+     * 甲方行284 原文的六个指标，用一批 3 头的接收 cohort 逐个钉：
+     * 出栏重量之和 400、接收重量之和 300、白条产品重量之和 240（3 头都有出栏重量）。
      */
     @Test
-    @DisplayName("屠宰率只算称重 cohort 里有出栏重量的子集，接收重量仍算整批")
-    void testSlaughterRateUsesOnlySubsetWithMarketingWeight() {
-        stubEmptyFinishedCohort(
-            /* slaughterCount */ 2,
-            /* arrive */ bd("305"),
-            /* rateArrive */ bd("210"), /* rateBase */ bd("230"));
+    @DisplayName("六个日指标都按当日接收的那批猪算：头数 3 作送宰/接收/白条均重的分母")
+    void testPorkMetricsUseReceivedCohort() {
+        stubCohort(3, bd("400"), bd("300"), bd("240"), bd("300"), bd("400"), bd("240"));
+        stubFinished(1, bd("95"));
 
         WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
 
-        assertThat(saved.getArriveWeight()).isEqualByComparingTo("305.000");
-        assertThat(saved.getSlaughterRateArriveWeight()).isEqualByComparingTo("210.000");
+        assertThat(saved.getSlaughterCount()).isEqualTo(3);
+        assertThat(saved.getSlaughterWeight()).isEqualByComparingTo("400.000");
+        assertThat(saved.getAvgSlaughterWeight()).isEqualByComparingTo("133.333");
+        assertThat(saved.getArriveWeight()).isEqualByComparingTo("300.000");
+        assertThat(saved.getArrivePigCount()).isEqualTo(3);
+        assertThat(saved.getAvgArriveWeight()).isEqualByComparingTo("100.000");
+        assertThat(saved.getBarTotalWeight()).isEqualByComparingTo("240.000");
+        assertThat(saved.getBarPigCount()).isEqualTo(3);
+        assertThat(saved.getAvgBarWeight()).isEqualByComparingTo("80.000");
+        // 屠宰出品率 300/400 = 75%；白条出品率 240/400 = 60%
+        assertThat(saved.getSlaughterRate()).isEqualByComparingTo("75.000");
+        assertThat(saved.getBarYieldRate()).isEqualByComparingTo("60.000");
+        // 处理完成两列照落，但和上面任何一个数都无关
+        assertThat(saved.getFinishedCount()).isEqualTo(1);
+        assertThat(saved.getFinishedArriveWeight()).isEqualByComparingTo("95.000");
+    }
+
+    /**
+     * 3 头里有 1 头没有出栏重量：D-0140 分子仍取整批接收/白条总重，不添加剔除条件。
+     * 分母为已录出栏重量之和；均重除以接收头数 3。
+     */
+    @Test
+    @DisplayName("缺出栏重量不缩小整批接收/白条分子，均重仍除以接收头数")
+    void testRatesUseWholeReceivedCohort() {
+        stubCohort(3, bd("230"), bd("305"), bd("190"), bd("210"), bd("230"), bd("150"));
+        stubFinished(0, BigDecimal.ZERO);
+
+        WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
+
+        assertThat(saved.getSlaughterRateArriveWeight()).isEqualByComparingTo("305.000");
         assertThat(saved.getSlaughterRateBaseWeight()).isEqualByComparingTo("230.000");
-        assertThat(saved.getSlaughterRate()).isEqualByComparingTo("91.304");
-        // 屠宰头数来自出栏 cohort，与称重 cohort 的 3 头无关
-        assertThat(saved.getSlaughterCount()).isEqualTo(2);
-    }
-
-    /**
-     * 甲方 2026-09-08 口径：白条总重 = 当日入白条库的白条产品入库量（190，来自 4 行流水 / 2 头猪），
-     * 白条均重 = 190 / 2 头 = 95.000（分母是<b>猪只耳号去重数</b>，不是流水行数 4、不是处理完成头数 3、
-     * 也不是屠宰头数 5）。出品率分子必须是同一个 190，分母 400 与屠宰率共用。
-     *
-     * <p>处理完成 cohort 那两个量（3 头 / 接收重量 210）与送宰总重 999 都故意与上面拉开，
-     * 谁把它们接回分子分母，这里当场红。</p>
-     */
-    @Test
-    @DisplayName("白条总重 = 当日入白条库量；均重分母 = 猪只耳号去重数；出品率分子复用同一个白条总重")
-    void testWhiteBarMetricsUseInboundCohort() {
-        when(aggregateMapper.sumMarketingWeight(TENANT, DATE_STR)).thenReturn(bd("999"));
-        stubCohorts(
-            /* slaughterCount */ 5,
-            /* arrive */ bd("300"),
-            /* rateArrive */ bd("300"), /* rateBase */ bd("400"),
-            /* barTotal */ bd("190"), /* barPigCount */ 2,
-            /* finishedCount */ 3, /* finishedArrive */ bd("210"));
-
-        WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
-
-        assertThat(saved.getSlaughterWeight()).isEqualByComparingTo("999.000");
-        assertThat(saved.getBarTotalWeight()).isEqualByComparingTo("190.000");
-        // 190 / 2 头猪 = 95.000（÷3 处理完成头数是 63.333、÷5 屠宰头数是 38，都不对）
-        assertThat(saved.getAvgBarWeight()).isEqualByComparingTo("95.000");
-        // 分母也要落盘：矩阵「累计」格按 Σ白条总重 ÷ Σ去重耳号数 重算，不落就只能拿日均重再平均
-        assertThat(saved.getBarPigCount()).isEqualTo(2);
-        // 分子 = 同一个白条总重（一处定义），分母 = 称重 cohort 的 Σ出栏重量，与屠宰率同一个
+        assertThat(saved.getSlaughterRate()).isEqualByComparingTo("132.609");
         assertThat(saved.getBarYieldNumerWeight()).isEqualByComparingTo("190.000");
-        assertThat(saved.getBarYieldBaseWeight()).isEqualByComparingTo("400.000");
-        assertThat(saved.getSlaughterRateBaseWeight()).isEqualByComparingTo("400.000");
-        assertThat(saved.getBarYieldRate()).isEqualByComparingTo("47.500");
-        // 处理完成 cohort 两列仍落盘，但不参与上面任何一个数
-        assertThat(saved.getFinishedCount()).isEqualTo(3);
-        assertThat(saved.getFinishedArriveWeight()).isEqualByComparingTo("210.000");
+        assertThat(saved.getBarYieldBaseWeight()).isEqualByComparingTo("230.000");
+        assertThat(saved.getBarYieldRate()).isEqualByComparingTo("82.609");
+        // 白条总重展示列仍是整批 190，均重 = 190 / 3
+        assertThat(saved.getBarTotalWeight()).isEqualByComparingTo("190.000");
+        assertThat(saved.getAvgBarWeight()).isEqualByComparingTo("63.333");
+        assertThat(saved.getAvgArriveWeight()).isEqualByComparingTo("101.667");
     }
 
-    /**
-     * 一头猪出两扇 = 两行入库流水，均重分母只能算 1 头。这条钉住「耳号去重」这个词：
-     * 分母若误取流水行数，110/2 = 55.000 会当场红。
-     */
+    /** 当天没接收任何猪：所有均值 / 比率落 null，重量与头数落 0（ALWAYS 策略会覆盖旧值）。 */
     @Test
-    @DisplayName("同一头猪的两扇白条只算 1 头：均重 = 110 / 1，不是 110 / 2 行")
-    void testAvgBarWeightDedupesHalvesOfSamePig() {
-        stubCohorts(1, bd("130"), bd("130"), bd("130"),
-            /* barTotal */ bd("110"), /* barPigCount */ 1,
-            /* finishedCount */ 1, /* finishedArrive */ bd("130"));
+    @DisplayName("当天无接收 → 均重、出品率全落 null，头数与重量落 0")
+    void testEmptyCohortYieldsNulls() {
+        stubCohort(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+            BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        stubFinished(0, BigDecimal.ZERO);
 
         WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
 
-        assertThat(saved.getBarTotalWeight()).isEqualByComparingTo("110.000");
-        assertThat(saved.getAvgBarWeight()).isEqualByComparingTo("110.000");
-        // 110/130×100 = 84.615
-        assertThat(saved.getBarYieldRate()).isEqualByComparingTo("84.615");
-    }
-
-    /** 三组 cohort 全空：所有比率 / 均值落 null，重量落 0（分母 ≤0 不造假，ALWAYS 策略覆盖旧值）。 */
-    @Test
-    @DisplayName("cohort 为空 / 分母 0 → 屠宰率、白条出品率、白条均重全落 null")
-    void testEmptyCohortsYieldNullRates() {
-        stubEmptyFinishedCohort(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
-
-        WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
-
+        assertThat(saved.getSlaughterCount()).isZero();
+        assertThat(saved.getAvgSlaughterWeight()).isNull();
+        assertThat(saved.getAvgArriveWeight()).isNull();
+        assertThat(saved.getAvgBarWeight()).isNull();
         assertThat(saved.getSlaughterRate()).isNull();
         assertThat(saved.getBarYieldRate()).isNull();
-        assertThat(saved.getAvgBarWeight()).isNull();
-        assertThat(saved.getAvgSlaughterWeight()).isNull();
-        assertThat(saved.getArriveWeight()).isEqualByComparingTo("0.000");
         assertThat(saved.getBarTotalWeight()).isEqualByComparingTo("0.000");
-        assertThat(saved.getFinishedCount()).isZero();
+    }
+
+    /** 已有日表行时整行更新：头数归零后均重写 NULL（不残留旧值）。 */
+    @Test
+    @DisplayName("日表已存在 → updateById，接收头数为 0 时接收均重写 NULL")
+    void testExistingRowUpdatedWithNullAverage() {
+        stubCohort(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+            BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        stubFinished(0, BigDecimal.ZERO);
+        WarehouseIndicatorRecord existing = new WarehouseIndicatorRecord();
+        existing.setId(1L);
+        existing.setAvgArriveWeight(bd("123"));
+        when(indicatorMapper.selectOne(any())).thenReturn(existing);
+
+        service.aggregate(DATE);
+
+        ArgumentCaptor<WarehouseIndicatorRecord> captor = ArgumentCaptor.forClass(WarehouseIndicatorRecord.class);
+        verify(indicatorMapper).updateById(captor.capture());
+        WarehouseIndicatorRecord saved = captor.getValue();
+        assertThat(saved.getId()).isEqualTo(1L);
+        assertThat(saved.getArrivePigCount()).isZero();
+        assertThat(saved.getAvgArriveWeight()).isNull();
     }
 
     /**
-     * 白条出品率的分子 = 白条总重，<b>只有一处定义</b>：谁给出品率单独留一套旧口径的白条总重
-     * （如退回 Σ bar.in_weight），这条就红。刻意让展示列与分子在同一个断言里比。
+     * 回补：已有日表行只 set 猪肉段那几列 —— 日表实体里分割段等列标了 ALWAYS，
+     * 用实体 updateById 会把它们清成 NULL。这里钉住「不走 updateById、SET 里没有分割列」。
      */
     @Test
-    @DisplayName("白条总重一处定义三处共用：展示列 / 均重分子 / 出品率分子必须是同一个数")
-    void testBarTotalWeightHasSingleDefinition() {
-        stubCohorts(2, bd("200"), bd("200"), bd("250"),
-            /* barTotal */ bd("123.456"), /* barPigCount */ 2,
-            /* finishedCount */ 9, /* finishedArrive */ bd("888"));
+    @DisplayName("回补已有日表行：只 SET 猪肉段列，不用 updateById（避免把分割段等列清空），并刷新月表")
+    void testRefreshUpdatesOnlyPorkColumns() {
+        stubCohort(2, bd("260"), bd("220"), bd("200"), bd("220"), bd("260"), bd("200"));
+        WarehouseIndicatorRecord existing = new WarehouseIndicatorRecord();
+        existing.setId(9L);
+        when(indicatorMapper.selectOne(any())).thenReturn(existing);
 
-        WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
+        service.refreshPorkSegment(DATE, DATE);
 
-        assertThat(saved.getBarYieldNumerWeight()).isEqualByComparingTo(saved.getBarTotalWeight());
-        // 均重 = 123.456 / 2 = 61.728，确认走的也是同一个分子
-        assertThat(saved.getAvgBarWeight()).isEqualByComparingTo("61.728");
+        ArgumentCaptor<Wrapper<WarehouseIndicatorRecord>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(indicatorMapper).update(org.mockito.ArgumentMatchers.isNull(), captor.capture());
+        verify(indicatorMapper, never()).updateById(any(WarehouseIndicatorRecord.class));
+        String sqlSet = captor.getValue().getSqlSet();
+        assertThat(sqlSet).contains("slaughter_count", "avg_slaughter_weight", "avg_arrive_weight",
+            "slaughter_rate", "bar_total_weight", "avg_bar_weight", "bar_yield_rate");
+        assertThat(sqlSet).doesNotContain("cut_bar_count", "cut_rate", "veg_loss", "finished_count");
+        // 回补不碰作物日表和生产损耗
+        verify(croppMapper, never()).insert(any(org.dromara.djs.warehouse.stat.domain.WarehouseCroppRecord.class));
+        verify(productionLossService, never()).aggregate(any());
+        // 涉及的月份刷新一次
+        verify(aggregateMapper).sumMonthlyFromDaily(TENANT, MONTH);
     }
 
-    /**
-     * 白条总重非 0 但当天一头都没完成接收（出栏重量之和为 0）→ 出品率落 null，不除零、不造假；
-     * 均重有自己的分母（猪只数 2），照常算得出。
-     */
+    /** 回补遇到夜跑漏掉、还没有日表行的日子：整行补算一次。 */
     @Test
-    @DisplayName("白条总重非 0 但当天没有称重 cohort（分母 0）→ 出品率仍 null，不造假")
-    void testZeroFinishedDenominatorStillNull() {
-        stubCohorts(3, bd("100"), BigDecimal.ZERO, BigDecimal.ZERO,
-            /* barTotal */ bd("88"), /* barPigCount */ 2,
-            /* finishedCount */ 2, /* finishedArrive */ BigDecimal.ZERO);
+    @DisplayName("回补遇到没有日表行的日子 → 整行插入")
+    void testRefreshInsertsMissingDay() {
+        stubCohort(1, bd("120"), bd("100"), bd("90"), bd("100"), bd("120"), bd("90"));
+        stubFinished(0, BigDecimal.ZERO);
 
-        WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
+        String msg = service.refreshPorkSegment(DATE, DATE);
 
-        assertThat(saved.getBarTotalWeight()).isEqualByComparingTo("88.000");
-        assertThat(saved.getAvgBarWeight()).isEqualByComparingTo("44.000");
-        assertThat(saved.getBarYieldRate()).isNull();
+        verify(indicatorMapper).insert(any(WarehouseIndicatorRecord.class));
+        assertThat(msg).contains("created=1");
     }
 
-    /**
-     * 甲方定的口径下，分子（白条入库 cohort）与分母（称重 cohort）**不是同一批猪**，
-     * 所以出品率可以 &gt;100%：当天入白条库的白条多、完成接收的猪少时就会出现。
-     *
-     * <p>这个后果在写回里已明确告知甲方（「只改一半会让分子分母不是同一批猪、出品率仍会超过 100%」），
-     * 甲方看到后仍指定本口径。这条用例把它钉住：谁为了「让率好看」偷偷改回同批取数，这里当场红。</p>
-     */
     @Test
-    @DisplayName("分子分母跨 cohort：白条入库多、完成接收少时出品率会 >100%，按甲方口径如实落盘不夹")
-    void testBarYieldRateMayExceed100AcrossCohorts() {
-        // 当天入白条库 3 头猪的白条（总重 430），但只有 1 头完成接收（出栏重 250）
-        stubCohorts(
-            /* slaughterCount */ 3,
-            /* arrive */ bd("210"),
-            /* rateArrive */ bd("210"), /* rateBase */ bd("250"),
-            /* barTotal */ bd("430"), /* barPigCount */ 3,
-            /* finishedCount */ 3, /* finishedArrive */ bd("410"));
-
-        WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
-
-        assertThat(saved.getBarTotalWeight()).isEqualByComparingTo("430.000");
-        assertThat(saved.getBarYieldNumerWeight()).isEqualByComparingTo("430.000");
-        assertThat(saved.getBarYieldBaseWeight()).isEqualByComparingTo("250.000");
-        // 430/250×100 = 172.000 —— 不夹到 100，如实反映甲方选的口径
-        assertThat(saved.getBarYieldRate()).isEqualByComparingTo("172.000");
-        assertThat(saved.getAvgBarWeight()).isEqualByComparingTo("143.333");
+    @DisplayName("回补区间倒置 → 直接拒绝")
+    void testRefreshRejectsInvertedRange() {
+        assertThatThrownBy(() -> service.refreshPorkSegment(DATE, DATE.minusDays(1)))
+            .isInstanceOf(IllegalArgumentException.class);
     }
 
     /**
-     * 月表：屠宰率 = Σ屠宰率分子/Σ屠宰率分母，白条出品率 = Σ出品率分子/Σ出品率分母。
-     * 用与「Σ接收/Σ送宰」明显不同的数字，保证走的是 cohort 基数列而不是旧的两列；
+     * 月表：屠宰出品率 = Σ分子/Σ分母，白条出品率 = Σ出品率分子/Σ出品率分母。
+     * 用与「Σ接收/Σ送宰」明显不同的数字，保证走的是基数列而不是展示列；
      * 出品率分母取 sumBarYieldBase（不是 sumFinishedArrive），验月表侧与日率同口径。
      */
     @Test
     @DisplayName("月表比率从日表 cohort 基数列 Σ 后重算（出品率分母取 barYieldBase）")
     void testMonthlyRatesFromCohortBases() {
-        stubEmptyFinishedCohort(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        stubCohort(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+            BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        stubFinished(0, BigDecimal.ZERO);
         when(aggregateMapper.sumMonthlyFromDaily(TENANT, MONTH)).thenReturn(Map.of(
             "slaughterCount", 7,
             "sumRateArrive", bd("420"),
@@ -299,7 +298,9 @@ class WarehouseStatServiceImplTest {
     @Test
     @DisplayName("月表 cohort 基数全 0 → 比率 null")
     void testMonthlyZeroBasesYieldNull() {
-        stubEmptyFinishedCohort(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        stubCohort(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+            BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        stubFinished(0, BigDecimal.ZERO);
         when(aggregateMapper.sumMonthlyFromDaily(TENANT, MONTH)).thenReturn(Map.of(
             "slaughterCount", 0,
             "sumRateArrive", BigDecimal.ZERO,
@@ -320,61 +321,19 @@ class WarehouseStatServiceImplTest {
         assertThat(m.getCutYieldRate()).isNull();
     }
 
-    @Test
-    @DisplayName("接收均重落盘：305kg/燎毛记录去重耳号3头=101.667，独立于送宰头数")
-    void testArriveAverageUsesBurnEarCount() {
-        stubEmptyFinishedCohort(7, bd("305"), bd("210"), bd("230"));
-        when(aggregateMapper.countArrivePigs(TENANT, DATE_STR)).thenReturn(3);
-
-        WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
-
-        assertThat(saved.getArriveWeight()).isEqualByComparingTo("305.000");
-        assertThat(saved.getArrivePigCount()).isEqualTo(3);
-        assertThat(saved.getAvgArriveWeight()).isEqualByComparingTo("101.667");
-    }
-
-    @Test
-    @DisplayName("接收均重分母0时落NULL，更新可覆盖历史旧均重")
-    void testArriveAverageZeroDenominatorWritesNullOnUpdate() {
-        stubEmptyFinishedCohort(7, bd("305"), bd("210"), bd("230"));
-        when(aggregateMapper.countArrivePigs(TENANT, DATE_STR)).thenReturn(0);
-        WarehouseIndicatorRecord existing = new WarehouseIndicatorRecord();
-        existing.setId(1L);
-        existing.setAvgArriveWeight(bd("123"));
-        when(indicatorMapper.selectOne(any())).thenReturn(existing);
-
-        service.aggregate(DATE);
-
-        ArgumentCaptor<WarehouseIndicatorRecord> captor = ArgumentCaptor.forClass(WarehouseIndicatorRecord.class);
-        verify(indicatorMapper).updateById(captor.capture());
-        WarehouseIndicatorRecord saved = captor.getValue();
-        assertThat(saved.getId()).isEqualTo(1L);
-        assertThat(saved.getArrivePigCount()).isZero();
-        assertThat(saved.getAvgArriveWeight()).isNull();
-    }
-
     // ============================================================
     //  helpers
     // ============================================================
 
-    /** 当日没有白条入库、也没有猪处理完成时的桩：只关心送宰 / 称重两组 cohort。 */
-    private void stubEmptyFinishedCohort(int slaughterCount, BigDecimal arrive,
-                                         BigDecimal rateArrive, BigDecimal rateBase) {
-        stubCohorts(slaughterCount, arrive, rateArrive, rateBase,
-            BigDecimal.ZERO, 0, 0, BigDecimal.ZERO);
+    /** 接收 cohort 聚合桩（字段名与 selectReceivedCohortAgg 的列别名一一对应）。 */
+    private void stubCohort(int received, BigDecimal base, BigDecimal arrive, BigDecimal bar,
+                            BigDecimal rateArrive, BigDecimal rateBase, BigDecimal barYieldNumer) {
+        when(aggregateMapper.selectReceivedCohortAgg(TENANT, DATE_STR)).thenReturn(Map.of(
+            "receivedCount", received, "baseWeight", base, "arriveWeight", arrive, "barWeight", bar,
+            "rateArrive", rateArrive, "rateBase", rateBase, "barYieldNumer", barYieldNumer));
     }
 
-    /** 全量桩。出品率分子 = barTotal、分母 = rateBase（与屠宰率共用），不再单独打桩。 */
-    private void stubCohorts(int slaughterCount, BigDecimal arrive,
-                             BigDecimal rateArrive, BigDecimal rateBase,
-                             BigDecimal barTotal, int barPigCount,
-                             int finishedCount, BigDecimal finishedArrive) {
-        when(aggregateMapper.countSlaughter(TENANT, DATE_STR)).thenReturn(slaughterCount);
-        when(aggregateMapper.sumArriveWeight(TENANT, DATE_STR)).thenReturn(arrive);
-        when(aggregateMapper.selectSlaughterRateBase(TENANT, DATE_STR)).thenReturn(Map.of(
-            "rateArrive", rateArrive, "rateBase", rateBase));
-        when(aggregateMapper.selectWhiteBarInAgg(TENANT, DATE_STR)).thenReturn(Map.of(
-            "barTotalWeight", barTotal, "barPigCount", barPigCount));
+    private void stubFinished(int finishedCount, BigDecimal finishedArrive) {
         when(aggregateMapper.selectFinishedAgg(TENANT, DATE_STR)).thenReturn(Map.of(
             "finishedCount", finishedCount, "finishedArriveWeight", finishedArrive));
     }

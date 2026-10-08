@@ -28,38 +28,38 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     /** 统计日期。 */
     private LocalDate statDate;
 
-    /** 屠宰头数（当日送宰的猪只头数 = 自养 + 外购生猪）。 */
+    /** 屠宰头数（当日接收的猪只头数，自养 + 外购）。 */
     private Integer slaughterCount;
-    /** 送宰总重。 */
+    /** 送宰总重（当日接收的猪只出栏重量之和）。 */
     private BigDecimal slaughterWeight;
     /** 送宰均重。 */
     private BigDecimal avgSlaughterWeight;
-    /** 接收重量（当日燎毛间完成称重的猪只总重）。 */
+    /** 接收重量（当日接收的猪只接收重量之和）。 */
     private BigDecimal arriveWeight;
-    /** 接收均重分母：当日燎毛记录耳号去重数。 */
+    /** 接收均重分母：当日接收的猪只头数。 */
     private Integer arrivePigCount;
-    /** 接收均重（日表接收重量/当日燎毛记录耳号去重数；分母0 → null）。 */
+    /** 接收均重（接收重量/接收头数；分母0 → null）。 */
     private BigDecimal avgArriveWeight;
-    /** 屠宰率分子（称重 cohort 里有出栏重量那部分的 Σ 到场重）。 */
+    /** 屠宰出品率分子（当日接收且有出栏重量的猪 Σ 接收重量）。 */
     private BigDecimal slaughterRateArriveWeight;
-    /** 屠宰率分母（同一部分猪的 Σ 出栏重量）。 */
+    /** 屠宰出品率分母（同一批猪的 Σ 出栏重量）。 */
     private BigDecimal slaughterRateBaseWeight;
-    /** 屠宰率%。 */
+    /** 屠宰出品率%。 */
     private BigDecimal slaughterRate;
 
-    /** 白条总重（当日入白条库的白条产品 = 半扇 + 整只的入库量之和）。 */
+    /** 白条总重（当日接收的猪只白条产品重量之和）。 */
     private BigDecimal barTotalWeight;
-    /** 白条均重分母：当日入白条库的猪只耳号去重数。 */
+    /** 白条均重分母：当日接收的猪只头数。 */
     private Integer barPigCount;
     /** 处理完成头数（bar.finish_time 落当天；诊断列，不参与比率/均值）。 */
     private Integer finishedCount;
     /** 处理完成猪只的接收重量之和（诊断列，不参与比率/均值）。 */
     private BigDecimal finishedArriveWeight;
-    /** 白条出品率分子（≡ 白条总重）。 */
+    /** 白条出品率分子（当日接收且有出栏重量的猪的白条产品重量之和）。 */
     private BigDecimal barYieldNumerWeight;
-    /** 白条出品率分母（称重 cohort ∩ 出栏重量非空子集的 Σ 出栏重量）。 */
+    /** 白条出品率分母（同一批猪的 Σ 出栏重量）。 */
     private BigDecimal barYieldBaseWeight;
-    /** 白条均重（白条总重/当日入白条库的猪只耳号去重数）。 */
+    /** 白条均重（白条总重/接收头数）。 */
     private BigDecimal avgBarWeight;
     /** 白条出品率%。 */
     private BigDecimal barYieldRate;

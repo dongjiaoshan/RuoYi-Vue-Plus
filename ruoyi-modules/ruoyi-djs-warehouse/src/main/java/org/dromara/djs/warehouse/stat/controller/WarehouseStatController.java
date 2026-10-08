@@ -89,4 +89,19 @@ public class WarehouseStatController extends BaseController {
         @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate date) {
         return R.ok(warehouseStatService.aggregate(date));
     }
+
+    /**
+     * 手动回补猪肉段（按接收 cohort 重算区间内每天日表的屠宰指标并刷新月表），用于口径调整后的历史补算。
+     * 只动猪肉段那几列，日表其它段与作物日表不变。
+     *
+     * @param from 起始日（含，yyyy-MM-dd）
+     * @param to   截止日（含，yyyy-MM-dd）
+     */
+    @SaCheckPermission("djs:warehouse:stat:list")
+    @PostMapping("/refresh-pork")
+    public R<String> refreshPork(
+        @RequestParam @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate from,
+        @RequestParam @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate to) {
+        return R.ok(warehouseStatService.refreshPorkSegment(from, to));
+    }
 }

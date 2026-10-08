@@ -291,6 +291,33 @@ public class VegOutServiceImpl implements IVegOutService {
                 + productCount + " 个", 400);
         }
         String batchNo = asBatch ? generateBatchNo() : null;
+        writeOut(bo, stocks, batchNo, ALLOWED_BELONG_TYPES, stock -> {
+            // 前置校验（防前端绕过 —— 候选列表只列白名单库位里的原材料篮）
+            if (!allowedLocationIds.contains(stock.getLocationId())) {
+                throw new ServiceException("只有毛菜鲜品库 / 干货库 / 蛋类库 / 猪肉鲜品库 / 红白脏库 / 冻品库的库存可做毛菜间出库");
+            }
+        });
+        log.info("[VEG-OUT] dest={} items={} products={} batchNo={}",
+            bo.getOutDest(), bo.getItems().size(), productCount, batchNo);
+        return batchNo;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void submitVegetableOut(VegOutSubmitBo bo) {
+        Map<Long, LocationStock> stocks = loadStocks(bo.getItems());
+        // 不区分库位（row283「此时不区分库位」），只收果蔬业态；库位盘点锁等单篮校验仍由 productOut 统一把关。
+        writeOut(bo, stocks, null, List.of(BELONG_TYPE_VEGETABLE), stock -> { });
+        log.info("[VEG-OUT][workbench] dest={} items={}", bo.getOutDest(), bo.getItems().size());
+    }
+
+    /**
+     * 出库记账主体（{@link #submit} 与 {@link #submitVegetableOut} 共用，两处只差货源范围）。
+     *
+     * @param locationGuard 每个被扣的库存篮先过的库位校验（毛菜间出库 = 六库位白名单；工作台 = 不限）
+     */
+    private void writeOut(VegOutSubmitBo bo, Map<Long, LocationStock> stocks, String batchNo,
+                          List<String> belongTypes, java.util.function.Consumer<LocationStock> locationGuard) {
         Long userId = LoginHelper.getUserId();
 
         for (VegOutItemBo item : bo.getItems()) {
@@ -303,15 +330,12 @@ public class VegOutServiceImpl implements IVegOutService {
                     : FifoAllocator.allocate(baskets, item.getQuantity()).entrySet()) {
                 LocationStock stock = stocks.get(alloc.getKey());
                 BigDecimal take = alloc.getValue();
-                // 前置校验（防前端绕过 —— 候选列表只列白名单库位里的原材料篮）
-                if (!allowedLocationIds.contains(stock.getLocationId())) {
-                    throw new ServiceException("只有毛菜鲜品库 / 干货库 / 蛋类库 / 猪肉鲜品库 / 红白脏库 / 冻品库的库存可做毛菜间出库");
-                }
+                locationGuard.accept(stock);
                 ProductInfo product = productInfoMapper.selectById(stock.getProductId());
                 if (product == null) {
                     throw new ServiceException("产品不存在或已删除：" + stock.getProductId());
                 }
-                if (!ALLOWED_BELONG_TYPES.contains(product.getBelongType())) {
+                if (!belongTypes.contains(product.getBelongType())) {
                     throw new ServiceException("该产品业态不支持毛菜间出库：" + product.getProductName());
                 }
                 // ⚠️ 非果蔬不能送「果蔬月台」：月台的待入库量来自 handle_record(handle_target=2)，
@@ -390,9 +414,6 @@ public class VegOutServiceImpl implements IVegOutService {
                 }
             }
         }
-        log.info("[VEG-OUT] dest={} items={} products={} batchNo={}",
-            bo.getOutDest(), bo.getItems().size(), productCount, batchNo);
-        return batchNo;
     }
 
     /**

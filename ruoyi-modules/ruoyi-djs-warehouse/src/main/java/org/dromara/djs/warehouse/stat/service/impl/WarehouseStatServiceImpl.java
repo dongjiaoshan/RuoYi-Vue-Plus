@@ -1,6 +1,7 @@
 package org.dromara.djs.warehouse.stat.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.tenant.helper.TenantHelper;
@@ -26,6 +27,8 @@ import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * 仓库统计指标聚合 + 只读查询实现（WMS-STAT-001，邓博 admin row16/17/18）。
@@ -35,22 +38,12 @@ import java.util.Map;
  *
  * <h3>已拍口径</h3>
  * <ol>
- *   <li>猪肉段按<b>三组 cohort</b>取数，同一指标的分子分母必须来自同一批猪（V6-R172）：
- *     <ul>
- *       <li>送宰 cohort（bar.marketing_time 自养 + outsource_pig.slaughter_date 外购生猪）
- *           → 屠宰头数 / 送宰总重 / 送宰均重。统计的是<b>送宰</b>不是出栏（出栏在养殖模块统计）；
- *           自养无独立送宰时间字段，出栏事件写的 marketing_time 即交宰时刻，故作送宰锚点</li>
- *       <li>称重 cohort（bar.arrive_time，燎毛间完成称重）→ 接收重量；
- *           屠宰率 = 接收重量/该批猪出栏重量之和×100，仅取其中<b>有</b>出栏重量的子集（两边同时剔除）；
- *           该子集的 Σ出栏重量同时是白条出品率的分母</li>
- *       <li>白条入库 cohort（燎毛入库流水 flow_date × belong_type='white_bar'，即当日入白条库的
- *           半扇 / 整只）→ 白条总重 = Σ 入库量；白条均重 = 白条总重/当日入白条库的猪只耳号去重数；
- *           白条出品率 = 白条总重/称重 cohort 的 Σ出栏重量×100。分子分母跨 cohort，率可能 &gt;100%
- *           （甲方指定口径，已知情）</li>
- *       <li>处理完成 cohort（bar.finish_time）→ 处理完成头数 / 该批猪接收重量之和，两个诊断列，
- *           不参与任何比率或均值</li>
- *     </ul>
- *     日表额外落 4 个 cohort 基数列，月率按 Σ基数 重算</li>
+ *   <li>猪肉段全部按<b>接收 cohort</b>取数（D-0140，甲方 V6 行284）：一头猪只属于它在燎毛间的接收日
+ *     {@code DATE(COALESCE(bar.arrive_time, bar.in_time))}，后续哪天再处理都算回这一天。屠宰头数 / 送宰均重 /
+ *     接收均重 / 白条均重以接收头数为分母；屠宰出品率、白条出品率只取有出栏重量的猪，分子分母同一批。
+ *     定时任务每天整行重算 T-1，再只回补最近 {@value #PORK_REFRESH_DAYS} 天的猪肉段，把隔天才处理完的猪补进接收那天。
+ *     处理完成 cohort（bar.finish_time）→ 处理完成头数 / 该批猪接收重量之和，两个诊断列，不参与任何比率或均值。
+ *     日表落 4 个率的基数列，月率按 Σ基数 重算</li>
  *   <li>路损率 = (发往月台−月台接收)/发往月台×100（A2 日表，分母用发往=损耗占发出量）；作物表按 row17 (发往−接收)/接收×100</li>
  *   <li>所有损耗一律从 loss_flow 按 loss_type 取（防重复计）</li>
  *   <li>月台接收只算自产 receive_type=1</li>
@@ -70,6 +63,9 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
 
     private static final String DEFAULT_TENANT = "1001";
     private static final DateTimeFormatter MONTH_FMT = DateTimeFormatter.ofPattern("yyyy-MM");
+
+    /** 猪肉段每日回补窗口（天）：甲方「定时任务每日跑前一个月的数据对屠宰数据进行完善」。 */
+    public static final int PORK_REFRESH_DAYS = 31;
 
     private final WarehouseStatAggregateMapper aggregateMapper;
     private final WarehouseIndicatorRecordMapper indicatorMapper;
@@ -113,60 +109,11 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         WarehouseIndicatorRecord r = new WarehouseIndicatorRecord();
         r.setStatDate(LocalDate.parse(statDate));
 
-        // 屠宰 / 送宰段（送宰 cohort：当日送宰的那批猪 = 自养出栏交宰 + 外购生猪送宰）
-        int slaughterCount = aggregateMapper.countSlaughter(tenantId, statDate);
-        BigDecimal slaughterWeight = scale3(
-            aggregateMapper.sumMarketingWeight(tenantId, statDate)
-                .add(aggregateMapper.sumOutsourceWeight(tenantId, statDate)));
-        r.setSlaughterCount(slaughterCount);
-        r.setSlaughterWeight(slaughterWeight);
-        r.setAvgSlaughterWeight(divideOrNull(slaughterWeight, new BigDecimal(slaughterCount)));
-
-        // 称重 cohort（当日在燎毛间完成称重的那批猪）：接收重量 + 屠宰率
-        BigDecimal arrive = scale3(aggregateMapper.sumArriveWeight(tenantId, statDate));
-        r.setArriveWeight(arrive);
-        // V6-R280：新接收均重分母按 burn_time 自然日 COUNT(DISTINCT ear_no)，
-        // 与现有接收重量的 arrive_time cohort 独立，不能改旧总重口径来凑同批。
-        int arrivePigCount = aggregateMapper.countArrivePigs(tenantId, statDate);
-        r.setArrivePigCount(arrivePigCount);
-        r.setAvgArriveWeight(divideOrNull(arrive, BigDecimal.valueOf(arrivePigCount)));
-        // 屠宰率 = 接收重量 ÷ 完成接收重量的猪只出栏重量之和 × 100（口径#1，V6-R172）。
-        // 分子分母都只算「称重 cohort 里有出栏重量」的那部分猪，取不到出栏重量的从两边同时剔除；
-        // 它的到场重仍算在上面的接收重量里，所以分子 ≤ 接收重量，两者刻意不等。
-        // 两个基数落盘（月表要按 Σ基数 重算月率，拿日率平均或拿 arrive/slaughter_weight 凑都不是同一批猪）。
-        Map<String, Object> rateBase = aggregateMapper.selectSlaughterRateBase(tenantId, statDate);
-        BigDecimal rateArriveWeight = scale3(mapBd(rateBase, "rateArrive"));
-        BigDecimal rateBaseWeight = scale3(mapBd(rateBase, "rateBase"));
-        r.setSlaughterRateArriveWeight(rateArriveWeight);
-        r.setSlaughterRateBaseWeight(rateBaseWeight);
-        r.setSlaughterRate(pctOrNull(rateArriveWeight, rateBaseWeight));
-
-        // 白条段（入库 cohort：当日入白条库的白条产品 = 半扇 + 整只，按燎毛入库流水 flow_date 归集）
-        // 白条总重 = Σ 当日入白条库的白条产品入库量；
-        // 白条均重 = 白条总重 ÷ 当日入白条库的猪只耳号去重数（一头猪两扇只算 1 头）；
-        // 白条出品率 = 白条总重 ÷「完成接收重量的猪只出栏重量之和」× 100。
-        //
-        // ⚠️ 白条总重「一处定义、三处共用」：展示列 / 均重分子 / 出品率分子都是同一个 barTotal，
-        //   不允许为出品率单独保留另一套白条总重。
-        // ⚠️ 出品率的分母与屠宰率共用同一个 rateBaseWeight（称重 cohort ∩ 出栏重量非空）——
-        //   甲方要求的原文两行分母逐字相同。由此分子分母不是同一批猪（分子按入库日、分母按称重日），
-        //   出品率可能 >100%；这个后果已向甲方明确提示过，甲方仍坚持本口径。
-        Map<String, Object> whiteBar = aggregateMapper.selectWhiteBarInAgg(tenantId, statDate);
-        BigDecimal barTotal = scale3(mapBd(whiteBar, "barTotalWeight"));
-        int barPigCount = mapInt(whiteBar, "barPigCount");
-        r.setBarTotalWeight(barTotal);
-        // 分母单独落盘：矩阵「累计」格要按 Σ白条总重 ÷ Σ去重耳号数 重算，拿日均重再平均会失真
-        // （各天头数不同）。
-        r.setBarPigCount(barPigCount);
-        r.setAvgBarWeight(divideOrNull(barTotal, new BigDecimal(barPigCount)));
-        // 落盘分子分母两列，月表按 Σ分子 ÷ Σ分母 重算（不能拿日比率求平均）。
-        r.setBarYieldNumerWeight(barTotal);
-        r.setBarYieldBaseWeight(rateBaseWeight);
-        r.setBarYieldRate(pctOrNull(barTotal, rateBaseWeight));
+        fillPorkSegment(tenantId, statDate, r);
 
         // 处理完成 cohort（bar.finish_time）：两个诊断列，不参与任何比率/均值。
-        // 记的是「这一天有几头猪走完燎毛间」，与上面「当日入白条库多少白条」是两件事
-        // （同一头猪可以 A 日入库、B 日才点处理完成）。
+        // 记的是「这一天有几头猪走完燎毛间」，与上面按接收日归集的猪肉段是两件事
+        // （同一头猪可以 A 日接收、B 日才点处理完成）。
         Map<String, Object> finished = aggregateMapper.selectFinishedAgg(tenantId, statDate);
         r.setFinishedCount(mapInt(finished, "finishedCount"));
         r.setFinishedArriveWeight(scale3(mapBd(finished, "finishedArriveWeight")));
@@ -237,6 +184,110 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
             r.setId(existing.getId());
             indicatorMapper.updateById(r);
         }
+    }
+
+    /**
+     * 猪肉段当日指标：全部取<b>当日接收</b>的那批猪（接收 cohort，D-0140，甲方 V6 行284）。
+     *
+     * <p>一头猪只属于它在燎毛间的接收日，之后哪天再处理第二个半扇、哪天点处理完成，数据都算回接收那天。
+     * 当天接收的猪还没处理完时这几列偏小，由 {@link #refreshPorkSegment} 每天回补最近一个月补齐。</p>
+     * <ul>
+     *   <li>屠宰头数 = 当日接收的猪只头数</li>
+     *   <li>送宰均重 = 这批猪的出栏重量之和 ÷ 接收头数</li>
+     *   <li>接收均重 = 这批猪的接收重量之和 ÷ 接收头数</li>
+     *   <li>白条均重 = 这批猪的白条产品重量之和 ÷ 接收头数</li>
+     *   <li>屠宰出品率 = 接收重量之和 ÷ 出栏重量之和 × 100；白条出品率 = 白条产品重量之和 ÷ 出栏重量之和 × 100
+     *       —— 分子取完整接收批次总重，不因缺出栏重量而剔除；基数列落盘供月表按 Σ基数 重算</li>
+     * </ul>
+     */
+    private void fillPorkSegment(String tenantId, String statDate, WarehouseIndicatorRecord r) {
+        Map<String, Object> c = aggregateMapper.selectReceivedCohortAgg(tenantId, statDate);
+        int received = mapInt(c, "receivedCount");
+        BigDecimal heads = BigDecimal.valueOf(received);
+        BigDecimal baseWeight = scale3(mapBd(c, "baseWeight"));
+        BigDecimal arrive = scale3(mapBd(c, "arriveWeight"));
+        BigDecimal barWeight = scale3(mapBd(c, "barWeight"));
+        BigDecimal rateArrive = arrive;
+        BigDecimal rateBase = baseWeight;
+        BigDecimal barYieldNumer = barWeight;
+
+        r.setSlaughterCount(received);
+        r.setSlaughterWeight(baseWeight);
+        r.setAvgSlaughterWeight(divideOrNull(baseWeight, heads));
+
+        r.setArriveWeight(arrive);
+        r.setArrivePigCount(received);
+        r.setAvgArriveWeight(divideOrNull(arrive, heads));
+        r.setSlaughterRateArriveWeight(rateArrive);
+        r.setSlaughterRateBaseWeight(rateBase);
+        r.setSlaughterRate(pctOrNull(rateArrive, rateBase));
+
+        r.setBarTotalWeight(barWeight);
+        r.setBarPigCount(received);
+        r.setAvgBarWeight(divideOrNull(barWeight, heads));
+        r.setBarYieldNumerWeight(barYieldNumer);
+        r.setBarYieldBaseWeight(rateBase);
+        r.setBarYieldRate(pctOrNull(barYieldNumer, rateBase));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>只重算猪肉段那几列（{@link #fillPorkSegment}），日表其它段（分割 / 毛菜 / 月台 / 净菜）和作物日表、
+     * 生产损耗都不碰 —— 它们各有自己的统计日，回补一个月不该把它们也按当前源数据整体重写。
+     * 某天还没有日表行（夜跑漏过）则整行补算一次。最后刷新涉及到的月表。</p>
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public String refreshPorkSegment(LocalDate from, LocalDate to) {
+        if (from == null || to == null || from.isAfter(to)) {
+            throw new IllegalArgumentException("回补区间不合法：from=" + from + " to=" + to);
+        }
+        String tenantId = currentTenant();
+        Set<String> months = new TreeSet<>();
+        int updated = 0;
+        int created = 0;
+        for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) {
+            String statDate = d.toString();
+            WarehouseIndicatorRecord existing = indicatorMapper.selectOne(
+                new LambdaQueryWrapper<WarehouseIndicatorRecord>()
+                    .eq(WarehouseIndicatorRecord::getStatDate, d));
+            if (existing == null) {
+                upsertDaily(tenantId, statDate);
+                created++;
+            } else {
+                // 只 set 猪肉段这几列：日表实体里分割段等列标了 updateStrategy=ALWAYS，
+                // 拿只填了猪肉段的实体去 updateById 会把那些列清成 NULL。
+                WarehouseIndicatorRecord p = new WarehouseIndicatorRecord();
+                fillPorkSegment(tenantId, statDate, p);
+                indicatorMapper.update(null, new LambdaUpdateWrapper<WarehouseIndicatorRecord>()
+                    .eq(WarehouseIndicatorRecord::getId, existing.getId())
+                    .set(WarehouseIndicatorRecord::getSlaughterCount, p.getSlaughterCount())
+                    .set(WarehouseIndicatorRecord::getSlaughterWeight, p.getSlaughterWeight())
+                    .set(WarehouseIndicatorRecord::getAvgSlaughterWeight, p.getAvgSlaughterWeight())
+                    .set(WarehouseIndicatorRecord::getArriveWeight, p.getArriveWeight())
+                    .set(WarehouseIndicatorRecord::getArrivePigCount, p.getArrivePigCount())
+                    .set(WarehouseIndicatorRecord::getAvgArriveWeight, p.getAvgArriveWeight())
+                    .set(WarehouseIndicatorRecord::getSlaughterRateArriveWeight, p.getSlaughterRateArriveWeight())
+                    .set(WarehouseIndicatorRecord::getSlaughterRateBaseWeight, p.getSlaughterRateBaseWeight())
+                    .set(WarehouseIndicatorRecord::getSlaughterRate, p.getSlaughterRate())
+                    .set(WarehouseIndicatorRecord::getBarTotalWeight, p.getBarTotalWeight())
+                    .set(WarehouseIndicatorRecord::getBarPigCount, p.getBarPigCount())
+                    .set(WarehouseIndicatorRecord::getAvgBarWeight, p.getAvgBarWeight())
+                    .set(WarehouseIndicatorRecord::getBarYieldNumerWeight, p.getBarYieldNumerWeight())
+                    .set(WarehouseIndicatorRecord::getBarYieldBaseWeight, p.getBarYieldBaseWeight())
+                    .set(WarehouseIndicatorRecord::getBarYieldRate, p.getBarYieldRate()));
+                updated++;
+            }
+            months.add(YearMonth.from(d).format(MONTH_FMT));
+        }
+        for (String month : months) {
+            upsertMonthly(tenantId, month);
+        }
+        log.info("[WarehouseStat] pork refresh tenant={} {}~{} updated={} created={} months={}",
+            tenantId, from, to, updated, created, months);
+        return String.format("ok | tenant=%s | pork %s~%s | updated=%d | created=%d | months=%s",
+            tenantId, from, to, updated, created, months);
     }
 
     /**
@@ -329,9 +380,9 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         WarehouseMonthlyRecord r = new WarehouseMonthlyRecord();
         r.setStatMonth(month);
         r.setSlaughterCount(mapInt(m, "slaughterCount"));
-        // 屠宰率 = Σ日屠宰率分子 / Σ日屠宰率分母 ×100
+        // 屠宰出品率 = Σ日分子 / Σ日分母 ×100
         r.setSlaughterRate(pctOrNull(mapBd(m, "sumRateArrive"), mapBd(m, "sumRateBase")));
-        // 白条出品率 = Σ日出品率分子 / Σ日出品率分母 ×100（两列都是「F ∩ 出栏重量非空」子集的基数，与日率同口径）
+        // 白条出品率 = Σ日出品率分子 / Σ日出品率分母 ×100（两列都是「当日接收 ∩ 出栏重量非空」那批猪的基数，与日率同口径）
         r.setBarYieldRate(pctOrNull(mapBd(m, "sumBarYieldNumer"), mapBd(m, "sumBarYieldBase")));
         // 分割出品率 = Σ分割产品/Σ分割白条×100
         r.setCutYieldRate(pctOrNull(mapBd(m, "sumCutProduct"), mapBd(m, "sumCutBar")));

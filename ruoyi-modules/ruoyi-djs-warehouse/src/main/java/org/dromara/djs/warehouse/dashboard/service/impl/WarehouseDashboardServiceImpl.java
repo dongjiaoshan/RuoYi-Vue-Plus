@@ -167,9 +167,9 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
     /**
      * {@inheritDoc}
      *
-     * <p>V6-R281：年度送宰均重 / 屠宰出品率 / 白条出品率分别取有值日记录的算术平均。
-     * 有值以非 NULL 为准，真实 0 也计入，每个指标独立计有效日数；全 NULL 返回 NULL。
-     * 月度趋势仍直读月表的基数重算率，矩阵累计仍按各指标已定口径，不随年度公式改变。</p>
+     * <p>年度三项（D-0139）：送宰均重 = 当年出栏（送宰）总重 ÷ 出栏（送宰）头数，与燎毛接收日期无关；
+     * 屠宰出品率 / 白条出品率取有值日记录的算术平均 —— 有值以非 NULL 为准，真实 0 也计入，
+     * 每个指标独立计有效日数，全 NULL 返回 NULL。月度趋势仍直读月表的基数重算率，矩阵累计仍按各指标已定口径。</p>
      */
     @Override
     public WarehousePorkEfficiencyVo getPorkEfficiency(Integer year, String month) {
@@ -180,16 +180,19 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         WarehousePorkEfficiencyVo vo = new WarehousePorkEfficiencyVo();
         vo.setYear(y);
 
-        // ---- 年度屠宰 / 分割 8 KPI：当年日表 Σ ----
+        // ---- 年度 KPI：送宰数 / 均重取出栏源；两率和分割指标取当年日表 ----
         List<WarehouseIndicatorRecord> yearRows = productionMapper.selectIndicatorRecordsInRange(
             tenantId, LocalDate.of(y, 1, 1), LocalDate.of(y, 12, 31));
 
-        int slaughterCount = sumInt(yearRows, WarehouseIndicatorRecord::getSlaughterCount);
+        var sent = productionMapper.selectSlaughterInRange(
+            tenantId, LocalDate.of(y, 1, 1), LocalDate.of(y + 1, 1, 1));
+        int slaughterCount = sent == null ? 0 : nz(sent.getSlaughterCount());
         BigDecimal cutBarCount = sumDec(yearRows, WarehouseIndicatorRecord::getCutBarCount);
         BigDecimal cutBarWeight = sumDec(yearRows, WarehouseIndicatorRecord::getCutBarWeight);
         BigDecimal cutProductWeight = sumDec(yearRows, WarehouseIndicatorRecord::getCutProductWeight);
         vo.setSlaughterCount(slaughterCount);
-        vo.setAvgSlaughterWeight(meanNonNull(yearRows, WarehouseIndicatorRecord::getAvgSlaughterWeight));
+        BigDecimal slaughterWeight = sent == null ? BigDecimal.ZERO : nzd(sent.getSlaughterWeight());
+        vo.setAvgSlaughterWeight(rate(slaughterWeight, BigDecimal.valueOf(slaughterCount), 2));
         vo.setSlaughterRate(meanNonNull(yearRows, WarehouseIndicatorRecord::getSlaughterRate));
         vo.setBarYieldRate(meanNonNull(yearRows, WarehouseIndicatorRecord::getBarYieldRate));
         vo.setCutBarCount(cutBarCount);
@@ -259,7 +262,7 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         new PorkMetric("屠宰头数", WarehouseIndicatorRecord::getSlaughterCount, false),
         new PorkMetric("送宰均重", WarehouseIndicatorRecord::getAvgSlaughterWeight, true),
         new PorkMetric("接收均重", WarehouseIndicatorRecord::getAvgArriveWeight, true),
-        new PorkMetric("屠宰率", WarehouseIndicatorRecord::getSlaughterRate, true),
+        new PorkMetric("屠宰出品率", WarehouseIndicatorRecord::getSlaughterRate, true),
         // 甲方 2026-09-08 圈的整行含最右「累计」格：白条均重 = 白条总重/当日入白条库的猪只耳号去重数，
         // 累计同一个公式（Σ白条总重 ÷ Σ去重耳号数），不是「日均重再求平均」。
         new PorkMetric("白条均重", WarehouseIndicatorRecord::getAvgBarWeight, true,

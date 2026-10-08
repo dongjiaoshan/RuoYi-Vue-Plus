@@ -29,11 +29,11 @@ public class WarehousePorkEfficiencyVo implements Serializable {
 
     // ====== 年度屠宰指标统计 4 KPI（原型「年度屠宰指标统计」）======
 
-    /** 送宰头数（当年日屠宰头数之和）。 */
+    /** 送宰头数（自养按当年出栏时间，外购按当年送宰日期；包含尚未接收的猪）。 */
     private Integer slaughterCount;
-    /** 送宰均重 kg（当年非NULL日送宰均重之和/该字段有值日数；真实0计入，无值 → null）。 */
+    /** 送宰均重 kg（当年出栏/送宰源总重 ÷ 同一批猪头数；无头数 → null）。 */
     private BigDecimal avgSlaughterWeight;
-    /** 屠宰率%（当年非NULL日屠宰率之和/该字段有值日数；真实0计入，无值 → null）。 */
+    /** 屠宰出品率%（当年非NULL日屠宰出品率之和/该字段有值日数；真实0计入，无值 → null）。 */
     private BigDecimal slaughterRate;
     /** 白条出品率%（当年非NULL日白条出品率之和/该字段有值日数；真实0计入，无值 → null）。 */
     private BigDecimal barYieldRate;
