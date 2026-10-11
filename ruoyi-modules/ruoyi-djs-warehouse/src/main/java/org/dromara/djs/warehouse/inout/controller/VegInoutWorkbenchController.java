@@ -8,6 +8,7 @@ import org.dromara.common.idempotent.annotation.RepeatSubmit;
 import org.dromara.common.log.annotation.Log;
 import org.dromara.common.log.enums.BusinessType;
 import org.dromara.djs.warehouse.inout.domain.bo.VegInFinishBo;
+import org.dromara.djs.warehouse.inout.domain.bo.VegOutFinishBo;
 import org.dromara.djs.warehouse.inout.domain.bo.VegInSubmitBo;
 import org.dromara.djs.warehouse.inout.domain.bo.VegOutWorkbenchSubmitBo;
 import org.dromara.djs.warehouse.inout.domain.vo.RecentOutDestVo;
@@ -15,6 +16,7 @@ import org.dromara.djs.warehouse.inout.domain.vo.VegInOptionsVo;
 import org.dromara.djs.warehouse.inout.domain.vo.VegOutProductVo;
 import org.dromara.djs.warehouse.inout.domain.vo.VegOutStockVo;
 import org.dromara.djs.warehouse.inout.service.VegInoutWorkbenchService;
+import org.dromara.djs.warehouse.inout.service.VegOutFinishService;
 import org.dromara.djs.warehouse.veg.domain.vo.VegCropVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegPlotDetailVo;
 import org.springframework.validation.annotation.Validated;
@@ -35,6 +37,7 @@ import java.util.List;
 public class VegInoutWorkbenchController {
 
     private final VegInoutWorkbenchService service;
+    private final VegOutFinishService finishService;
 
     /** 果蔬入库：作物列表（同小程序毛菜处理）。 */
     @SaCheckPermission("djs:warehouse:inout:query")
@@ -94,6 +97,15 @@ public class VegInoutWorkbenchController {
     @GetMapping("/out/recentOutDests")
     public R<List<RecentOutDestVo>> recentOutDests() {
         return R.ok(service.recentOutDests());
+    }
+
+    /** 果蔬出库完成：所选库存卡的剩余量结转毛菜处理损耗（D-0144）。 */
+    @SaCheckPermission("djs:warehouse:inout:outFinish")
+    @Log(title = "仓库-果蔬出库完成", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PostMapping("/out/finish")
+    public R<List<Long>> finishOut(@Valid @RequestBody VegOutFinishBo bo) {
+        return R.ok(finishService.finish(bo));
     }
 
     /** 果蔬出库：确认出库（仓库出库 / 猪养殖饲料）。 */

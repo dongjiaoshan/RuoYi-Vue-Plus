@@ -656,7 +656,7 @@ public class StoreReturnServiceImpl
      *
      * <p>= 产品原材料（{@code product_material}）的单位；<b>无原材料 / 原材料无单位时回落产品自身单位</b>。
      * 该单位是 kg → {@code received_weight} 落的是<b>重量</b>（kg，3 位小数）；不是 kg → 落的是
-     * <b>件数</b>（按产品单位，整数）。三端（admin 明细 / 门店退回记录 / mp 确认页）与统计口径全按它分流。</p>
+     * <b>件数</b>（退回量 × 计量规则，可带小数）。三端（admin 明细 / 门店退回记录 / mp 确认页）与统计口径全按它分流。</p>
      *
      * @param products 已加载的产品（须含 {@code productMaterial} 与 {@code productUnit} 两列）
      * @return productId → 计量口径单位（每个入参产品都有值，除非产品自身单位也为空）
@@ -688,17 +688,15 @@ public class StoreReturnServiceImpl
     }
 
     /**
-     * 件数口径下的仓库实收上限（甲方 row24）：{@code 退回量 × 计量规则}。
+     * 件数口径下的仓库实收上限（甲方 row24）：{@code 退回量 × 计量规则}，保留三位小数（与实收量同精度）。
+     * 非 kg 退回量可带一位小数（D-0145），上限不取整：门店退 1.2 罐，仓库照录 1.2 罐。
      * 退回量为空 → {@code null}（不封顶，避免历史脏数据把合法确认拦死）。
      */
-    private static BigDecimal maxConfirmQty(BigDecimal returnQuantity, ProductInfo p) {
+    static BigDecimal maxConfirmQty(BigDecimal returnQuantity, ProductInfo p) {
         if (returnQuantity == null || returnQuantity.signum() <= 0) {
             return null;
         }
-        // 至少 1：material_num 配成小数（如 0.25）时 setScale(0) 会把上限抹成 0，
-        // 那一行任何正数实收都会被拒、整单永久卡死。宁可放宽到 1，也不制造死锁。
-        return returnQuantity.multiply(materialRatio(p))
-            .setScale(0, RoundingMode.HALF_UP).max(BigDecimal.ONE);
+        return returnQuantity.multiply(materialRatio(p)).setScale(3, RoundingMode.HALF_UP);
     }
 
     /**
@@ -1284,7 +1282,7 @@ public class StoreReturnServiceImpl
                 v.setInReturnList(Boolean.FALSE);
                 return v;
             });
-            // 折叠成一行的几个成品里只要有一个是清单产品，这一行就按清单规则走（不封顶 + 两位小数）：
+            // 折叠成一行的几个成品里只要有一个是清单产品，这一行就按清单规则走（不封顶）：
             // 清单产品的「不封顶」是甲方明确放开的（row214 / D-0055），被同组的到店产品拖回封顶
             // 等于把它又关上；反过来放宽只影响那一个原材料，两害相权取轻。
             if (Boolean.TRUE.equals(c.getInReturnList())) {
@@ -1382,7 +1380,7 @@ public class StoreReturnServiceImpl
                     // row33：件数口径下 mp 那一格的标题已改叫「仓库接收量」，报错文案跟着叫同一个名字——
                     // 工人在标着「仓库接收量」的框里填数，弹出来却说「仓库实收数量」会以为是另一个字段。
                     throw new ServiceException("仓库接收量(" + weighed.stripTrailingZeros().toPlainString()
-                        + ")不能超过可退上限(" + cap.toPlainString() + ")：门店退回 "
+                        + ")不能超过可退上限(" + cap.stripTrailingZeros().toPlainString() + ")：门店退回 "
                         + existing.getReturnQuantity().stripTrailingZeros().toPlainString() + unit
                         + " × 计量规则 " + materialRatio(returnProduct).stripTrailingZeros().toPlainString(), 400);
                 }
@@ -1515,7 +1513,7 @@ public class StoreReturnServiceImpl
 
     /**
      * 仓库实收量文本（对齐前端 {@code formatReceivedAmount}）：计量单位由**原材料单位**决定，
-     * 原材料按 kg → {@code X.XXXkg}；原材料按件 → {@code 整数 + 原材料单位}。
+     * 原材料按 kg → {@code X.XXXkg}；原材料按件 → {@code 数量（最多三位、去尾零）+ 原材料单位}。
      * 后缀必须跟判据同源，否则 30 枚鸡蛋会被标成「30份」= 仓库收了 30 个礼盒。
      */
     private static String formatReceivedAmount(BigDecimal v, String productUnit, String materialUnit) {
@@ -1525,7 +1523,7 @@ public class StoreReturnServiceImpl
         String metric = StringUtils.isNotBlank(materialUnit) ? materialUnit.trim()
             : (productUnit == null ? "" : productUnit);
         return isKgUnit(metric) ? v.setScale(3, RoundingMode.HALF_UP).toPlainString() + "kg"
-            : v.setScale(0, RoundingMode.HALF_UP).toPlainString() + metric;
+            : v.setScale(3, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString() + metric;
     }
 
     /**
@@ -1935,7 +1933,7 @@ public class StoreReturnServiceImpl
         }
         List<Long> productIds = rows.stream().map(StoreReturn::getProductId)
             .filter(Objects::nonNull).distinct().toList();
-        // row13：必须带 product_material —— mp 确认页靠「原材料单位」决定称重框是重量(kg,小数)还是件数(整数)。
+        // row13：必须带 product_material —— mp 确认页靠「原材料单位」决定称重框是重量(kg)还是件数。
         // row24：再带 material_num（计量规则，算件数上限）+ product_attr（判「成品缺原材料 → 只能丢弃」）。
         List<ProductInfo> products = productIds.isEmpty() ? List.<ProductInfo>of()
             : productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
@@ -1947,7 +1945,7 @@ public class StoreReturnServiceImpl
             .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
         // 批量解析（一次 IN 查原材料产品），不逐行查库
         Map<Long, String> metricUnits = resolveMetricUnits(products);
-        // V6-R214/R217：清单内产品的录入精度另有口径（非 kg 也放开到两位小数，D-0054），随行下发免得 mp 再查一次字典
+        // 是否清单产品随行下发，免得 mp 再查一次字典（清单产品不封顶；录入精度不看它，D-0145）
         Set<Long> returnListIds = new HashSet<>(resolveReturnListProductIds());
         boolean received = STATUS_RECEIVED.equals(storeStatus);
         return rows.stream().map(r -> {

@@ -58,7 +58,7 @@ public class StoreReturnAppletItemVo implements Serializable {
      * 产品自身单位）。
      *
      * <p>mp 退回确认页据它决定「仓库称重重量」输入框的口径（甲方 row13）：
-     * = kg → 小数录入、后缀 kg；≠ kg → <b>整数</b>录入、后缀 {@code productUnit}（枚 / 份 …）。</p>
+     * = kg → 小数录入、后缀 kg；≠ kg → 按件数录入（最多一位小数，D-0145）、后缀 {@code productUnit}（枚 / 份 …）。</p>
      */
     private String materialUnit;
 
@@ -80,8 +80,8 @@ public class StoreReturnAppletItemVo implements Serializable {
     /**
      * 该产品是否配在字典「退回产品清单」{@code djs_return_product_list} 里（V6-R214）。
      *
-     * <p>mp 退回确认页用它决定非 kg 行的录入精度（D-0054）：清单内允许两位小数、清单外只能整数。
-     * kg 行不看这个字段，恒按 D-0017 保留三位小数。</p>
+     * <p>清单产品退回量不封顶。mp 退回确认页的录入精度不看这个字段（D-0145）：
+     * 非 kg 行最多一位小数，kg 行恒按 D-0017 保留三位小数。</p>
      */
     private Boolean inReturnList;
 

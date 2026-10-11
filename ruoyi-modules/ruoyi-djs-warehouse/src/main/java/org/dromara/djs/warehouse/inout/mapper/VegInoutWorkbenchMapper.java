@@ -7,7 +7,7 @@ import org.dromara.djs.warehouse.inout.domain.vo.VegOutStockRow;
 
 import java.util.List;
 
-/** 果蔬入库 / 出库工作台只读查询（V6 row282/row283）；写入一律走毛菜处理与毛菜间出库的既有 service。 */
+/** 果蔬工作台列表查询及出库完成事务的锁定读（V6 row282/283/293）。 */
 public interface VegInoutWorkbenchMapper {
 
     /**
@@ -18,8 +18,7 @@ public interface VegInoutWorkbenchMapper {
      *
      * @param productId 产品 id（可空 = 全部产品）
      */
-    @Select("""
-        <script>
+    String VEG_STOCK_QUERY = """
         SELECT s.id AS stock_id, s.product_id, p.product_name, p.product_unit,
                s.plot_id, pl.plot_code, pl.plot_name, s.ear_no,
                s.location_id, l.location_name, s.third_phase, s.product_stock AS stock_weight
@@ -34,9 +33,21 @@ public interface VegInoutWorkbenchMapper {
            AND s.product_id = #{productId}
         </if>
          ORDER BY p.product_name, s.product_id, s.create_time, s.id
-        </script>
-        """)
+        """;
+
+    @Select("<script>" + VEG_STOCK_QUERY + "</script>")
     List<VegOutStockRow> selectVegStocks(@Param("productId") Long productId);
+
+    /** 出库完成：锁定同产品正库存并读取最新余量（D-0144）。只锁库存行，不连带锁库位 / 产品 / 地块行。 */
+    @Select("<script>" + VEG_STOCK_QUERY + " FOR UPDATE OF s</script>")
+    List<VegOutStockRow> selectVegStocksForUpdate(@Param("productId") Long productId);
+
+    /** 仍有未称重完成采摘记录的作物：与入库地块列表的 weighStatus（is_weighed=1 为 done）同一判据。 */
+    @Select("SELECT DISTINCT p.crop_id FROM t_warehouse_planting_record p"
+        + " WHERE p.tenant_id = '1001' AND p.del_flag = '0' AND p.crop_id IS NOT NULL"
+        + "   AND NOT EXISTS (SELECT 1 FROM t_warehouse_vegetable_handle h"
+        + "                    WHERE h.planting_record_id = p.id AND h.del_flag = '0' AND h.is_weighed = 1)")
+    List<Long> selectCropIdsWithPendingWeigh();
 
     /** 近 30 天果蔬产品后台出库去向按次数排序，由 service 过滤有效字典后取前 10 个。 */
     @Select("SELECT f.stock_out_dest AS value, COUNT(*) AS count FROM t_warehouse_stock_flow f "

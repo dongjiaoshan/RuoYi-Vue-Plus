@@ -7,6 +7,8 @@ import org.dromara.djs.warehouse.inout.domain.bo.VegInSubmitBo;
 import org.dromara.djs.warehouse.inout.domain.bo.VegOutWorkbenchSubmitBo;
 import org.dromara.djs.warehouse.inout.domain.vo.VegOutStockVo;
 import org.dromara.djs.warehouse.inout.service.VegInoutWorkbenchService;
+import org.dromara.djs.warehouse.inout.service.VegOutFinishService;
+import org.dromara.djs.warehouse.inout.domain.bo.VegOutFinishBo;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -33,11 +35,12 @@ import static org.mockito.Mockito.when;
 class VegInoutWorkbenchControllerTest {
 
     @Mock VegInoutWorkbenchService service;
+    @Mock VegOutFinishService finishService;
     VegInoutWorkbenchController controller;
 
     @BeforeEach
     void setup() {
-        controller = new VegInoutWorkbenchController(service);
+        controller = new VegInoutWorkbenchController(service, finishService);
     }
 
     @Test
@@ -53,6 +56,14 @@ class VegInoutWorkbenchControllerTest {
         verify(service).submitIn(in);
         verify(service).finishIn(finish);
         verify(service).submitOut(out);
+    }
+
+    @Test
+    void finishOutPreservesFlowIdResponseAndDelegates() {
+        VegOutFinishBo bo = new VegOutFinishBo();
+        when(finishService.finish(bo)).thenReturn(List.of(926101029300000001L));
+        assertThat(controller.finishOut(bo).getData()).containsExactly(926101029300000001L);
+        verify(finishService).finish(bo);
     }
 
     @Test
@@ -79,6 +90,7 @@ class VegInoutWorkbenchControllerTest {
         assertThat(perms).containsEntry("submitIn", "djs:warehouse:inout:submit")
             .containsEntry("submitOut", "djs:warehouse:inout:submit")
             .containsEntry("finishIn", "djs:warehouse:inout:finish")
+            .containsEntry("finishOut", "djs:warehouse:inout:outFinish")
             .containsEntry("crops", "djs:warehouse:inout:query")
             .containsEntry("plots", "djs:warehouse:inout:query")
             .containsEntry("inOptions", "djs:warehouse:inout:query")

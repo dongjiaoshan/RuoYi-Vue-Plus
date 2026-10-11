@@ -72,14 +72,19 @@ public class VegInoutWorkbenchService {
     private final VegInoutWorkbenchMapper workbenchMapper;
     private final DictService dictService;
 
-    /** 作物列表：与小程序毛菜处理作物列表同源。 */
+    /**
+     * 作物列表：小程序毛菜处理作物列表中仍有地块可入库的作物（V6 row291）。
+     * 地块全部称重完成的作物在入库页已无可录地块，不再展示；小程序按毛菜处理完成过滤，口径不受影响。
+     */
     public List<VegCropVo> crops() {
-        return vegHandleService.listCrops();
+        Set<Long> weighable = new HashSet<>(workbenchMapper.selectCropIdsWithPendingWeigh());
+        return vegHandleService.listCrops().stream().filter(crop -> weighable.contains(crop.getCropId())).toList();
     }
 
-    /** 作物的采摘地块（含产品配置与称重状态）：与小程序毛菜处理作物详情同源。 */
+    /** 作物可继续入库的采摘地块；已称重完成的记录仍留在小程序果蔬处理链路。 */
     public List<VegPlotDetailVo> plots(Long cropId) {
-        return vegHandleService.listPlotsByCrop(cropId);
+        return vegHandleService.listPlotsByCrop(cropId).stream()
+            .filter(plot -> !"done".equals(plot.getWeighStatus())).toList();
     }
 
     /** 去向库位名 + 启用班组（小程序 TeamPicker 同样只列启用班组）。 */

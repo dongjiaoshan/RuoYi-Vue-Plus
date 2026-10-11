@@ -90,7 +90,7 @@ public class PublicTraceVo implements Serializable {
     /** 检疫信息（pork 专属；V1 数据源缺口，返 null）。 */
     private QuarantineBlock quarantine;
 
-    /** 门店信息（pork 专属）。 */
+    /** 门店信息（pork/veg 共用）。 */
     private StoreBlock store;
 
     // ============ veg 专属（pork/gift 为 null）============
@@ -272,7 +272,7 @@ public class PublicTraceVo implements Serializable {
         private String agency;
     }
 
-    /** 门店信息块（pork）。 */
+    /** 门店信息块（pork/veg 共用）。 */
     @Data
     public static class StoreBlock implements Serializable {
         @Serial
@@ -281,6 +281,8 @@ public class PublicTraceVo implements Serializable {
         private String name;
         /** 门店地址。 */
         private String address;
+        /** 门店配置的店长电话（t_md_store.manager_phone；未配置为 null）。 */
+        private String managerPhone;
         /** 门店配图 URL（由 t_md_store.image_oss_id 解析；无图为 null，前端用默认图兜底 · row146）。 */
         private String imageUrl;
         /** 店长微信二维码图 URL（由 t_md_store.manager_wechat_oss_id 解析；无图为 null，前端整块隐藏 · row165）。 */

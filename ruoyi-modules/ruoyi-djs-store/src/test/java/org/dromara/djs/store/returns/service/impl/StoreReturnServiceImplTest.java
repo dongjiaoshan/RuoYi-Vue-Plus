@@ -946,6 +946,17 @@ class StoreReturnServiceImplTest {
     }
 
     @Test
+    @DisplayName("V6 row298：件数口径确认上限不取整 —— 退 1.2 罐可确认 1.2，退 1.5 份 × 0.25 上限 0.375")
+    void testMaxConfirmQty_keepsOneDecimalReturn() {
+        ProductInfo can = product(P_LOIN, "罐装蜂蜜", "罐", null);
+        assertThat(StoreReturnServiceImpl.maxConfirmQty(new BigDecimal("1.2"), can)).isEqualByComparingTo("1.2");
+        ProductInfo veg = product(P_VEG_350G, "有机苕尖250g", "份", M_KG);
+        veg.setMaterialNum(new BigDecimal("0.25"));
+        assertThat(StoreReturnServiceImpl.maxConfirmQty(new BigDecimal("1.5"), veg)).isEqualByComparingTo("0.375");
+        assertThat(StoreReturnServiceImpl.maxConfirmQty(null, can)).isNull();
+    }
+
+    @Test
     @DisplayName("OPS-001：toConfirmWeight —— kg 行原样透传（退回单位就是原材料单位，material_num 恒 1）")
     void testToConfirmWeight_kgPassthrough() {
         ProductInfo loin = product(P_LOIN, "里脊肉", "kg", null);

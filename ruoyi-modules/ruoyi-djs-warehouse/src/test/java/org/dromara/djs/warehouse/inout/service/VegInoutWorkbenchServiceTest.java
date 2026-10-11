@@ -20,6 +20,8 @@ import org.dromara.djs.warehouse.inout.mapper.VegInoutWorkbenchMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo;
+import org.dromara.djs.warehouse.veg.domain.vo.VegCropVo;
+import org.dromara.djs.warehouse.veg.domain.vo.VegPlotDetailVo;
 import org.dromara.djs.warehouse.veg.service.IVegetableHandleService;
 import org.dromara.djs.warehouse.vegout.domain.bo.VegOutSubmitBo;
 import org.dromara.djs.warehouse.vegout.service.IVegOutService;
@@ -132,6 +134,34 @@ class VegInoutWorkbenchServiceTest {
         bo.setDestination(destination);
         bo.setOutDest(outDest);
         return bo;
+    }
+
+    @Test
+    void inCropsHideCropsWhoseEveryPlotIsWeighed() {
+        VegCropVo weighable = new VegCropVo();
+        weighable.setCropId(101L);
+        VegCropVo allWeighed = new VegCropVo();
+        allWeighed.setCropId(102L);
+        when(vegHandleService.listCrops()).thenReturn(List.of(weighable, allWeighed));
+        when(workbenchMapper.selectCropIdsWithPendingWeigh()).thenReturn(List.of(101L, 999L));
+
+        assertThat(service.crops()).containsExactly(weighable);
+    }
+
+    @Test
+    void inPlotsHideWeighedPlotsWithoutChangingTheirProcessingState() {
+        VegPlotDetailVo pending = new VegPlotDetailVo();
+        pending.setPlantingRecordId(501L);
+        pending.setWeighStatus("pending");
+        pending.setProcessStatus("pending");
+        VegPlotDetailVo weighed = new VegPlotDetailVo();
+        weighed.setPlantingRecordId(502L);
+        weighed.setWeighStatus("done");
+        weighed.setProcessStatus("pending");
+        when(vegHandleService.listPlotsByCrop(101L)).thenReturn(List.of(pending, weighed));
+
+        assertThat(service.plots(101L)).containsExactly(pending);
+        assertThat(weighed.getProcessStatus()).isEqualTo("pending");
     }
 
     @Test

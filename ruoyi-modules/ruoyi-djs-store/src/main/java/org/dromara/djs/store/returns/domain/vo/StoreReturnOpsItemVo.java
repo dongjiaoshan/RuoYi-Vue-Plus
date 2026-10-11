@@ -16,8 +16,8 @@ import java.util.List;
  * <p>一行 = 一张退回单里的一个产品，供 admin 「退回处理」/「查看详情」右侧抽屉逐行渲染。
  * 全部换算所需的判据一次性下发，前端不再自己查字典 / 产品档案：</p>
  * <ul>
- *   <li>{@link #productUnit}（退回单位）→ 决定第三列的口径与小数位（D-0017 / D-0054）：<br>
- *       kg → 三位小数；非 kg → {@link #inReturnList} 为真两位小数、否则整数</li>
+ *   <li>{@link #productUnit}（退回单位）→ 决定第三列的口径与小数位（D-0017 / D-0145）：<br>
+ *       kg → 三位小数；非 kg → 最多一位小数（{@link #inReturnList} 不影响精度）</li>
  *   <li>{@link #materialNum}（计量规则）→ 提交前把「退回单位量」换算回原材料量
  *       （与 mp {@code toConfirmWeight} 同一套算法，否则同一张单 admin 与 mp 会写出两个数）</li>
  *   <li>{@link #canConvert} → 单位为「份 → kg」但没配计量规则时锁行（瞎猜会把 3 只记成 3 kg 进库存）</li>
@@ -70,7 +70,7 @@ public class StoreReturnOpsItemVo implements Serializable {
     /** 计量规则（一件折算多少原材料，缺配回落 1）。 */
     private BigDecimal materialNum;
 
-    /** 是否配在字典「退回产品清单」里（非 kg 行两位小数的判据）。 */
+    /** 是否配在字典「退回产品清单」里（清单产品退回量不封顶；不决定录入精度）。 */
     private Boolean inReturnList;
 
     /** 能否退回入库（成品没配原材料 → 只能丢弃）。 */
