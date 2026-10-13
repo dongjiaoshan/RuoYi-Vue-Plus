@@ -223,14 +223,31 @@ class VegInoutWorkbenchServiceTest {
     void finishIsTheZeroKilogramWeighFinishOfTheSameEntry() {
         VegInFinishBo bo = new VegInFinishBo();
         bo.setPlantingRecordId(501L);
-        bo.setTeamIds(List.of(31L));
-        bo.setPerfPercent(100);
         service.finishIn(bo);
         ArgumentCaptor<HarvestSubmitBo> sent = ArgumentCaptor.forClass(HarvestSubmitBo.class);
         verify(vegHandleService).submitHarvest(sent.capture());
         assertThat(sent.getValue().getHarvestWeight()).isEqualByComparingTo("0");
         assertThat(sent.getValue().getWeighFinish()).isEqualTo(1);
         assertThat(sent.getValue().getProductId()).isNull();
+        assertThat(sent.getValue().getTeamIds()).isEmpty();
+        assertThat(sent.getValue().getPerfPercent()).isNull();
+        verifyNoInteractions(teamService);
+    }
+
+    @Test
+    void zeroKilogramFinishDoesNotDependOnLegacyPerformanceSelections() {
+        VegInFinishBo bo = new VegInFinishBo();
+        bo.setPlantingRecordId(501L);
+        bo.setTeamIds(List.of(999L));
+        bo.setPerfPercent(80);
+
+        service.finishIn(bo);
+
+        ArgumentCaptor<HarvestSubmitBo> sent = ArgumentCaptor.forClass(HarvestSubmitBo.class);
+        verify(vegHandleService).submitHarvest(sent.capture());
+        assertThat(sent.getValue().getTeamIds()).isEmpty();
+        assertThat(sent.getValue().getPerfPercent()).isNull();
+        verifyNoInteractions(teamService);
     }
 
     @Test

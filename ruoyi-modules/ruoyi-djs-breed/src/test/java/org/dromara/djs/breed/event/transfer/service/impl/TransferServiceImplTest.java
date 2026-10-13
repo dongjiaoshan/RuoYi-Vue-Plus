@@ -20,6 +20,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -239,6 +241,48 @@ class TransferServiceImplTest {
         bo.setNewBarnId(newBarnId);
         bo.setNewPenId(newPenId);
         return bo;
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = PigLifecycle.class, names = {"HB", "DN", "LC", "KH", "FQ"})
+    @DisplayName("D-0150：繁殖已结束且无未断奶仔猪，复用转育肥事件并保持当前位置")
+    void toFatten_completedReproductionStatesUseExistingEvents(PigLifecycle status) {
+        Pig pig = mkPig(413L, "sow", status, null);
+        when(pigMapper.selectById(413L)).thenReturn(pig);
+
+        service.toFatten(mkFattenBo(413L, null, null));
+
+        verify(pigMapper).countUnweanedPigletsBySow(413L);
+        verify(transferMapper).insert(any(PigTransfer.class));
+        ArgumentCaptor<PigEventBo> events = ArgumentCaptor.forClass(PigEventBo.class);
+        verify(pigCoreService, times(2)).fireEvent(events.capture());
+        assertThat(events.getAllValues()).extracting(PigEventBo::getEventType)
+            .containsExactly(PigStatusEvent.TRANSFER, PigStatusEvent.TO_FATTEN);
+        assertThat(events.getAllValues().get(1).getPayload()).containsEntry("newPigType", "fattening");
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = PigLifecycle.class, names = {"PZ", "FM", "YF", "END"})
+    @DisplayName("D-0150：未结束繁殖或已转换/终止时拒绝，不写转移/状态记录")
+    void toFatten_unsafeStatesRejectBeforeAnyWrite(PigLifecycle status) {
+        when(pigMapper.selectById(414L)).thenReturn(mkPig(414L, "sow", status, null));
+
+        assertThatThrownBy(() -> service.toFatten(mkFattenBo(414L, null, null)))
+            .isInstanceOf(ServiceException.class).hasMessageContaining("繁殖已结束");
+        verify(transferMapper, never()).insert(any(PigTransfer.class));
+        verify(pigCoreService, never()).fireEvent(any(PigEventBo.class));
+    }
+
+    @Test
+    @DisplayName("D-0150：已为DN但一窝仍有未断奶仔猪时拒绝")
+    void toFatten_partlyWeanedSowRejectsBeforeAnyWrite() {
+        when(pigMapper.selectById(415L)).thenReturn(mkPig(415L, "sow", PigLifecycle.DN, null));
+        when(pigMapper.countUnweanedPigletsBySow(415L)).thenReturn(1);
+
+        assertThatThrownBy(() -> service.toFatten(mkFattenBo(415L, null, null)))
+            .isInstanceOf(ServiceException.class).hasMessageContaining("未断奶仔猪");
+        verify(transferMapper, never()).insert(any(PigTransfer.class));
+        verify(pigCoreService, never()).fireEvent(any(PigEventBo.class));
     }
 
     @Test

@@ -14,6 +14,7 @@ import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.util.PigAgeUtil;
 import org.dromara.djs.breed.core.enums.PigStatusEvent;
+import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
@@ -212,8 +213,6 @@ public class TransferServiceImpl implements ITransferService {
     private static final String PIG_TYPE_SOW = "sow";
     /** 转育肥后的猪只类型。 */
     private static final String PIG_TYPE_FATTENING = "fattening";
-    /** 转育肥前置条件：当前状态 = 后备。 */
-    private static final String STATUS_HB = "HB";
     /** 转育肥记录的转移原因（复用 t_farm_pig_transfer，靠此原因与普通转群区分）。 */
     private static final String TO_FATTEN_REASON = "转为育肥猪";
 
@@ -225,10 +224,22 @@ public class TransferServiceImpl implements ITransferService {
         if (pig == null) {
             throw new ServiceException(I18nMessages.t("pig.not_found", bo.getPigId()));
         }
-        // 前置：仅「后备」的「种母猪」可转育肥（与列表按钮显隐同口径，防绕过前端直调接口）
-        if (!PIG_TYPE_SOW.equals(pig.getPigType()) || !STATUS_HB.equals(pig.getCurrentStatus())) {
-            throw new ServiceException("仅「后备」状态的种母猪可转为育肥猪（当前类型 "
+        // D-0150：先检查繁殖状态及全部窝剩余仔猪，未通过时不写任何转移/状态记录。
+        PigLifecycle status = null;
+        if (pig.getCurrentStatus() != null) {
+            for (PigLifecycle candidate : PigLifecycle.values()) {
+                if (candidate.name().equals(pig.getCurrentStatus())) {
+                    status = candidate;
+                    break;
+                }
+            }
+        }
+        if (!PIG_TYPE_SOW.equals(pig.getPigType()) || status == null || !status.allowsToFatten()) {
+            throw new ServiceException("仅繁殖已结束的种母猪可转育肥猪（当前类型 "
                 + pig.getPigType() + "，状态 " + pig.getCurrentStatus() + "）", 400);
+        }
+        if (pigMapper.countUnweanedPigletsBySow(pig.getId()) > 0) {
+            throw new ServiceException("该种母猪仍有未断奶仔猪，不能转育肥猪", 400);
         }
 
         // 目标栋舍 / 栏位：空则沿用猪只当前位置（前端默认预填当前位置，此处兜底）
@@ -273,7 +284,7 @@ public class TransferServiceImpl implements ITransferService {
         //    用户在事件台账按「转移」找不到任何记录。与上面的转移记录一一对应：只要写了
         //    t_farm_pig_transfer 就配一条 TRANSFER 事件，**位置没变（表单默认预填当前位置、用户
         //    只改日期负责人）也要记** —— 否则最常见的那条路径仍然查不到转移记录。
-        //    TRANSFER 是 NO_CHANGE 事件（HB → HB），不影响随后的 HB → YF；位置没变时
+        //    TRANSFER 是 NO_CHANGE 事件，不影响随后的安全繁殖态 → YF；位置没变时
         //    PenCountUpdater.move 自身对同栏短路，不会重复加减在场头数。两条共用同一条转移记录 id。
         Map<String, Object> movePayload = new HashMap<>(4);
         if (targetBarnId != null) {
@@ -290,7 +301,7 @@ public class TransferServiceImpl implements ITransferService {
         moveBo.setPayload(movePayload);
         pigCoreService.fireEvent(moveBo);
 
-        // 3. 状态机事件 TO_FATTEN：HB → YF；payload 同 TRANSFER 形态 + 固定切 pig_type=fattening
+        // 3. 状态机事件 TO_FATTEN：安全繁殖态 → YF；payload 同 TRANSFER 形态 + 固定切 pig_type=fattening
         Map<String, Object> payload = new HashMap<>(4);
         if (targetBarnId != null) {
             payload.put("newBarnId", targetBarnId);

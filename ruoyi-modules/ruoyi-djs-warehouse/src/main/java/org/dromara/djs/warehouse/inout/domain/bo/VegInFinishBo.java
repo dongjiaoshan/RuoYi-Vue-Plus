@@ -3,7 +3,6 @@ package org.dromara.djs.warehouse.inout.domain.bo;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
@@ -14,9 +13,9 @@ import java.util.List;
 public class VegInFinishBo {
     @NotNull(message = "请选择采摘地块")
     private Long plantingRecordId;
-    @NotEmpty(message = "请选择采摘班组")
+    /** 兼容旧客户端；0 kg 收口不记班组绩效，不使用此值。 */
     private List<Long> teamIds;
-    @NotNull(message = "请选择绩效百分比")
+    /** 兼容旧客户端；0 kg 收口无需填写绩效。 */
     @Min(value = 1, message = "绩效百分比须为 1-100 的整数")
     @Max(value = 100, message = "绩效百分比须为 1-100 的整数")
     @JsonDeserialize(using = IntegerPercentDeserializer.class)

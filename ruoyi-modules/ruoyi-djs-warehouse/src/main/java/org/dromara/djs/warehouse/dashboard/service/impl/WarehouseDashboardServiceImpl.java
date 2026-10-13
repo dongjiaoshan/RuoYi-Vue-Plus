@@ -15,7 +15,6 @@ import org.dromara.djs.warehouse.dashboard.mapper.WarehouseProductionDashboardMa
 import org.dromara.djs.warehouse.dashboard.service.IWarehouseDashboardService;
 import org.dromara.djs.warehouse.stat.domain.WarehouseCroppRecord;
 import org.dromara.djs.warehouse.stat.domain.WarehouseIndicatorRecord;
-import org.dromara.djs.warehouse.stat.domain.WarehouseMonthlyRecord;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -28,6 +27,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.function.Function;
 
 /**
@@ -169,7 +169,7 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
      *
      * <p>年度三项（D-0139）：送宰均重 = 当年出栏（送宰）总重 ÷ 出栏（送宰）头数，与燎毛接收日期无关；
      * 屠宰出品率 / 白条出品率取有值日记录的算术平均 —— 有值以非 NULL 为准，真实 0 也计入，
-     * 每个指标独立计有效日数，全 NULL 返回 NULL。月度趋势仍直读月表的基数重算率，矩阵累计仍按各指标已定口径。</p>
+     * 每个指标独立计有效日数，全 NULL 返回 NULL。月度趋势从日表汇总，与同月日矩阵累计共用算法（D-0148）。</p>
      */
     @Override
     public WarehousePorkEfficiencyVo getPorkEfficiency(Integer year, String month) {
@@ -200,15 +200,8 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         vo.setCutProductWeightTon(toTon(cutProductWeight));
         vo.setCutRate(pct(cutProductWeight, cutBarWeight));
 
-        // ---- 月度屠宰效能趋势：当年月表（柱=屠宰头数 + 3 折线出品率）----
-        List<WarehouseMonthlyRecord> monthlyRows = productionMapper.selectMonthlyRecordsByYear(tenantId, y + "-%");
-        for (WarehouseMonthlyRecord m : monthlyRows) {
-            vo.getTrendMonths().add(m.getStatMonth());
-            vo.getTrendSlaughterCount().add(nz(m.getSlaughterCount()));
-            vo.getTrendSlaughterRate().add(nzd(m.getSlaughterRate()));
-            vo.getTrendBarYieldRate().add(nzd(m.getBarYieldRate()));
-            vo.getTrendCutYieldRate().add(nzd(m.getCutYieldRate()));
-        }
+        // ---- 月度屠宰效能趋势：按接收日的日表分月，汇总口径与同月日矩阵累计一致 ----
+        fillPorkMonthlyTrend(vo, yearRows);
 
         // ---- 日猪肉处理数据矩阵：所选月份昨日→月初倒序的日表行 ----
         List<LocalDate> matrixDates = matrixDates(ym);
@@ -257,28 +250,37 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         }
     }
 
+    private static final PorkMetric PORK_HEADS =
+        new PorkMetric("屠宰头数", WarehouseIndicatorRecord::getSlaughterCount, false);
+    private static final PorkMetric PORK_SLAUGHTER_RATE =
+        new PorkMetric("屠宰出品率", WarehouseIndicatorRecord::getSlaughterRate, true);
+    private static final PorkMetric PORK_BAR_YIELD_RATE =
+        new PorkMetric("白条出品率", WarehouseIndicatorRecord::getBarYieldRate, true);
+    private static final PorkMetric PORK_CUT_RATE =
+        new PorkMetric("分割率", WarehouseIndicatorRecord::getCutRate, true);
+
     /** 日猪肉处理矩阵 12 指标行（对齐原型「日猪肉处理数据统计」）。 */
     private static final List<PorkMetric> PORK_METRICS = List.of(
-        new PorkMetric("屠宰头数", WarehouseIndicatorRecord::getSlaughterCount, false),
-        new PorkMetric("送宰均重", WarehouseIndicatorRecord::getAvgSlaughterWeight, true),
+        PORK_HEADS,
+        new PorkMetric("屠宰均重", WarehouseIndicatorRecord::getAvgSlaughterWeight, true),
         new PorkMetric("接收均重", WarehouseIndicatorRecord::getAvgArriveWeight, true),
-        new PorkMetric("屠宰出品率", WarehouseIndicatorRecord::getSlaughterRate, true),
+        PORK_SLAUGHTER_RATE,
         // 甲方 2026-09-08 圈的整行含最右「累计」格：白条均重 = 白条总重/当日入白条库的猪只耳号去重数，
         // 累计同一个公式（Σ白条总重 ÷ Σ去重耳号数），不是「日均重再求平均」。
         new PorkMetric("白条均重", WarehouseIndicatorRecord::getAvgBarWeight, true,
             WarehouseIndicatorRecord::getBarTotalWeight, WarehouseIndicatorRecord::getBarPigCount),
-        new PorkMetric("白条出品率", WarehouseIndicatorRecord::getBarYieldRate, true),
+        PORK_BAR_YIELD_RATE,
         new PorkMetric("分割白条数", WarehouseIndicatorRecord::getCutBarCount, false),
         new PorkMetric("预冷损耗", WarehouseIndicatorRecord::getPrecoolLoss, false),
         new PorkMetric("分割总重", WarehouseIndicatorRecord::getCutBarWeight, false),
         new PorkMetric("分割产品重", WarehouseIndicatorRecord::getCutProductWeight, false),
-        new PorkMetric("分割率", WarehouseIndicatorRecord::getCutRate, true),
+        PORK_CUT_RATE,
         // R80：文案「分割损耗重」→「分割损耗」。
         new PorkMetric("分割损耗", WarehouseIndicatorRecord::getCutLoss, false)
     );
 
     /**
-     * 组装日猪肉处理矩阵行（逐日取值 + 累计；率/均值类累计留空）。
+     * 组装日猪肉处理矩阵行（逐日取值 + 累计）。
      *
      * @param dates  日期列（与 VO matrixDays 同序）
      * @param byDate 该月日表行按日索引
@@ -290,51 +292,78 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         for (PorkMetric m : PORK_METRICS) {
             WarehousePorkEfficiencyVo.MatrixRow row = new WarehousePorkEfficiencyVo.MatrixRow();
             row.setMetric(m.label());
-            List<String> daily = new ArrayList<>();
-            BigDecimal sum = BigDecimal.ZERO;
-            boolean hasAny = false;
-            // R80：率/均值类累计分母 = 有数据（值 >0）天数，无活动天（0/空）不摊薄均值。
-            int dataDays = 0;
-            // 有 cohort 基数列的指标（如白条均重）：累计走 Σ分子/Σ分母，与日值同一个公式。
-            BigDecimal numerSum = BigDecimal.ZERO;
-            BigDecimal denomSum = BigDecimal.ZERO;
-            for (LocalDate d : dates) {
-                WarehouseIndicatorRecord r = byDate.get(d);
-                Object raw = r == null ? null : m.getter().apply(r);
-                // R81：率/均值类当日空值兜底显示 0.00（前端 withPct 再补 %），非率类保持原样（空/数值）。
-                daily.add(m.rateOrAvg() && raw == null ? "0.00" : fmtCell(raw));
-                if (raw instanceof Number n) {
-                    BigDecimal bd = new BigDecimal(n.toString());
-                    sum = sum.add(bd);
-                    hasAny = true;
-                    if (bd.signum() > 0) {
-                        dataDays++;
-                    }
-                }
-                if (m.hasCohortTotal() && r != null) {
-                    numerSum = numerSum.add(toBd(m.totalNumer().apply(r)));
-                    denomSum = denomSum.add(toBd(m.totalDenom().apply(r)));
-                }
-            }
-            row.setDailyValues(daily);
-            if (m.hasCohortTotal()) {
-                // 累计 = Σ分子 / Σ分母（不是日值再平均：各天头数不同，平均会失真）。
-                // 分母 0 → 0.00 兜底，与 R81 的空值口径一致。
-                row.setTotal(denomSum.signum() > 0
-                    ? fmtCell(numerSum.divide(denomSum, 2, RoundingMode.HALF_UP))
-                    : "0.00");
-            } else if (m.rateOrAvg()) {
-                // R80：率/均值类累计 = 每日之和 / 有数据天数（原为留空）；无数据 → 0.00 兜底（对齐 R81 空值口径）。
-                row.setTotal(dataDays > 0
-                    ? fmtCell(sum.divide(new BigDecimal(dataDays), 2, RoundingMode.HALF_UP))
-                    : "0.00");
-            } else {
-                // 整数 / 重量类累计 = 逐日之和；全月无数据留空。
-                row.setTotal(hasAny ? fmtCell(sum) : "");
-            }
+            PorkMetricValues values = aggregatePorkMetric(m, dates, byDate);
+            row.setDailyValues(values.dailyValues());
+            // 头数是整数；半扇分割数和重量继续保留各自的小数精度。
+            row.setTotal(m == PORK_HEADS && values.total() != null
+                ? values.total().toBigIntegerExact().toString() : fmtCell(values.total()));
             rows.add(row);
         }
         return rows;
+    }
+
+    /** 月趋势和日矩阵共用的逐日值与累计值。 */
+    private record PorkMetricValues(List<String> dailyValues, BigDecimal total) {
+    }
+
+    private PorkMetricValues aggregatePorkMetric(
+        PorkMetric metric, List<LocalDate> dates, Map<LocalDate, WarehouseIndicatorRecord> byDate) {
+        List<String> daily = new ArrayList<>();
+        BigDecimal sum = BigDecimal.ZERO;
+        boolean hasAny = false;
+        int dataDays = 0;
+        BigDecimal numerSum = BigDecimal.ZERO;
+        BigDecimal denomSum = BigDecimal.ZERO;
+        for (LocalDate date : dates) {
+            WarehouseIndicatorRecord record = byDate.get(date);
+            Object raw = record == null ? null : metric.getter().apply(record);
+            // R81：率/均值类空日显示 0.00；累计分母仍只计正值日（D-0049）。
+            daily.add(metric.rateOrAvg() && raw == null ? "0.00" : fmtCell(raw));
+            if (raw instanceof Number number) {
+                BigDecimal value = new BigDecimal(number.toString());
+                sum = sum.add(value);
+                hasAny = true;
+                if (value.signum() > 0) {
+                    dataDays++;
+                }
+            }
+            if (metric.hasCohortTotal() && record != null) {
+                numerSum = numerSum.add(toBd(metric.totalNumer().apply(record)));
+                denomSum = denomSum.add(toBd(metric.totalDenom().apply(record)));
+            }
+        }
+        BigDecimal total;
+        if (metric.hasCohortTotal()) {
+            total = denomSum.signum() > 0
+                ? numerSum.divide(denomSum, 2, RoundingMode.HALF_UP) : BigDecimal.ZERO;
+        } else if (metric.rateOrAvg()) {
+            total = dataDays > 0
+                ? sum.divide(BigDecimal.valueOf(dataDays), 2, RoundingMode.HALF_UP) : BigDecimal.ZERO;
+        } else {
+            total = hasAny ? sum : null;
+        }
+        return new PorkMetricValues(daily, total);
+    }
+
+    /** D-0148：月趋势从日表按月份汇总；截至昨日，与对应月份日矩阵完全同源同算法。 */
+    private void fillPorkMonthlyTrend(WarehousePorkEfficiencyVo vo, List<WarehouseIndicatorRecord> yearRows) {
+        Map<YearMonth, Map<LocalDate, WarehouseIndicatorRecord>> byMonth = new TreeMap<>();
+        LocalDate today = LocalDate.now();
+        for (WarehouseIndicatorRecord record : yearRows) {
+            LocalDate date = record.getStatDate();
+            if (date != null && date.isBefore(today)) {
+                byMonth.computeIfAbsent(YearMonth.from(date), ignored -> new LinkedHashMap<>()).put(date, record);
+            }
+        }
+        for (var entry : byMonth.entrySet()) {
+            List<LocalDate> dates = matrixDates(entry.getKey());
+            Map<LocalDate, WarehouseIndicatorRecord> byDate = entry.getValue();
+            vo.getTrendMonths().add(entry.getKey().toString());
+            vo.getTrendSlaughterCount().add(nzd(aggregatePorkMetric(PORK_HEADS, dates, byDate).total()).intValueExact());
+            vo.getTrendSlaughterRate().add(aggregatePorkMetric(PORK_SLAUGHTER_RATE, dates, byDate).total());
+            vo.getTrendBarYieldRate().add(aggregatePorkMetric(PORK_BAR_YIELD_RATE, dates, byDate).total());
+            vo.getTrendCutYieldRate().add(aggregatePorkMetric(PORK_CUT_RATE, dates, byDate).total());
+        }
     }
 
     // ============================================================

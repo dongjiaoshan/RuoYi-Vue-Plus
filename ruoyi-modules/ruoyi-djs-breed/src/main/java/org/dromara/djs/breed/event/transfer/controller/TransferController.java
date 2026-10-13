@@ -59,9 +59,9 @@ public class TransferController extends BaseController {
     }
 
     /**
-     * 后备种母猪「转为育肥猪」（admin row162）。
+     * 种母猪「转育肥猪」（D-0150，复用 admin row162 端点）。
      *
-     * <p>猪只主表操作列入口：录转移日期 / 负责人 / 栋舍 / 栏位 → 状态 后备(HB) → 育肥(YF)、
+     * <p>猪只主表操作列确认入口：繁殖已结束且无未断奶仔猪 → 状态 育肥(YF)、
      * 类型 种母猪 → 育肥猪，并在事件台账留 {@code TRANSFER} + {@code TO_FATTEN} 两条记录。</p>
      */
     @SaCheckPermission("djs:breed:event:transfer")

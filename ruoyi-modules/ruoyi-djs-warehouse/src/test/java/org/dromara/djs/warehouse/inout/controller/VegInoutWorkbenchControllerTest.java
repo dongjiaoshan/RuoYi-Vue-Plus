@@ -2,6 +2,7 @@ package org.dromara.djs.warehouse.inout.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.validation.Validation;
 import org.dromara.djs.warehouse.inout.domain.bo.VegInFinishBo;
 import org.dromara.djs.warehouse.inout.domain.bo.VegInSubmitBo;
 import org.dromara.djs.warehouse.inout.domain.bo.VegOutWorkbenchSubmitBo;
@@ -71,6 +72,24 @@ class VegInoutWorkbenchControllerTest {
         VegOutStockVo card = new VegOutStockVo();
         when(service.outStocks(5L)).thenReturn(List.of(card));
         assertThat(controller.outStocks(5L).getData()).containsExactly(card);
+    }
+
+    @Test
+    void zeroKilogramFinishNeedsOnlyTheSelectedPlotWhileWeightSubmissionStillNeedsPerformance() {
+        try (var factory = Validation.buildDefaultValidatorFactory()) {
+            var validator = factory.getValidator();
+            VegInFinishBo finish = new VegInFinishBo();
+            assertThat(validator.validate(finish)).extracting(v -> v.getPropertyPath().toString())
+                .containsExactly("plantingRecordId");
+            finish.setPlantingRecordId(501L);
+            assertThat(validator.validate(finish)).isEmpty();
+
+            VegInSubmitBo submit = new VegInSubmitBo();
+            submit.setPlantingRecordId(501L);
+            submit.setWeight(new java.math.BigDecimal("1.000"));
+            assertThat(validator.validate(submit)).extracting(v -> v.getPropertyPath().toString())
+                .contains("teamIds", "perfPercent");
+        }
     }
 
     @Test

@@ -113,8 +113,8 @@ public class VegInoutWorkbenchService {
     /** 处理完成：0 kg + 地块称重完成，种植采收未完成 / 已收口由采摘录入入口拒绝。 */
     public Long finishIn(VegInFinishBo bo) {
         requirePlot(bo.getPlantingRecordId());
-        HarvestSubmitBo harvest = harvest(bo.getPlantingRecordId(), requireTeams(bo.getTeamIds()),
-            requirePercent(bo.getPerfPercent()));
+        // 0 kg 只收口称重状态，不产生班组绩效；沿用采摘录入对空班组 / 默认绩效的处理。
+        HarvestSubmitBo harvest = harvest(bo.getPlantingRecordId(), List.of(), null);
         harvest.setHarvestWeight(BigDecimal.ZERO);
         harvest.setWeighFinish(1);
         return vegHandleService.submitHarvest(harvest);
