@@ -720,6 +720,17 @@ public class StoreReturnServiceImpl
     }
 
     /**
+     * D-0152：其他分组的门店退回按原材料 kg 实际称重，不按退回件数或计量比例封顶。
+     * 分类沿用退回操作的兜底分组；单位退回新增及其历史行仍执行原换算规则。
+     */
+    private static boolean unlimitedConfirmWeight(StoreReturn record, ProductInfo product, String metricUnit) {
+        return record != null && DIRECTION_STORE_TO_WAREHOUSE.equals(record.getReturnDirection())
+            && !RETURN_TYPE_UNIT.equals(record.getReturnType())
+            && product != null && RETURN_TAB_OTHER.equals(returnTabOf(product.getBelongType()))
+            && isKgUnit(metricUnit);
+    }
+
+    /**
      * 该产品能否「退回入库」（甲方 row24 第 2 点）。
      *
      * <p>不能的唯一情形：**生产产品（{@code product_attr=1}）却没配原材料**。仓库只存原材料，
@@ -1445,7 +1456,11 @@ public class StoreReturnServiceImpl
         if (product == null) {
             return;
         }
-        boolean weightMetric = isKgUnit(resolveMetricUnit(product));
+        String metricUnit = resolveMetricUnit(product);
+        if (unlimitedConfirmWeight(existing, product, metricUnit)) {
+            return;
+        }
+        boolean weightMetric = isKgUnit(metricUnit);
         BigDecimal cap = weightMetric ? maxConfirmWeight(existing, product)
             : maxConfirmQty(existing.getReturnQuantity(), product);
         if (weightMetric && (cap == null || cap.signum() <= 0)) {
@@ -1982,8 +1997,10 @@ public class StoreReturnServiceImpl
             String metricUnit = p == null ? null : metricUnits.get(p.getId());
             vo.setMaterialUnit(metricUnit);
             vo.setMaterialNum(materialRatio(p));
-            // 确认上限与默认折料量分开：kg 可多 20%，件数仍按原退回量折料封顶。
-            vo.setMaxConfirmQty(isKgUnit(metricUnit) ? maxConfirmWeight(r, p)
+            boolean unlimitedWeight = unlimitedConfirmWeight(r, p, metricUnit);
+            vo.setUnlimitedConfirmWeight(unlimitedWeight);
+            // 上限与默认折料量分开：其他kg实际称重不封顶，其余kg可多20%，件数仍按退回量折料封顶。
+            vo.setMaxConfirmQty(unlimitedWeight ? null : isKgUnit(metricUnit) ? maxConfirmWeight(r, p)
                 : maxConfirmQty(r.getReturnQuantity(), p));
             vo.setInReturnList(p != null && returnListIds.contains(p.getId()));
             vo.setCanInbound(canInbound(p));
@@ -2057,7 +2074,10 @@ public class StoreReturnServiceImpl
             vo.setMaterialNum(materialRatio(p));
             vo.setInReturnList(p != null && returnListIds.contains(p.getId()));
             vo.setCanInbound(canInbound(p));
-            vo.setCanConvert(canConvert(p, metricUnit));
+            boolean unlimitedWeight = unlimitedConfirmWeight(r, p, metricUnit);
+            vo.setUnlimitedConfirmWeight(unlimitedWeight);
+            // 实际称重不依赖固定计量比例；缺原材料仍由canInbound单独阻断，单位新增不走此分支。
+            vo.setCanConvert(unlimitedWeight || canConvert(p, metricUnit));
             vo.setReturnQuantity(r.getReturnQuantity());
             vo.setReturnWeight(r.getGoodsWeight());
             vo.setReceivedQty(r.getReceivedQty());

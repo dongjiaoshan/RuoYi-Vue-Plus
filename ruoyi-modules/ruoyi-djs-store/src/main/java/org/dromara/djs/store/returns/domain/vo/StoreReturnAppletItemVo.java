@@ -73,9 +73,13 @@ public class StoreReturnAppletItemVo implements Serializable {
      * 件数口径为 {@code returnQuantity × materialNum}；kg 口径为默认折料重量的 120%，向下保留三位。
      * 默认量独立按退回产品量折料计算，不能拿放宽后的上限预填。
      *
-     * <p>无有效退回量且没有申报重量时 kg 上限为空，确认入口拒绝正重量入库。</p>
+     * <p>{@link #unlimitedConfirmWeight} 为 true 时上限为空，按实际重量确认；其余 kg 行无有效退回量且
+     * 没有申报重量时上限也为空，但确认入口拒绝正重量入库，不能仅凭 null 推断不封顶。</p>
      */
     private BigDecimal maxConfirmQty;
+
+    /** 门店退回确认中，其他分组且原材料单位为KG/公斤时按实际称重，不设退回量折算的业务上限。 */
+    private Boolean unlimitedConfirmWeight;
 
     /**
      * 该产品是否配在字典「退回产品清单」{@code djs_return_product_list} 里（V6-R214）。

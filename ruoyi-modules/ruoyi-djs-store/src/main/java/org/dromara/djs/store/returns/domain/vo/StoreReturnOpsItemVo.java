@@ -20,7 +20,7 @@ import java.util.List;
  *       kg → 三位小数；非 kg → 最多一位小数（{@link #inReturnList} 不影响精度）</li>
  *   <li>{@link #materialNum}（计量规则）→ 提交前把「退回单位量」换算回原材料量
  *       （与 mp {@code toConfirmWeight} 同一套算法，否则同一张单 admin 与 mp 会写出两个数）</li>
- *   <li>{@link #canConvert} → 单位为「份 → kg」但没配计量规则时锁行（瞎猜会把 3 只记成 3 kg 进库存）</li>
+ *   <li>{@link #canConvert} → 缺计量规则时锁行；{@link #unlimitedConfirmWeight} 的实际称重行无需固定比例</li>
  *   <li>{@link #canInbound} → 成品缺原材料时锁死「产品丢弃」</li>
  *   <li>{@link #defaultLocationId} / {@link #locationOptions} → 入库库位下拉（猪肉只给鲜品库 / 冻品库）</li>
  * </ul>
@@ -76,8 +76,11 @@ public class StoreReturnOpsItemVo implements Serializable {
     /** 能否退回入库（成品没配原材料 → 只能丢弃）。 */
     private Boolean canInbound;
 
-    /** 能否做单位换算（false → 前端锁行，后端也拒）。 */
+    /** 能否确认当前计量口径（false → 前端锁行；其他KG实际称重无需固定计量比例）。 */
     private Boolean canConvert;
+
+    /** 门店退回确认中，其他分组且原材料单位为KG/公斤时按实际称重，不设退回量折算的业务上限。 */
+    private Boolean unlimitedConfirmWeight;
 
     /** 退回量（按 productUnit）。 */
     private BigDecimal returnQuantity;
