@@ -201,6 +201,12 @@ public class StoreReturnServiceImpl
     private static final String PORK_FRESH_LOCATION_NAME = "猪肉鲜品库";
     private static final String FROZEN_LOCATION_NAME = "冻品库";
 
+    /** 果蔬门店退回确认的默认入库库位（毛菜保鲜室），按业务码解析实际主键。 */
+    private static final String FRESH_VEG_LOCATION_CODE = "L0006";
+
+    /** 仓库原材料重量最多比退回量折算重量多 20%（D-0151）。 */
+    private static final BigDecimal CONFIRM_WEIGHT_FACTOR = new BigDecimal("1.2");
+
     /** 业务日时区（与项目其余「今日」口径一致，避免 DB CURDATE() 时区雷）。 */
     private static final ZoneId ZONE_SHANGHAI = ZoneId.of("Asia/Shanghai");
 
@@ -697,6 +703,20 @@ public class StoreReturnServiceImpl
             return null;
         }
         return returnQuantity.multiply(materialRatio(p)).setScale(3, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * 原材料 kg 确认上限：原默认量 × 120%，向下保留三位，保证不因四舍五入超过 20%。
+     * 退回量按产品单位折料；没有正退回量时才回落门店申报重量。无有效基数返回 null，由确认入口阻断。
+     */
+    static BigDecimal maxConfirmWeight(StoreReturn record, ProductInfo product) {
+        BigDecimal quantity = record.getReturnQuantity();
+        BigDecimal base = quantity != null && quantity.signum() > 0
+            ? toConfirmWeight(product, quantity) : record.getGoodsWeight();
+        if (base == null || base.signum() <= 0) {
+            return null;
+        }
+        return base.multiply(CONFIRM_WEIGHT_FACTOR).setScale(3, RoundingMode.DOWN);
     }
 
     /**
@@ -1344,48 +1364,8 @@ public class StoreReturnServiceImpl
             throw new ServiceException("该退回记录已确认入库，请勿重复确认", 400);
         }
 
-        // row35：仓库称重上限校验。仓库确认页录入的实收（receivedWeight，缺省回退 receivedQty）不得离谱：
-        //   · 产品单位 = kg：录的是重量 → ≤ 门店录入重量（goods_weight）的一倍；
-        //   · 产品单位 ≠ kg 且**原材料单位 = kg**：录的仍是重量（如 80g 干货礼盒录 0.080）
-        //     → ≤ 当天到店该产品总重量（sumDeliveredWeightToStore，kg）；
-        //   · 产品单位 ≠ kg 且**原材料单位 ≠ kg**：录的是<b>件数</b>（枚 / 份，row13）→ 与 kg 到店重不同量纲，
-        //     不能拿到店重量比（30 枚礼盒录 30、到店重按 kg 算只有几公斤，一比就误伤）。
-        //     row24 甲方给了本量纲下的算法：上限 = 门店退回量 × 计量规则(material_num)，即
-        //     「退了几件成品 × 每件折算多少原材料」。mp 侧同一个数做输入上限，这里复核，两边同源。
-        // 兜底放行：取不到到店重 / 门店录入重（0 或空）时不拦（避免历史数据/跨日确认误伤合法退货）。
         ProductInfo returnProduct = productInfoMapper.selectById(existing.getProductId());
-        BigDecimal weighed = bo.getReceivedWeight() != null ? bo.getReceivedWeight()
-            : (bo.getReceivedQty() != null ? bo.getReceivedQty() : BigDecimal.ZERO);
-        if (returnProduct != null && weighed.signum() > 0) {
-            if (isKgUnit(returnProduct.getProductUnit())) {
-                BigDecimal storeEntered = existing.getGoodsWeight();
-                if (storeEntered != null && storeEntered.signum() > 0 && weighed.compareTo(storeEntered) > 0) {
-                    throw new ServiceException("仓库称重重量(" + weighed.toPlainString()
-                        + "kg)不能超过门店录入重量(" + storeEntered.toPlainString() + "kg)", 400);
-                }
-            } else if (isKgUnit(resolveMetricUnit(returnProduct))) {
-                LocalDate arriveDate = existing.getReturnDate() != null
-                    ? existing.getReturnDate().toLocalDate() : LocalDate.now(ZONE_SHANGHAI);
-                BigDecimal arrivedTotal = productProductionMapper.sumDeliveredWeightToStore(
-                    existing.getStoreId(), existing.getProductId(), arriveDate);
-                if (arrivedTotal != null && arrivedTotal.signum() > 0 && weighed.compareTo(arrivedTotal) > 0) {
-                    throw new ServiceException("仓库称重重量(" + weighed.toPlainString()
-                        + "kg)不能超过该产品当天到店总重量(" + arrivedTotal.toPlainString() + "kg)", 400);
-                }
-            } else {
-                // 件数口径（row24）：上限 = 退回量 × 计量规则
-                BigDecimal cap = maxConfirmQty(existing.getReturnQuantity(), returnProduct);
-                if (cap != null && weighed.compareTo(cap) > 0) {
-                    String unit = StringUtils.isBlank(returnProduct.getProductUnit()) ? "" : returnProduct.getProductUnit();
-                    // row33：件数口径下 mp 那一格的标题已改叫「仓库接收量」，报错文案跟着叫同一个名字——
-                    // 工人在标着「仓库接收量」的框里填数，弹出来却说「仓库实收数量」会以为是另一个字段。
-                    throw new ServiceException("仓库接收量(" + weighed.stripTrailingZeros().toPlainString()
-                        + ")不能超过可退上限(" + cap.stripTrailingZeros().toPlainString() + ")：门店退回 "
-                        + existing.getReturnQuantity().stripTrailingZeros().toPlainString() + unit
-                        + " × 计量规则 " + materialRatio(returnProduct).stripTrailingZeros().toPlainString(), 400);
-                }
-            }
-        }
+        assertWithinConfirmLimit(existing, returnProduct, bo);
 
         // row24 第 2 点：生产产品没配原材料 → 只能丢弃，不能退回仓库（仓库只存原材料，无从确定入哪个料的库存）
         if (!DISCARD_YES.equals(bo.getIsDiscard()) && !canInbound(returnProduct)) {
@@ -1402,9 +1382,12 @@ public class StoreReturnServiceImpl
             // 入库目标产品：配了 product_material 的成品(果蔬/猪肉)→原材料 product_material（缺料阻断），
             // 本身即原材料(白条字典 kg 产品/外购原料)→按产品ID入库（邓博 2026-07-16：退回入库都是原材料）。
             inboundProductId = resolveInboundProductId(existing.getProductId());
-            // 入库库位：前端显式选优先；mp 确认页只填实收量不选库位 → 按入库产品预设库位 / 库存最多库位兜底；
-            // 仍无 → 阻断（不做「只写流水不增库存」的库存黑洞，提示运营先补库位）。
-            locationId = bo.getLocationId() != null ? bo.getLocationId() : resolveDefaultLocation(inboundProductId);
+            // 显式选择优先；门店果蔬退回默认毛菜保鲜室，其余仍按入库产品预设库位 / 库存最多兜底。
+            locationId = bo.getLocationId();
+            if (locationId == null) {
+                locationId = isVegetableStoreReturn(existing, returnProduct)
+                    ? requireFreshVegReturnLocation().getId() : resolveDefaultLocation(inboundProductId);
+            }
             // row145.3：猪肉退货指定入库库位（鲜品库/冻品库，整单一次选，仅 pork 生效——白条不分流，Kevin 口径）
             if (StringUtils.isNotBlank(bo.getTargetLocationType()) && isPorkProduct(existing.getProductId())) {
                 Long porkLoc = resolveReturnLocationByType(bo.getTargetLocationType());
@@ -1455,6 +1438,43 @@ public class StoreReturnServiceImpl
         log.info("[STORE-RETURN-UNIFY-001] confirm id={} no={} location={} receivedQty={} inboundProduct={} → received 联动入库",
             bo.getId(), existing.getReturnNo(), locationId, bo.getReceivedQty(), inboundProductId);
         return rows;
+    }
+
+    /** 同时校验实际入库量及可选实收重量，不能以小重量掩盖超限的入库数量。 */
+    private void assertWithinConfirmLimit(StoreReturn existing, ProductInfo product, StoreReturnConfirmBo bo) {
+        if (product == null) {
+            return;
+        }
+        boolean weightMetric = isKgUnit(resolveMetricUnit(product));
+        BigDecimal cap = weightMetric ? maxConfirmWeight(existing, product)
+            : maxConfirmQty(existing.getReturnQuantity(), product);
+        if (weightMetric && (cap == null || cap.signum() <= 0)) {
+            // 丢弃空量仍可收口；没有基数时不能确认任何正重量，更不能凭空入库。
+            if (DISCARD_YES.equals(bo.getIsDiscard())
+                && (bo.getReceivedQty() == null || bo.getReceivedQty().signum() == 0)
+                && (bo.getReceivedWeight() == null || bo.getReceivedWeight().signum() == 0)) {
+                return;
+            }
+            throw new ServiceException("原退回量或折算重量没有有效正值，请检查原退回量及计量规则后再确认", 400);
+        }
+        if (cap == null) {
+            return;
+        }
+        for (BigDecimal actual : new BigDecimal[]{bo.getReceivedQty(), bo.getReceivedWeight()}) {
+            if (actual == null || actual.compareTo(cap) <= 0) {
+                continue;
+            }
+            if (weightMetric) {
+                throw new ServiceException("仓库称重重量(" + actual.stripTrailingZeros().toPlainString()
+                    + "kg)不能超过退回折算重量的120%（最多"
+                    + cap.stripTrailingZeros().toPlainString() + "kg）", 400);
+            }
+            String unit = StringUtils.isBlank(product.getProductUnit()) ? "" : product.getProductUnit();
+            throw new ServiceException("仓库接收量(" + actual.stripTrailingZeros().toPlainString()
+                + ")不能超过可退上限(" + cap.stripTrailingZeros().toPlainString() + ")：门店退回 "
+                + existing.getReturnQuantity().stripTrailingZeros().toPlainString() + unit
+                + " × 计量规则 " + materialRatio(product).stripTrailingZeros().toPlainString(), 400);
+        }
     }
 
     @Override
@@ -1961,9 +1981,10 @@ public class StoreReturnServiceImpl
             vo.setProductUnit(p == null ? null : p.getProductUnit());
             String metricUnit = p == null ? null : metricUnits.get(p.getId());
             vo.setMaterialUnit(metricUnit);
-            // row24：件数口径才给上限（= 退回量 × 计量规则）；kg 口径由重量分支另行封顶，给了反而误导
             vo.setMaterialNum(materialRatio(p));
-            vo.setMaxConfirmQty(isKgUnit(metricUnit) ? null : maxConfirmQty(r.getReturnQuantity(), p));
+            // 确认上限与默认折料量分开：kg 可多 20%，件数仍按原退回量折料封顶。
+            vo.setMaxConfirmQty(isKgUnit(metricUnit) ? maxConfirmWeight(r, p)
+                : maxConfirmQty(r.getReturnQuantity(), p));
             vo.setInReturnList(p != null && returnListIds.contains(p.getId()));
             vo.setCanInbound(canInbound(p));
             vo.setProductSpec(p == null ? null : p.getProductSpec());
@@ -2048,7 +2069,7 @@ public class StoreReturnServiceImpl
             vo.setOperatorId(r.getOperatorId());
             vo.setConfirmUserId(r.getConfirmUserId());
             vo.setConfirmTime(r.getConfirmTime());
-            LocationChoice choice = resolveLocationChoice(p, productById, enabledLocations);
+            LocationChoice choice = resolveConfirmLocationChoice(r, p, productById, enabledLocations);
             vo.setDefaultLocationId(choice.defaultLocationId());
             vo.setLocationOptions(choice.options());
             result.add(vo);
@@ -2234,6 +2255,49 @@ public class StoreReturnServiceImpl
 
     // ---------- private helpers ----------
 
+    /** 门店果蔬退回确认使用毛菜保鲜室；单位退回新增继续使用原有产品库位规则。 */
+    private static boolean isVegetableStoreReturn(StoreReturn record, ProductInfo product) {
+        return !RETURN_TYPE_UNIT.equals(record.getReturnType())
+            && product != null && BELONG_TYPE_VEGETABLE.equals(product.getBelongType());
+    }
+
+    /** 果蔬确认专用默认库位；不存在或停用时阻断，避免静默落到其他库位。 */
+    private LocationInfo requireFreshVegReturnLocation() {
+        LocationInfo location = locationInfoMapper.selectOne(new LambdaQueryWrapper<LocationInfo>()
+            .eq(LocationInfo::getLocationCode, FRESH_VEG_LOCATION_CODE)
+            .last("LIMIT 1"));
+        if (location == null) {
+            throw new ServiceException("毛菜保鲜室（库位编码 " + FRESH_VEG_LOCATION_CODE
+                + "）不存在，请先在库位管理维护", 400);
+        }
+        if (!LOCATION_STATUS_ENABLED.equals(location.getLocationStatus())) {
+            throw new ServiceException("毛菜保鲜室（库位编码 " + FRESH_VEG_LOCATION_CODE
+                + "）已停用，请先在库位管理启用", 400);
+        }
+        return location;
+    }
+
+    /** 待确认门店果蔬行的默认库位及候选保持一致，历史行和单位退回不改。 */
+    private LocationChoice resolveConfirmLocationChoice(StoreReturn record, ProductInfo product,
+                                                        Map<Long, ProductInfo> productById,
+                                                        Map<Long, LocationPickerVo> enabledLocations) {
+        LocationChoice choice = resolveLocationChoice(product, productById, enabledLocations);
+        if (STATUS_RECEIVED.equals(record.getReturnStatus()) || !isVegetableStoreReturn(record, product)) {
+            return choice;
+        }
+        Long freshId = requireFreshVegReturnLocation().getId();
+        LocationPickerVo fresh = enabledLocations.get(freshId);
+        if (fresh == null) {
+            throw new ServiceException("毛菜保鲜室（库位编码 " + FRESH_VEG_LOCATION_CODE
+                + "）当前不可用，请刷新后重试", 400);
+        }
+        List<LocationPickerVo> options = new ArrayList<>(choice.options());
+        if (options.stream().noneMatch(option -> freshId.equals(option.getId()))) {
+            options.add(0, fresh);
+        }
+        return new LocationChoice(freshId, options);
+    }
+
     /**
      * 入库库位候选（默认值 + 下拉选项），STR-RETURN-OPS-001。
      *
@@ -2347,11 +2411,9 @@ public class StoreReturnServiceImpl
     }
 
     /**
-     * 退回单位量 → 原材料量（admin 侧 {@code metric.ts#toConfirmWeight} 的 Java 等价物）。
+     * 退回产品量 → 原材料量，用于单位退回新增与仓库确认的默认重量基数。
      *
-     * <p>mp 确认页界面按**退回单位**录，提交前乘 {@code material_num} 换算回原材料量再落
-     * {@code received_weight}。admin 抽屉 / 单位退回新增必须用同一套换算，否则同一张单
-     * admin 处理与 mp 处理会写出两个数（验收 §3 第 5 条）。</p>
+     * <p>仓库确认界面已经按原材料单位录入，实际确认量直接提交，不再调用本方法重复折料。</p>
      *
      * <p>kg 行 {@code material_num} 恒为 1（退回单位就是原材料单位），乘完等于原值；结果保留 3 位
      * （后端列是 DECIMAL(12,3)，不裁会被 MySQL 静默四舍五入）。</p>

@@ -69,11 +69,11 @@ public class StoreReturnAppletItemVo implements Serializable {
     private BigDecimal materialNum;
 
     /**
-     * 「仓库称重」可录上限（甲方 row24）—— 仅**件数口径**（{@link #materialUnit} ≠ kg）时有值：
-     * {@code = returnQuantity × materialNum}（门店退了几件 × 每件折算多少原材料）。
-     * mp 用它做输入上限 + 默认值；后端 {@code confirm} 用同一个数复核。
+     * 仓库确认可录上限，单位为 {@link #materialUnit}。
+     * 件数口径为 {@code returnQuantity × materialNum}；kg 口径为默认折料重量的 120%，向下保留三位。
+     * 默认量独立按退回产品量折料计算，不能拿放宽后的上限预填。
      *
-     * <p>kg 口径为 {@code null}：重量分支的上限另有规则（门店录入重量 / 当天到店总重）。</p>
+     * <p>无有效退回量且没有申报重量时 kg 上限为空，确认入口拒绝正重量入库。</p>
      */
     private BigDecimal maxConfirmQty;
 
