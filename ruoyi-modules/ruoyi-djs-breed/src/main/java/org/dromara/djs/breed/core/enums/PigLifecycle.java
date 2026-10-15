@@ -33,7 +33,7 @@ public enum PigLifecycle {
     /** 返情：配种后返情。 */
     FQ("返情"),
     /**
-     * 育肥：后备种母猪转为育肥猪后的状态（admin row162）。
+     * 育肥：种母猪永久转为育肥猪后的状态（D-0150）。
      *
      * <p>非终态但也非繁殖态 —— 转育肥后 pig_type 已切成 fattening，不再参与繁殖事件；
      * SIMPLE / COMPLEX 里没有任何以 YF 为 from 的繁殖 transition，故 BREED/FARROW/... 会被拒；
@@ -48,5 +48,10 @@ public enum PigLifecycle {
     /** 终态判定（END 后不允许再 fireEvent）。 */
     public boolean isTerminal() {
         return this == END;
+    }
+
+    /** D-0150：繁殖已结束的状态才允许转育肥；仍有未断奶仔猪时由 service 再拦截。 */
+    public boolean allowsToFatten() {
+        return this == HB || this == DN || this == LC || this == KH || this == FQ;
     }
 }

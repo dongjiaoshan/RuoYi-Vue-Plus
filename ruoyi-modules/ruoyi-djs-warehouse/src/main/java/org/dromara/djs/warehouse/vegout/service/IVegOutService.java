@@ -39,6 +39,18 @@ public interface IVegOutService {
     String submit(VegOutSubmitBo bo, boolean asBatch);
 
     /**
+     * 果蔬出库管理工作台出库（V6 row283）。
+     *
+     * <p>记账与 {@link #submit}（{@code asBatch=false}）完全同一套：库存篮先进先出扣减 +
+     * {@code backstage_out} 出库流水（回写地块 / 耳号 / 单价快照）+ 果蔬月台 / 猪只饲料的下游台账。
+     * 差别只在货源范围：甲方要求「显示库存里的果蔬产品，此时不区分库位」，所以不套毛菜间出库的
+     * 六库位白名单，只要求产品业态为果蔬（{@code vegetable}）。不生成出库单号。</p>
+     *
+     * @param bo 出库内容（工作台一次只出一个库存组）
+     */
+    void submitVegetableOut(VegOutSubmitBo bo);
+
+    /**
      * 出库单列表（row187，按 batch_no 聚合）。
      */
     TableDataInfo<VegOutBatchVo> queryBatchPage(VegOutQuery query, PageQuery pageQuery);

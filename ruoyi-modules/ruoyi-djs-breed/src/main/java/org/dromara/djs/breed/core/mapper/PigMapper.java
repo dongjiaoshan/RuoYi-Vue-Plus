@@ -5,6 +5,8 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
+import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
+import org.dromara.djs.breed.event.weaning.mapper.PigWeaningMapper;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.vo.BoarMatingCountVo;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
@@ -20,6 +22,35 @@ import java.util.List;
  * 猪只信息 Mapper（BRD-CORE-001）。
  */
 public interface PigMapper extends BaseMapperPlus<Pig, PigVo> {
+
+    /** 未建仔猪档案老窝的逐头已断奶数：按出生窝归属，寄养到其它母猪名下的也算回生母窝。 */
+    String ANONYMOUS_LITTER_WEANED_DETAILS = "(SELECT COUNT(*) FROM t_farm_pig_weaning_detail wd"
+        + " JOIN t_farm_pig_weaning w ON w.id = wd.weaning_id AND w.tenant_id = wd.tenant_id AND w.del_flag = '0'"
+        + " WHERE wd.del_flag = '0' AND wd.tenant_id = f.tenant_id"
+        + " AND (wd.birth_farrow_id = f.id OR (wd.birth_farrow_id IS NULL AND w.farrow_id = f.id)))";
+
+    /** 没有逐头明细的历史汇总才退回断奶头数；有明细时不再扣一次汇总，寄养进来的头数也不混扣。 */
+    String ANONYMOUS_LITTER_WEANED_SUMMARIES = "(SELECT COALESCE(SUM(w.weaned_count), 0) FROM t_farm_pig_weaning w"
+        + " WHERE w.farrow_id = f.id AND w.tenant_id = f.tenant_id AND w.del_flag = '0'"
+        + " AND NOT EXISTS (SELECT 1 FROM t_farm_pig_weaning_detail wd"
+        + " WHERE wd.weaning_id = w.id AND wd.tenant_id = w.tenant_id AND wd.del_flag = '0'))";
+
+    /** 哺乳死淘数是窝级累计事实，不与已断奶头数混用。 */
+    String LITTER_LACTATION_DEATHS = "(SELECT COALESCE(SUM(w.lactation_death_count), 0) FROM t_farm_pig_weaning w"
+        + " WHERE w.farrow_id = f.id AND w.tenant_id = f.tenant_id AND w.del_flag = '0')";
+
+    /**
+     * 母猪所有窝中仍未断奶的仔猪头数（D-0150）。
+     * 逐头判据与分批断奶/寄养共用；零档案老窝按活产减去本窝已断奶和哺乳死淘，部分断奶也须拦截。
+     */
+    @Select("SELECT COALESCE(SUM(CASE WHEN " + PigFarrowMapper.NO_PIGLET_ARCHIVE
+        + " THEN GREATEST(COALESCE(f.live_born, 0) - " + ANONYMOUS_LITTER_WEANED_DETAILS
+        + " - " + ANONYMOUS_LITTER_WEANED_SUMMARIES + " - " + LITTER_LACTATION_DEATHS + ", 0)"
+        + " ELSE " + PigWeaningMapper.UNWEANED_PIGLET_COUNT + " END), 0)"
+        + " FROM t_farm_pig_farrow f"
+        + " JOIN t_farm_pig_info sow ON sow.id = f.pig_id AND sow.tenant_id = f.tenant_id AND sow.del_flag = '0'"
+        + " WHERE f.pig_id = #{pigId} AND f.del_flag = '0'")
+    int countUnweanedPigletsBySow(@Param("pigId") Long pigId);
 
     /**
      * 取同<b>出生日段</b>（{@code yyMMdd}，如 {@code 260508}）现存耳号的最大序号（ADR-0011 序号源 DB max，

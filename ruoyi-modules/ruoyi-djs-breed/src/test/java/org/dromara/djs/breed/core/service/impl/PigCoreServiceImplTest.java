@@ -23,6 +23,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -32,6 +34,7 @@ import org.springframework.context.ApplicationEventPublisher;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -607,6 +610,89 @@ class PigCoreServiceImplTest {
         assertThat(pigCaptor.getValue().getStatusStartedAt()).isEqualTo(today.atStartOfDay());
     }
 
+    @ParameterizedTest
+    @EnumSource(value = PigLifecycle.class, names = {"HB", "DN", "LC", "KH", "FQ"})
+    @DisplayName("D-0150：安全状态转育肥，保留胎次、配种关联、位置及类型变更历史")
+    void fireEvent_toFatten_keepsReproductionHistory(PigLifecycle status) {
+        Pig pig = mkSow(204L, status);
+        pig.setParity(3);
+        pig.setMatingId(9020L);
+        pig.setBarnId(1L);
+        pig.setPenId(10L);
+        when(pigMapper.selectById(204L)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(204L);
+        bo.setEventType(PigStatusEvent.TO_FATTEN);
+        bo.setPayload(Map.of("newPigType", "fattening"));
+
+        service.fireEvent(bo);
+
+        verify(pigMapper).countUnweanedPigletsBySow(204L);
+        assertThat(pig.getPigType()).isEqualTo("fattening");
+        assertThat(pig.getCurrentStatus()).isEqualTo("YF");
+        assertThat(pig.getParity()).isEqualTo(3);
+        assertThat(pig.getMatingId()).isEqualTo(9020L);
+        assertThat(pig.getBarnId()).isEqualTo(1L);
+        assertThat(pig.getPenId()).isEqualTo(10L);
+        ArgumentCaptor<PigStatusRecord> record = ArgumentCaptor.forClass(PigStatusRecord.class);
+        verify(statusRecordMapper).insert(record.capture());
+        assertThat(record.getValue().getOldStatus()).isEqualTo(status.name());
+        assertThat(record.getValue().getNewStatus()).isEqualTo("YF");
+        assertThat(record.getValue().getOldPigType()).isEqualTo("sow");
+        assertThat(record.getValue().getNewPigType()).isEqualTo("fattening");
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = PigLifecycle.class, names = {"HB", "DN", "LC", "KH", "FQ"})
+    @DisplayName("D-0150：任一可转换状态仍有未断奶仔猪，直调核心事件也拒绝且无写入")
+    void fireEvent_toFatten_rejectsPartlyWeanedSow(PigLifecycle status) {
+        Pig pig = mkSow(205L, status);
+        when(pigMapper.selectById(205L)).thenReturn(pig);
+        when(pigMapper.countUnweanedPigletsBySow(205L)).thenReturn(2);
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(205L);
+        bo.setEventType(PigStatusEvent.TO_FATTEN);
+        bo.setPayload(Map.of("newPigType", "fattening"));
+
+        assertThatThrownBy(() -> service.fireEvent(bo)).isInstanceOf(ServiceException.class)
+            .hasMessageContaining("未断奶仔猪");
+
+        verify(statusRecordMapper, never()).insert(any(PigStatusRecord.class));
+        verify(pigMapper, never()).updateById(any(Pig.class));
+        assertThat(pig.getPigType()).isEqualTo("sow");
+        assertThat(pig.getCurrentStatus()).isEqualTo(status.name());
+    }
+
+    @Test
+    @DisplayName("D-0150：伪造TRANSFER不能绕过种母猪转育肥安全校验")
+    void fireEvent_transferCannotConvertSowToFattening() {
+        when(pigMapper.selectById(206L)).thenReturn(mkSow(206L, PigLifecycle.PZ));
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(206L);
+        bo.setEventType(PigStatusEvent.TRANSFER);
+        bo.setPayload(Map.of("newPigType", "fattening"));
+
+        assertThatThrownBy(() -> service.fireEvent(bo)).isInstanceOf(ServiceException.class)
+            .hasMessageContaining("请使用转育肥操作");
+        verify(statusRecordMapper, never()).insert(any(PigStatusRecord.class));
+        verify(pigMapper, never()).updateById(any(Pig.class));
+    }
+
+    @Test
+    @DisplayName("D-0150：TO_FATTEN必须改为育肥类型，不接受缺失或伪造目标类型")
+    void fireEvent_toFattenRequiresFatteningTarget() {
+        when(pigMapper.selectById(207L)).thenReturn(mkSow(207L, PigLifecycle.HB));
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(207L);
+        bo.setEventType(PigStatusEvent.TO_FATTEN);
+        bo.setPayload(Map.of("newPigType", "sow"));
+
+        assertThatThrownBy(() -> service.fireEvent(bo)).isInstanceOf(ServiceException.class)
+            .hasMessageContaining("仅允许种母猪转为育肥猪");
+        verify(statusRecordMapper, never()).insert(any(PigStatusRecord.class));
+    }
+
     // ===== internalIntroToReserve（内部留种：育肥猪→种猪类型变更，FIX-BRD-PIGTYPE-001）=====
 
     private Pig mkFattening(Long id, String sex, PigLifecycle status) {
@@ -619,6 +705,35 @@ class PigCoreServiceImplTest {
         p.setStatusStartedAt(LocalDateTime.now().minusDays(30));
         p.setVersion(0);
         return p;
+    }
+
+    @Test
+    @DisplayName("D-0150：已转育肥的YF猪不可内部留种")
+    void internalIntroToReserve_permanentlyConvertedPigRejected() {
+        when(pigMapper.selectById(208L)).thenReturn(mkFattening(208L, "F", PigLifecycle.YF));
+
+        assertThatThrownBy(() -> service.internalIntroToReserve(208L, LocalDate.now()))
+            .isInstanceOf(ServiceException.class).hasMessageContaining("不可再次留种");
+        verify(pigMapper, never()).updateById(any(Pig.class));
+        verify(statusRecordMapper, never()).insert(any(PigStatusRecord.class));
+    }
+
+    @Test
+    @DisplayName("D-0150：即使当前状态已空，TO_FATTEN历史仍永久拦截留种和伪造类型恢复")
+    void internalIntroToReserve_conversionHistoryCannotBeBypassedByCurrentStatus() {
+        when(pigMapper.selectById(209L)).thenReturn(mkFattening(209L, "F", null));
+        when(statusRecordMapper.hasToFattenHistory(209L)).thenReturn(true);
+
+        assertThatThrownBy(() -> service.internalIntroToReserve(209L, LocalDate.now()))
+            .isInstanceOf(ServiceException.class).hasMessageContaining("不可再次留种");
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(209L);
+        bo.setEventType(PigStatusEvent.TRANSFER);
+        bo.setPayload(Map.of("newPigType", "sow"));
+        assertThatThrownBy(() -> service.fireEvent(bo)).isInstanceOf(ServiceException.class)
+            .hasMessageContaining("不可再次留种");
+        verify(pigMapper, never()).updateById(any(Pig.class));
+        verify(statusRecordMapper, never()).insert(any(PigStatusRecord.class));
     }
 
     @Test

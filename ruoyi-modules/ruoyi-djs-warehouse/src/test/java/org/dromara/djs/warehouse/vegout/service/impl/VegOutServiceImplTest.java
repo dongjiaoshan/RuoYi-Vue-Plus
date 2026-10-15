@@ -1070,4 +1070,78 @@ class VegOutServiceImplTest {
         assertThat(cap.getValue().getStockIds()).containsExactly(2L);
         assertThat(cap.getValue().getQuantity()).isEqualByComparingTo("5.000");
     }
+
+    /** 蔬菜保鲜库 L0003：毛菜间出库白名单之外、果蔬出库工作台之内的库位。 */
+    private LocationStock shelfStock(Long id) {
+        LocationStock s = mkStock(id, 10L, null);
+        s.setLocationId(30003L);
+        LocationInfo shelf = new LocationInfo();
+        shelf.setId(30003L);
+        shelf.setLocationCode("L0003");
+        when(locationInfoMapper.selectById(30003L)).thenReturn(shelf);
+        when(locationStockMapper.selectById(id)).thenReturn(s);
+        return s;
+    }
+
+    @Test
+    @DisplayName("row283 工作台：蔬菜保鲜库的果蔬可出库，猪养殖饲料同时写有机饲喂记录（位置=仓库）")
+    void workbench_feedFromShelfWritesFlowAndFeedLog() {
+        shelfStock(1L);
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+        when(cropInfoMapper.selectOne(any())).thenReturn(null);
+
+        service.submitVegetableOut(mkBo("feed", 1L, "2.500"));
+
+        ArgumentCaptor<org.dromara.djs.warehouse.stock.domain.bo.StockOutBo> out =
+            ArgumentCaptor.forClass(org.dromara.djs.warehouse.stock.domain.bo.StockOutBo.class);
+        verify(locationStockService).productOut(out.capture());
+        assertThat(out.getValue().getStockIds()).containsExactly(1L);
+        assertThat(out.getValue().getStockOutDest()).isEqualTo("feed");
+        assertThat(out.getValue().getQuantity()).isEqualByComparingTo("2.5");
+        ArgumentCaptor<FeedLog> fc = ArgumentCaptor.forClass(FeedLog.class);
+        verify(feedLogMapper).insert(fc.capture());
+        assertThat(fc.getValue().getFeedWeight()).isEqualByComparingTo("2.5");
+        assertThat(fc.getValue().getFeedType()).isEqualTo("warehouse");
+        assertThat(fc.getValue().getProductId()).isEqualTo(10L);
+        verify(bizCodeGenerator, never()).generate(any(), any());
+        assertNoHandleWeightColumnWritten();
+    }
+
+    @Test
+    @DisplayName("row283 工作台：仓库出库只写出库流水，不写饲喂记录")
+    void workbench_warehouseOutWritesFlowOnly() {
+        shelfStock(1L);
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+
+        service.submitVegetableOut(mkBo("kitchen", 1L, "1.000"));
+
+        verify(locationStockService).productOut(any());
+        verify(stockFlowMapper).updateById(any(StockFlow.class));
+        verify(feedLogMapper, never()).insert(any(FeedLog.class));
+    }
+
+    @Test
+    @DisplayName("row283 工作台：非果蔬业态拒绝出库")
+    void workbench_rejectsNonVegetable() {
+        shelfStock(1L);
+        ProductInfo egg = mkVegProduct(10L);
+        egg.setBelongType("egg");
+        when(productInfoMapper.selectById(10L)).thenReturn(egg);
+
+        assertThatThrownBy(() -> service.submitVegetableOut(mkBo("kitchen", 1L, "1.000")))
+            .isInstanceOf(ServiceException.class);
+        verify(locationStockService, never()).productOut(any());
+    }
+
+    @Test
+    @DisplayName("毛菜间出库的六库位白名单不受工作台影响：蔬菜保鲜库仍被拒")
+    void submit_stillRejectsShelfLocation() {
+        shelfStock(1L);
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+
+        assertThatThrownBy(() -> service.submit(mkBo("kitchen", 1L, "1.000"), false))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("毛菜鲜品库");
+        verify(locationStockService, never()).productOut(any());
+    }
 }

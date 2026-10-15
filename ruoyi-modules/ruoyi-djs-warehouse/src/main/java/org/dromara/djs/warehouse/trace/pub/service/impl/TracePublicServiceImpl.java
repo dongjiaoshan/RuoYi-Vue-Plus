@@ -1064,6 +1064,7 @@ public class TracePublicServiceImpl
             PublicTraceVo.StoreBlock storeBlock = new PublicTraceVo.StoreBlock();
             storeBlock.setName(s.getStoreName());
             storeBlock.setAddress(s.getAddress());
+            storeBlock.setManagerPhone(s.getManagerPhone());
             // 门店配图（row146）：image_oss_id 解析 URL，无图为 null（前端默认图兜底）
             storeBlock.setImageUrl(s.getImageOssId() == null
                 ? null : resolveOssUrl(String.valueOf(s.getImageOssId())));

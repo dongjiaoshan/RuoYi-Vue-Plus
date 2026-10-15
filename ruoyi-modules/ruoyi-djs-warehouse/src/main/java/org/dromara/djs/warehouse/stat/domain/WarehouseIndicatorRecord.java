@@ -40,41 +40,39 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     /** 统计日期（T-1）。 */
     private LocalDate statDate;
 
-    // ---- 屠宰 / 送宰段（送宰 cohort：bar.marketing_time / outsource_pig.slaughter_date）----
-    /** 屠宰头数（当日送宰的猪只头数 = 自养 + 外购生猪；统计送宰不是出栏，出栏在养殖模块统计）。 */
+    // ---- 猪肉段：全部按接收 cohort（燎毛间接收日 DATE(COALESCE(arrive_time, in_time))，D-0140）----
+    /** 屠宰头数（当日接收的猪只头数，自养 + 外购）。 */
     private Integer slaughterCount;
-    /** 送宰总重（当日送宰的自养猪总重 + 外购生猪总重）。 */
+    /** 送宰总重（当日接收的猪只出栏重量之和；外购取 outsource_pig.pig_weight）。 */
     private BigDecimal slaughterWeight;
     /** 送宰均重（送宰总重/屠宰头数；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgSlaughterWeight;
 
-    // ---- 称重 cohort（bar.arrive_time：当日在燎毛间完成称重的那批猪）----
-    /** 接收重量（当日燎毛间完成称重的猪只总重 = Σ bar.arrive_weight）。 */
+    /** 接收重量（当日接收的猪只接收重量之和 = Σ bar.arrive_weight）。 */
     private BigDecimal arriveWeight;
-    /** 接收均重分母：当日 burn_time 自然日内猪只耳号去重数（V6-R280）。 */
+    /** 接收均重分母：当日接收的猪只头数（≡ 屠宰头数）。 */
     private Integer arrivePigCount;
-    /** 接收均重 = 日表接收重量/当日燎毛记录耳号去重数；分母0 → null。 */
+    /** 接收均重 = 接收重量/接收头数；分母0 → null。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgArriveWeight;
-    /** 屠宰率分子（称重 cohort 里有出栏重量的那部分，Σ 到场重）。 */
+    /** 屠宰出品率分子（当日接收且有出栏重量的猪，Σ 接收重量）。 */
     private BigDecimal slaughterRateArriveWeight;
-    /** 屠宰率分母（同一部分猪的 Σ 出栏重量；自养 marketing_weight / 外购生猪 pig_weight）。 */
+    /** 屠宰出品率分母（同一批猪的 Σ 出栏重量；自养 marketing_weight / 外购生猪 pig_weight）。 */
     private BigDecimal slaughterRateBaseWeight;
-    /** 屠宰率%（屠宰率分子/屠宰率分母×100；分母 0 → null）。 */
+    /** 屠宰出品率%（分子/分母×100；分母 0 → null）。列名沿用 slaughter_rate。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal slaughterRate;
 
-    // ---- 白条段（白条入库 cohort：当日入白条库的白条产品 = 半扇 + 整只）----
-    /** 白条总重（当日入白条库的白条产品入库量之和；同时是白条均重与出品率的分子）。 */
+    /** 白条总重（当日接收的猪只白条产品重量之和，不论白条哪天入库）。 */
     private BigDecimal barTotalWeight;
-    /** 白条均重分母：当日入白条库的猪只耳号去重数（一头猪出两扇只算 1 头）。矩阵「累计」按 Σ分子/Σ分母 重算用。 */
+    /** 白条均重分母：当日接收的猪只头数（≡ 屠宰头数）。矩阵「累计」按 Σ分子/Σ分母 重算用。 */
     private Integer barPigCount;
-    /** 白条出品率分子（≡ 白条总重，月表按 Σ分子/Σ分母 重算用）。 */
+    /** 白条出品率分子（当日接收且有出栏重量的猪的白条产品重量之和，月表按 Σ分子/Σ分母 重算用）。 */
     private BigDecimal barYieldNumerWeight;
-    /** 白条出品率分母（称重 cohort ∩ 出栏重量非空子集的 Σ 出栏重量，与屠宰率同一个分母）。 */
+    /** 白条出品率分母（同一批猪的 Σ 出栏重量，与屠宰出品率同一个分母）。 */
     private BigDecimal barYieldBaseWeight;
-    /** 白条均重（白条总重/当日入白条库的猪只耳号去重数；分母 0 → null）。 */
+    /** 白条均重（白条总重/接收头数；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgBarWeight;
 

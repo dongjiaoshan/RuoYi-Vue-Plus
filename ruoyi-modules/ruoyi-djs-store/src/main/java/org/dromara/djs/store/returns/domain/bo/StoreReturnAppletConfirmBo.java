@@ -21,7 +21,7 @@ public class StoreReturnAppletConfirmBo {
     /**
      * 确认重量 / 确认数量。<b>丢弃行豁免，其余必填 &gt; 0</b>（校验见 {@link #isConfirmWeightValid()}）。
      *
-     * <p>计量口径随产品原材料单位走（row13）：原材料单位 = kg → 重量(kg)；≠ kg → 件数（枚 / 份，整数）。</p>
+     * <p>计量口径随产品原材料单位走（row13）：原材料单位 = kg → 重量(kg)；≠ kg → 件数（枚 / 份；退回量最多一位小数 × 计量规则，可带小数）。</p>
      */
     private BigDecimal confirmWeight;
 

@@ -211,6 +211,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         // from 可为 null：育肥猪 / 仔猪 / 公猪等非种母猪类型空状态（''/NULL），仍可终止 / 转栏 / 阉割。
         PigLifecycle from = resolveFrom(pig);
         PigLifecycle to = stateMachine.nextStatus(from, bo.getEventType(), pig.getPigSex(), bo.getPayload());
+        validateTypeConversion(pig, bo);
 
         LocalDateTime eventAt = Optional.ofNullable(bo.getEventAt()).orElseGet(LocalDateTime::now);
 
@@ -382,6 +383,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         if (!"fattening".equals(pig.getPigType())) {
             return;
         }
+        requireNotPermanentlyFattening(pig);
         // 终态（END）肥猪已死亡 / 出栏，不可转为种猪
         if (StringUtils.isNotBlank(pig.getCurrentStatus())
             && parseLifecycle(pig.getCurrentStatus(), pig.getId()).isTerminal()) {
@@ -1580,6 +1582,30 @@ public class PigCoreServiceImpl implements IPigCoreService {
         Map<String, Object> payload = bo.getPayload();
         Object v = payload == null ? null : payload.get("newPigType");
         return v instanceof CharSequence cs && cs.length() > 0 ? cs.toString() : null;
+    }
+
+    /** D-0150：核心事件入口也校验，直调 fireEvent 不得绕过转育肥/永久留种限制。 */
+    private void validateTypeConversion(Pig pig, PigEventBo bo) {
+        String newPigType = resolveNewPigType(bo);
+        if (bo.getEventType() == TO_FATTEN) {
+            if (!"sow".equals(pig.getPigType()) || !"fattening".equals(newPigType)) {
+                throw new ServiceException("转育肥猪仅允许种母猪转为育肥猪", 400);
+            }
+            if (pigMapper.countUnweanedPigletsBySow(pig.getId()) > 0) {
+                throw new ServiceException("该种母猪仍有未断奶仔猪，不能转育肥猪", 400);
+            }
+        } else if ("sow".equals(pig.getPigType()) && "fattening".equals(newPigType)) {
+            throw new ServiceException("种母猪转育肥猪请使用转育肥操作", 400);
+        }
+        if ("fattening".equals(pig.getPigType()) && newPigType != null && !"fattening".equals(newPigType)) {
+            requireNotPermanentlyFattening(pig);
+        }
+    }
+
+    private void requireNotPermanentlyFattening(Pig pig) {
+        if (PigLifecycle.YF.name().equals(pig.getCurrentStatus()) || statusRecordMapper.hasToFattenHistory(pig.getId())) {
+            throw new ServiceException("该猪已永久转为育肥猪，不可再次留种或变更猪只类型", 400);
+        }
     }
 
     /**

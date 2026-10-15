@@ -29,7 +29,7 @@ public class WarehouseMonthlyRecordVo implements Serializable {
 
     /** 屠宰头数。 */
     private Integer slaughterCount;
-    /** 屠宰率%。 */
+    /** 屠宰出品率%。 */
     private BigDecimal slaughterRate;
     /** 白条出品率%。 */
     private BigDecimal barYieldRate;

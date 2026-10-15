@@ -58,7 +58,7 @@ public class StoreReturnAppletItemVo implements Serializable {
      * 产品自身单位）。
      *
      * <p>mp 退回确认页据它决定「仓库称重重量」输入框的口径（甲方 row13）：
-     * = kg → 小数录入、后缀 kg；≠ kg → <b>整数</b>录入、后缀 {@code productUnit}（枚 / 份 …）。</p>
+     * = kg → 小数录入、后缀 kg；≠ kg → 按件数录入（最多一位小数，D-0145）、后缀 {@code productUnit}（枚 / 份 …）。</p>
      */
     private String materialUnit;
 
@@ -69,19 +69,23 @@ public class StoreReturnAppletItemVo implements Serializable {
     private BigDecimal materialNum;
 
     /**
-     * 「仓库称重」可录上限（甲方 row24）—— 仅**件数口径**（{@link #materialUnit} ≠ kg）时有值：
-     * {@code = returnQuantity × materialNum}（门店退了几件 × 每件折算多少原材料）。
-     * mp 用它做输入上限 + 默认值；后端 {@code confirm} 用同一个数复核。
+     * 仓库确认可录上限，单位为 {@link #materialUnit}。
+     * 件数口径为 {@code returnQuantity × materialNum}；kg 口径为默认折料重量的 120%，向下保留三位。
+     * 默认量独立按退回产品量折料计算，不能拿放宽后的上限预填。
      *
-     * <p>kg 口径为 {@code null}：重量分支的上限另有规则（门店录入重量 / 当天到店总重）。</p>
+     * <p>{@link #unlimitedConfirmWeight} 为 true 时上限为空，按实际重量确认；其余 kg 行无有效退回量且
+     * 没有申报重量时上限也为空，但确认入口拒绝正重量入库，不能仅凭 null 推断不封顶。</p>
      */
     private BigDecimal maxConfirmQty;
+
+    /** 门店退回确认中，其他分组且原材料单位为KG/公斤时按实际称重，不设退回量折算的业务上限。 */
+    private Boolean unlimitedConfirmWeight;
 
     /**
      * 该产品是否配在字典「退回产品清单」{@code djs_return_product_list} 里（V6-R214）。
      *
-     * <p>mp 退回确认页用它决定非 kg 行的录入精度（D-0054）：清单内允许两位小数、清单外只能整数。
-     * kg 行不看这个字段，恒按 D-0017 保留三位小数。</p>
+     * <p>清单产品退回量不封顶。mp 退回确认页的录入精度不看这个字段（D-0145）：
+     * 非 kg 行最多一位小数，kg 行恒按 D-0017 保留三位小数。</p>
      */
     private Boolean inReturnList;
 

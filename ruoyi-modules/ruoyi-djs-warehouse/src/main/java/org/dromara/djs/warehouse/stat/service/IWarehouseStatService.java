@@ -27,6 +27,18 @@ public interface IWarehouseStatService {
     String aggregate(LocalDate targetDate);
 
     /**
+     * 回补区间内每天日表的猪肉段（按接收 cohort 重算那几列），并刷新涉及的月表。
+     *
+     * <p>同一头猪的第二个半扇可能隔几天才处理，它的数据要算回接收那天；定时任务每天回补最近一个月，
+     * 历史区间可经手动端点一次性补算。</p>
+     *
+     * @param from 起始日（含）
+     * @param to   截止日（含）
+     * @return 回补摘要
+     */
+    String refreshPorkSegment(LocalDate from, LocalDate to);
+
+    /**
      * 仓库日报表列表（row16）：按日期范围倒序返回全量（行数=天数，前端客户端分页）。
      *
      * @param from 起始日期（含，可空）

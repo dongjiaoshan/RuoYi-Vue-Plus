@@ -18,6 +18,10 @@ import java.util.List;
  */
 public interface PlantingRecordMapper extends BaseMapperPlus<PlantingRecord, PlantingRecord> {
 
+    /** 锁住采摘来源行，使同一地块的首次建汇总、累计称重与完成操作在事务内串行。 */
+    @Select("SELECT * FROM t_warehouse_planting_record WHERE id = #{id} AND del_flag='0' FOR UPDATE")
+    PlantingRecord selectForHarvestUpdate(@Param("id") Long id);
+
     /**
      * mp 待处理列表：左联 vegetable_handle 取已累计字段（如未开工则 NULL）。
      *

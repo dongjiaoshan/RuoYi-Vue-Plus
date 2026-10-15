@@ -6,6 +6,8 @@ import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -32,6 +34,30 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class PigStateMachineTest {
 
     private final PigStateMachine sm = new PigStateMachine();
+
+    @ParameterizedTest
+    @EnumSource(value = PigLifecycle.class, names = {"HB", "DN", "LC", "KH", "FQ"})
+    @DisplayName("D-0150：繁殖已结束的五种状态均可转育肥YF")
+    void toFatten_completedReproductionStates(PigLifecycle status) {
+        assertThat(sm.nextStatus(status, PigStatusEvent.TO_FATTEN, "F", Map.of())).isEqualTo(PigLifecycle.YF);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = PigLifecycle.class, names = {"PZ", "FM", "YF", "END"})
+    @DisplayName("D-0150：配种、分娩、已育肥和终止均不可转育肥")
+    void toFatten_rejectsUnsafeOrAlreadyConvertedStates(PigLifecycle status) {
+        assertThatThrownBy(() -> sm.nextStatus(status, PigStatusEvent.TO_FATTEN, "F", Map.of()))
+            .isInstanceOf(ServiceException.class);
+    }
+
+    @Test
+    @DisplayName("D-0150：转育肥仍为母猪专属，转换后的YF不可再次配种")
+    void toFatten_rejectsMaleAndSubsequentBreeding() {
+        assertThatThrownBy(() -> sm.nextStatus(PigLifecycle.HB, PigStatusEvent.TO_FATTEN, "M", Map.of()))
+            .isInstanceOf(ServiceException.class).hasMessageContaining("pig.event.female_only");
+        assertThatThrownBy(() -> sm.nextStatus(PigLifecycle.YF, PigStatusEvent.BREED, "F", Map.of()))
+            .isInstanceOf(ServiceException.class).hasMessageContaining("pig.event.invalid_transition");
+    }
 
     // ─────────────────────── 简单 transition：BREED 5 from + FARROW + WEAN ───────────────────────
 

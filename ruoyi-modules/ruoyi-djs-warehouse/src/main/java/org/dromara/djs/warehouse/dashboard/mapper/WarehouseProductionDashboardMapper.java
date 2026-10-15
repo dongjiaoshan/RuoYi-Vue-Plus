@@ -3,18 +3,20 @@ package org.dromara.djs.warehouse.dashboard.mapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import lombok.Data;
 import org.dromara.djs.warehouse.stat.domain.WarehouseCroppRecord;
 import org.dromara.djs.warehouse.stat.domain.WarehouseIndicatorRecord;
 import org.dromara.djs.warehouse.stat.domain.WarehouseMonthlyRecord;
 
 import java.time.LocalDate;
+import java.math.BigDecimal;
 import java.util.List;
 
 /**
  * 仓库生产效能看板聚合查询 Mapper（mp 仓库管理看板，WMS-DASH-MP-001）。
  *
- * <p>只读 WMS-STAT-001 三张落盘表（{@code t_warehouse_indicator_record} /
- * {@code t_warehouse_cropp_record} / {@code t_warehouse_monthly_record}），不实时聚合业务表。
+ * <p>日矩阵、出品率、趋势读取 WMS-STAT-001 三张落盘表；年度送宰头数与总重直接读取送宰源记录，
+ * 避免接收日期或尚未接收的猪改变出栏年度口径。
  * 范式参照 {@link WarehouseDashboardMapper}：不走 BaseMapperPlus，所有 SQL 显式
  * {@code WHERE tenant_id = #{tenantId}}（dashboard 聚合不保证拦截器注入）。</p>
  *
@@ -26,6 +28,32 @@ import java.util.List;
  */
 @Mapper
 public interface WarehouseProductionDashboardMapper {
+
+    /** 年度送宰源：自养按出栏时间，外购按送宰日期；外购镜像 bar 不重复计数。区间右端不包含。 */
+    @Select("""
+        SELECT COUNT(*) AS slaughter_count,
+               COALESCE(SUM(sent.slaughter_weight), 0) AS slaughter_weight
+        FROM (
+          SELECT marketing_weight AS slaughter_weight
+          FROM t_warehouse_bar_info
+          WHERE tenant_id = #{tenantId} AND del_flag = '0' AND buy_date IS NULL
+            AND marketing_time >= #{from} AND marketing_time < #{toExclusive}
+          UNION ALL
+          SELECT pig_weight AS slaughter_weight
+          FROM t_warehouse_outsource_pig
+          WHERE tenant_id = #{tenantId} AND del_flag = '0'
+            AND slaughter_date >= #{from} AND slaughter_date < #{toExclusive}
+        ) sent
+        """)
+    SlaughterSummaryRow selectSlaughterInRange(@Param("tenantId") String tenantId,
+        @Param("from") LocalDate from, @Param("toExclusive") LocalDate toExclusive);
+
+    /** 同一批送宰记录的头数与重量，均重共用此分母。 */
+    @Data
+    class SlaughterSummaryRow {
+        private Integer slaughterCount;
+        private BigDecimal slaughterWeight;
+    }
 
     /**
      * 取某区间（含端点）仓库日表行，按日期升序。

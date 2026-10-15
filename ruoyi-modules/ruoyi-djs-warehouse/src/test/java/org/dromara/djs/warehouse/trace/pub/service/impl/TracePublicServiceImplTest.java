@@ -209,6 +209,49 @@ class TracePublicServiceImplTest {
     // ============================ pork 链路 ============================
 
     @Test
+    @DisplayName("猪肉与果蔬公开追溯返回对应门店的店长电话")
+    void storePhonesFollowTheTraceStores() {
+        for (String type : List.of("pork", "veg")) {
+            Long storeId = "pork".equals(type) ? STORE_ID : STORE_ID + 1;
+            String phone = "pork".equals(type) ? "13800138286" : "13800138294";
+            TraceCode code = new TraceCode();
+            code.setProduceCode("V6-R286-" + type);
+            code.setCodeType(type);
+            code.setStoreId(storeId);
+            when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+            Store store = new Store();
+            store.setId(storeId);
+            store.setStoreName("对应" + type + "门店");
+            store.setManagerPhone(phone);
+            // 电话文本可独立编辑：不以人员关联存在与否覆盖这个门店配置。
+            store.setManagerUserId(null);
+            when(storeMapper.selectById(storeId)).thenReturn(store);
+
+            PublicTraceVo vo = service.getByProduceCode(code.getProduceCode());
+            var json = new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(vo.getStore());
+            assertThat(json.path("managerPhone").asText(null)).isEqualTo(phone);
+        }
+    }
+
+    @Test
+    @DisplayName("未配置门店店长电话时公开追溯不生成占位号码")
+    void missingStorePhoneIsNotFabricated() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode("V6-R286-EMPTY");
+        code.setCodeType("veg");
+        code.setStoreId(STORE_ID);
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        Store store = new Store();
+        store.setId(STORE_ID);
+        store.setStoreName("无电话门店");
+        when(storeMapper.selectById(STORE_ID)).thenReturn(store);
+
+        PublicTraceVo vo = service.getByProduceCode(code.getProduceCode());
+        var json = new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(vo.getStore());
+        assertThat(json.path("managerPhone").asText(null)).isNull();
+    }
+
+    @Test
     @DisplayName("pork 码：填 pig/growth/medications/store，veg 专属为 null，timeline 倒序，operator 翻译")
     void getByProduceCode_pork_happy() {
         TraceCode code = new TraceCode();

@@ -41,7 +41,7 @@ public class WarehouseMonthlyRecord extends TenantEntity {
 
     /** 屠宰头数（当月日屠宰头数之和）。 */
     private Integer slaughterCount;
-    /** 屠宰率%（当月日接收重量之和/当月日送宰总重之和×100；分母 0 → null）。 */
+    /** 屠宰出品率%（当月 Σ日屠宰出品率分子 ÷ Σ日分母 ×100；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal slaughterRate;
     /** 白条出品率%（当月日白条总重之和/当月日送宰总重之和×100；分母 0 → null）。 */

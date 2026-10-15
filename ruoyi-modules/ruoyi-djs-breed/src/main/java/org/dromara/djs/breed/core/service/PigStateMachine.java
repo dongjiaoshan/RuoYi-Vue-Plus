@@ -47,7 +47,7 @@ import static org.dromara.djs.breed.core.enums.PigStatusEvent.WEAN;
  *   <li>&nbsp;&nbsp;- INTRO：不走本类，由 {@code PigCoreService#createPig} 创建态处理；</li>
  *   <li>&nbsp;&nbsp;- 终态 events（DIE/ELIMINATE/SLAUGHTER）→ END；</li>
  *   <li>&nbsp;&nbsp;- 状态不变 events（CASTRATE/TRANSFER）→ from；</li>
- *   <li>&nbsp;&nbsp;- TO_FATTEN（admin row162）：HB → YF，同时 service 侧切 pig_type sow → fattening。</li>
+ *   <li>&nbsp;&nbsp;- TO_FATTEN（D-0150）：HB/DN/LC/KH/FQ → YF，service 侧校验未断奶仔猪并切类型。</li>
  * </ul>
  *
  * <p>错误信息走 i18n，key 在 {@code ruoyi-admin/.../i18n/messages_zh_CN.properties} +
@@ -65,7 +65,7 @@ public class PigStateMachine {
     /** 复杂 transition（按 payload 分流）。 */
     private static final Map<PigStatusEvent, BiFunction<PigLifecycle, Map<String, Object>, PigLifecycle>> COMPLEX = buildComplexMap();
 
-    /** 仅母猪允许的事件（公猪触发抛 female_only）。TO_FATTEN 只作用于后备种母猪（admin row162）。 */
+    /** 仅母猪允许的事件（公猪触发抛 female_only）。TO_FATTEN 的种母猪类型与未断奶校验由 service 负责。 */
     private static final Set<PigStatusEvent> FEMALE_ONLY = Set.of(BREED, OESTRUS, FARROW, WEAN, NULL_RETURN, TO_FATTEN);
 
     /** 终态聚合事件（任一非 END from → END，end_reason 在 service 内按事件填）。 */
@@ -153,9 +153,12 @@ public class PigStateMachine {
         m.put(new TransitionKey(PZ, FARROW), FM);
         // WEAN: FM → DN
         m.put(new TransitionKey(FM, WEAN), DN);
-        // TO_FATTEN（admin row162）: HB → YF —— 只有「后备」种母猪能转育肥；
-        // 其它繁殖态（PZ/FM/DN/...）不给转，避免把在孕 / 哺乳母猪误转成育肥猪。
-        m.put(new TransitionKey(HB, TO_FATTEN), YF);
+        // D-0150：配种/哺乳未结束的母猪不可转；DN 分批断奶残余需在 service 查询后再判。
+        for (PigLifecycle status : PigLifecycle.values()) {
+            if (status.allowsToFatten()) {
+                m.put(new TransitionKey(status, TO_FATTEN), YF);
+            }
+        }
         return Map.copyOf(m);
     }
 

@@ -6,14 +6,18 @@ import lombok.extern.slf4j.Slf4j;
 import org.dromara.djs.common.job.DjsJobRegistry;
 import org.dromara.djs.common.job.DjsJobRunner;
 import org.dromara.djs.warehouse.stat.service.IWarehouseStatService;
+import org.dromara.djs.warehouse.stat.service.impl.WarehouseStatServiceImpl;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+
+import java.time.LocalDate;
 
 /**
  * 仓库统计聚合定时任务（WMS-STAT-001 调度接线，邓博 admin row16/17/18）。
  *
  * <p>每日凌晨重算 T-1 的 日({@code t_warehouse_indicator_record}) + 作物日
- * ({@code t_warehouse_cropp_record}) → 当月月表({@code t_warehouse_monthly_record}) 聚合（UPSERT 幂等）。
+ * ({@code t_warehouse_cropp_record}) → 当月月表({@code t_warehouse_monthly_record}) 聚合（UPSERT 幂等），
+ * 再回补最近 {@value WarehouseStatServiceImpl#PORK_REFRESH_DAYS} 天日表的猪肉段（接收 cohort，D-0140）。
  * 聚合逻辑复用 {@link IWarehouseStatService#aggregate}（与手动端点
  * {@code POST /djs/warehouse/stat/trigger-aggregate} 同源），本类只负责「定时触发 + 租户上下文」。</p>
  *
@@ -45,9 +49,17 @@ public class WarehouseStatJob {
         jobRegistry.register(JOB_NAME, warehouseStatService::aggregate);
     }
 
-    /** 每日 0:00 触发，重算昨天 T-1（邓博 row9：每晚 12 点；养殖/仓库独立域，并发安全）。 */
+    /**
+     * 每日 0:00 触发：重算昨天 T-1（邓博 row9：每晚 12 点；养殖/仓库独立域，并发安全），
+     * 再回补此前一个月的猪肉段 —— 隔天才处理完的猪要补进它的接收日（甲方 V6 行284）。
+     */
     @Scheduled(cron = "${djs.schedule.warehouse-stat-cron:0 0 0 * * ?}")
     public void aggregate() {
-        DjsJobRunner.run(JOB_NAME, () -> warehouseStatService.aggregate(null));
+        DjsJobRunner.run(JOB_NAME, () -> {
+            warehouseStatService.aggregate(null);
+            LocalDate yesterday = LocalDate.now().minusDays(1);
+            warehouseStatService.refreshPorkSegment(
+                yesterday.minusDays(WarehouseStatServiceImpl.PORK_REFRESH_DAYS), yesterday.minusDays(1));
+        });
     }
 }

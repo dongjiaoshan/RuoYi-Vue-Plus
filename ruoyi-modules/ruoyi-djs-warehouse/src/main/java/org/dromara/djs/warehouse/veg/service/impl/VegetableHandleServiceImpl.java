@@ -866,7 +866,7 @@ public class VegetableHandleServiceImpl
         Long userId = bo.getWeighUserId();
 
         // Step 1：校验 planting_record 存在 + 未完成
-        PlantingRecord planting = plantingRecordMapper.selectById(bo.getPlantingRecordId());
+        PlantingRecord planting = plantingRecordMapper.selectForHarvestUpdate(bo.getPlantingRecordId());
         if (planting == null) {
             throw new ServiceException("种植记录不存在：" + bo.getPlantingRecordId());
         }
@@ -939,8 +939,8 @@ public class VegetableHandleServiceImpl
         record.setHandleTime(now);
         handleRecordMapper.insert(record);
 
-        // Step 3.1：同步采摘班组多选中间表（先物理删旧关联再逐条插；采收行 INSERT-only，删为幂等无害）
-        handleRecordTeamMapper.physicalDeleteByRecordId(record.getId());
+        // Step 3.1：新采收记录只插入班组关联。对不存在的关联先 DELETE 会持有范围间隙锁，
+        // 并发称重随后 INSERT 可能互相死锁；新 record 无旧关联需要清理。
         for (Long teamId : teamIds) {
             handleRecordTeamMapper.insert(new HandleRecordTeam(record.getId(), teamId));
         }
