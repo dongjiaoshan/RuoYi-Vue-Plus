@@ -322,8 +322,10 @@ public class PublicTraceVo implements Serializable {
         private static final long serialVersionUID = 1L;
         /** 农事日期。 */
         private LocalDate date;
-        /** 农事类型原码值（前端映射中文）。 */
+        /** 农事类型原码值。 */
         private String workType;
+        /** 农事类型中文名（字典 djs_farm_work_type 现取；字典无此码 → null，前端回落内置对照）。 */
+        private String workTypeLabel;
         /** 详情（备注）。 */
         private String detail;
         /** 记录人姓名（{@code operator_user_id} 翻译 nick_name；缺 → null）。 */

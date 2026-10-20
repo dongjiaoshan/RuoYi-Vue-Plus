@@ -275,7 +275,7 @@ public class TracePublicServiceImpl
      * 回填「客户在 admin 随手改、改完要立刻生效」的运行期配置：
      * 生长记录 / 农事记录入口的显示门槛（V6 row134/row135）+ 基地介绍页图片（V6 row146）。
      *
-     * <p>放在缓存**外面**：这几项都是甲方在后台点两下就改的开关 / 图片，改完得立刻见效，
+     * <p>放在缓存**外面**：这几项都是甲方在后台点两下就改的开关 / 图片 / 字典名称，改完得立刻见效，
      * 不能被 10 分钟的追溯详情缓存挡住 —— 否则甲方换了图看不到变化，一定会再提一次。</p>
      */
     private PublicTraceVo fillRuntimeConfig(PublicTraceVo vo) {
@@ -285,7 +285,37 @@ public class TracePublicServiceImpl
         vo.setGrowthShowMin(readShowMin(DictTypeConstants.TRACE_GROW_SHOW_MIN));
         vo.setPlotRecordShowMin(readShowMin(DictTypeConstants.TRACE_FARM_SHOW_MIN));
         vo.setBaseIntroImageUrl(resolveBaseIntroImage(vo.getCodeType()));
+        fillWorkTypeLabels(vo.getPlotRecords());
         return vo;
+    }
+
+    /**
+     * 农事类型中文名按字典 {@code djs_farm_work_type} 现取（甲方在后台字典管理改名后 C 端立刻跟着变）。
+     * 字典里没有的码不填，H5 回落内置对照表。
+     */
+    private void fillWorkTypeLabels(List<PublicTraceVo.PlotRecordRow> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Map<String, String> labels = readDictLabels(DictTypeConstants.FARM_WORK_TYPE);
+        for (PublicTraceVo.PlotRecordRow row : rows) {
+            row.setWorkTypeLabel(row.getWorkType() == null ? null : labels.get(row.getWorkType()));
+        }
+    }
+
+    /** 字典 value → label；租户线同 {@link #readShowMin}（必须 dynamic，不能 ignore）。 */
+    private Map<String, String> readDictLabels(String dictType) {
+        List<org.dromara.common.core.domain.dto.DictDataDTO> items =
+            TenantHelper.dynamic(DEFAULT_TENANT, () -> dictService.getDictData(dictType));
+        if (items == null || items.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return items.stream()
+            .filter(d -> StringUtils.isNotBlank(d.getDictValue()) && StringUtils.isNotBlank(d.getDictLabel()))
+            .collect(Collectors.toMap(
+                org.dromara.common.core.domain.dto.DictDataDTO::getDictValue,
+                org.dromara.common.core.domain.dto.DictDataDTO::getDictLabel,
+                (a, b) -> a));
     }
 
     /**
