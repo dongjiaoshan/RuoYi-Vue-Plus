@@ -1,5 +1,7 @@
 # ---------- Stage 1: Maven build ----------
-FROM maven:3.9-eclipse-temurin-21 AS build
+# 基础镜像固定 digest：官方 tag 一更新就要重新下载，国内镜像源常拉不动，部署会卡到超时。
+# 固定后直接用两台服务器构建缓存里的版本；升级 JDK 时手动换 digest。
+FROM maven:3.9-eclipse-temurin-21@sha256:99e61abcff91a9b1333463bd8451fb18495d6eba9250ac66a338b518f8278320 AS build
 
 WORKDIR /build
 
@@ -15,7 +17,7 @@ RUN --mount=type=cache,target=/root/.m2 \
     mvn -B -DskipTests -pl ruoyi-admin -am clean package
 
 # ---------- Stage 2: Runtime ----------
-FROM eclipse-temurin:21-jre-jammy
+FROM eclipse-temurin:21-jre-jammy@sha256:bce52ea7da1f72e6bf5bec505e63b6eb55ba79ad1226903579f77eab1a80139a
 
 ENV TZ=Asia/Shanghai \
     JAVA_OPTS="-Xms512m -Xmx1024m -XX:+UseG1GC -Dfile.encoding=UTF-8" \
