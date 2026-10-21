@@ -232,7 +232,7 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         // 已现场打包重量按耳号合计（门店 pork 追溯码 remark「重量=Ykg」，追溯码按耳号、暂无半只维度）。
         // row41：过滤空耳号（整只白条无耳号行靠 white_bar_no 识别，不参与按耳号的猪只信息 enrich / 已用量合计）。
         List<String> earNoList = keyToEar.values().stream().filter(StringUtils::isNotBlank).distinct().toList();
-        Map<String, BigDecimal> usedByEar = sumOnsiteUsedWeightByEarNo(earNoList);
+        Map<String, BigDecimal> usedByEar = sumOnsiteUsedWeightByEarNo(earNoList, storeId, today);
 
         // 按耳号批量 enrich 猪只信息（earNo → PigAvailableVo），additive 跨域只读
         Set<String> earNos = new LinkedHashSet<>(earNoList);
@@ -283,8 +283,15 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     /**
      * 按耳号合计「已现场打包重量」：门店 pork 码（{@code code_type=pork} + remark「现场生码」前缀）的
      * remark「重量=Ykg」之和。用于 picker 算每根白条的剩余可打包重量（到货 − 已打包）。
+     *
+     * <p>统计窗口必须与「到货」同口径：到货只算本店当天确认收货的那批，已打包也只算本店当天打的。
+     * 同一耳号的部位会分多天陆续发到门店，不按天/店收窄的话，前一天打掉的重量会把今天新到的货扣成 ≤0，
+     * chip 误显「已用完」。</p>
+     *
+     * @param storeId 当前门店（为空 → 不加店过滤，与到货侧一致）
+     * @param day     统计日（按 {@code create_time} 落在当天）
      */
-    private Map<String, BigDecimal> sumOnsiteUsedWeightByEarNo(List<String> earNos) {
+    private Map<String, BigDecimal> sumOnsiteUsedWeightByEarNo(List<String> earNos, Long storeId, LocalDate day) {
         Map<String, BigDecimal> used = new LinkedHashMap<>();
         if (earNos == null || earNos.isEmpty()) {
             return used;
@@ -293,7 +300,10 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
             new LambdaQueryWrapper<TraceCode>()
                 .eq(TraceCode::getCodeType, CODE_TYPE_PORK)
                 .in(TraceCode::getPigEarNo, earNos)
+                .eq(storeId != null, TraceCode::getStoreId, storeId)
                 .likeRight(TraceCode::getRemark, ONSITE_REMARK_PREFIX)
+                .ge(TraceCode::getCreateTime, day.atStartOfDay())
+                .lt(TraceCode::getCreateTime, day.plusDays(1).atStartOfDay())
                 .select(TraceCode::getPigEarNo, TraceCode::getRemark));
         for (TraceCode c : codes) {
             BigDecimal w = parseWeightFromRemark(c.getRemark());
