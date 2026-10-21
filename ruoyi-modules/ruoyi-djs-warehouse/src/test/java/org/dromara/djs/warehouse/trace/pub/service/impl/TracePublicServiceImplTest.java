@@ -530,6 +530,42 @@ class TracePublicServiceImplTest {
     }
 
     @Test
+    @DisplayName("veg 码：农事类型中文名按字典现取（甲方改名后跟着变），字典无此码 → null 交前端兜底")
+    void getByProduceCode_veg_workTypeLabelFromDict() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(VEG_CODE);
+        code.setCodeType("veg");
+        code.setProductId(PRODUCT_ID);
+        code.setPlotId(PLOT_ID);
+        code.setHarvestDate(LocalDate.of(2026, 6, 1));
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+        PlotInfo plot = new PlotInfo();
+        plot.setId(PLOT_ID);
+        when(plotInfoMapper.selectById(PLOT_ID)).thenReturn(plot);
+
+        FarmRecords pest = new FarmRecords();
+        pest.setFarmDate(LocalDate.of(2026, 5, 1));
+        pest.setFarmType("pest_control");
+        FarmRecords unknown = new FarmRecords();
+        unknown.setFarmDate(LocalDate.of(2026, 5, 2));
+        unknown.setFarmType("legacy_code");
+        when(farmRecordsMapper.selectList(any(Wrapper.class))).thenReturn(List.of(pest, unknown));
+
+        tenantHelperMock.when(() -> TenantHelper.dynamic(anyString(), any(Supplier.class)))
+            .thenAnswer(inv -> ((Supplier<?>) inv.getArgument(1)).get());
+        org.dromara.common.core.domain.dto.DictDataDTO d = new org.dromara.common.core.domain.dto.DictDataDTO();
+        d.setDictValue("pest_control");
+        d.setDictLabel("物理除虫");
+        when(dictService.getDictData("djs_farm_work_type")).thenReturn(List.of(d));
+
+        PublicTraceVo vo = service.getByProduceCode(VEG_CODE);
+
+        assertThat(vo.getPlotRecords()).extracting(PublicTraceVo.PlotRecordRow::getWorkTypeLabel)
+            .containsExactly("物理除虫", null);
+    }
+
+    @Test
     @DisplayName("veg 码：图取缩略图优先 / 重量取打包实重 / 所属大区 / 时间轴 5 节点重构（去入库+毛菜，倒序）")
     void getByProduceCode_veg_processNodesAndWeightAndZone() {
         TraceCode code = new TraceCode();
