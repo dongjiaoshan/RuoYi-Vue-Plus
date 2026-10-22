@@ -425,6 +425,30 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
                                          @Param("date") LocalDate date);
 
     /**
+     * row307：{@link #sumDeliveredWeightToStore} 的同口径子集 —— 只算发货清点时间晚于 {@code checkedAfter} 的成品。
+     *
+     * <p>门店盘点保存之后仓库又送来的那批货：盘点行里存的是保存那一刻的入库量，后到的这部分
+     * 要按「发货清点时间 &gt; 该盘点行上次保存时间」单独取出来叠加，不重复计入已盘的部分。</p>
+     *
+     * @param storeId      门店 FK
+     * @param productId    产品 FK
+     * @param date         业务日（按 delivery_check_time 当天过滤）
+     * @param checkedAfter 下界（不含），通常是盘点行的 update_time
+     * @return 该时刻之后当日送达该店该产品的成品总重量（无 → 0）
+     */
+    @Select("SELECT COALESCE(SUM(pp.product_weight), 0) "
+        + "FROM t_warehouse_product_production pp "
+        + "JOIN t_warehouse_demand_manage dm ON dm.id = pp.demand_id AND dm.del_flag = '0' "
+        + "WHERE pp.product_id = #{productId} AND dm.store_id = #{storeId} "
+        + "AND pp.is_delivery_check = 1 AND DATE(pp.delivery_check_time) = #{date} "
+        + "AND pp.delivery_check_time > #{checkedAfter} "
+        + "AND pp.del_flag = '0' AND pp.tenant_id = '1001'")
+    BigDecimal sumDeliveredWeightToStoreCheckedAfter(@Param("storeId") Long storeId,
+                                                     @Param("productId") Long productId,
+                                                     @Param("date") LocalDate date,
+                                                     @Param("checkedAfter") Date checkedAfter);
+
+    /**
      * admin row8：当日送达该店的产品 id 集（去重）。口径同 {@link #sumDeliveredWeightToStore}
      * （{@code is_delivery_check=1}、{@code delivery_check_time} 当天、门店经 {@code demand_id → store_id} 关联）。
      * 门店退回候选按此判「当日到店有哪些产品」（进而按 belong_type / product_material 分流）。

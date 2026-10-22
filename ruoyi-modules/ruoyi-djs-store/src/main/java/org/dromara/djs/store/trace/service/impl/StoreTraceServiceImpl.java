@@ -44,6 +44,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -418,17 +419,18 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         Long storeId = currentStoreId();
         LocalDate today = LocalDate.now(TODAY_ZONE);
         Map<Long, BigDecimal> inboundByMaterial = new LinkedHashMap<>();
-        // 当日已有盘点记录的原材料（哪怕录的是 0 也算「门店已表态」）——下面兜底时据此避免重复计入
-        Set<Long> ledgeredMaterials = new LinkedHashSet<>();
+        // 当日已有盘点记录的原材料（哪怕录的是 0 也算「门店已表态」）→ 上次保存时间；下面兜底时据此避免重复计入
+        Map<Long, Date> ledgerSavedAt = new LinkedHashMap<>();
         if (!materialIds.isEmpty() && storeId != null) {
             LambdaQueryWrapper<StoreDailyLedger> w = new LambdaQueryWrapper<StoreDailyLedger>()
                 .eq(StoreDailyLedger::getStoreId, storeId)
                 .eq(StoreDailyLedger::getLedgerDate, today)
                 .in(StoreDailyLedger::getProductId, materialIds)
-                .select(StoreDailyLedger::getProductId, StoreDailyLedger::getInboundQty);
+                .select(StoreDailyLedger::getProductId, StoreDailyLedger::getInboundQty,
+                    StoreDailyLedger::getCreateTime, StoreDailyLedger::getUpdateTime);
             for (StoreDailyLedger l : storeDailyLedgerMapper.selectList(w)) {
                 if (l.getProductId() != null) {
-                    ledgeredMaterials.add(l.getProductId());
+                    ledgerSavedAt.put(l.getProductId(), l.getUpdateTime() != null ? l.getUpdateTime() : l.getCreateTime());
                     inboundByMaterial.merge(l.getProductId(),
                         l.getInboundQty() == null ? BigDecimal.ZERO : l.getInboundQty(), BigDecimal::add);
                 }
@@ -443,8 +445,9 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         // （StoreDailyLedgerServiceImpl#resolveMaterialSoldInboundWeight 调的同一条
         //  sumDeliveredWeightToStore）。员工照单接受默认值提交后 daily_ledger 里已经含了这笔量，
         // 再加一遍就是稳定翻倍 —— 5kg 显示成 10kg，工人会照着超打、把实际库存打穿。
-        // 所以：当日已有该材料的盘点行 → 以盘点值为准（它是门店的最终表态，可能已按分割实重修正过）；
-        // 没有盘点行 → 才用到店重兜底。
+        // 所以：当日已有该材料的盘点行 → 以盘点值为准（它是门店保存那一刻的表态，可能已按分割实重修正过），
+        // 只再加盘点保存之后才到店的那批（row307：同日分两批到店，第一批到了就先盘点）；
+        // 没有盘点行 → 才用全天到店重兜底。
         if (!materialIds.isEmpty() && storeId != null) {
             List<ProductInfo> materialSold = productInfoMapper.selectList(
                 new LambdaQueryWrapper<ProductInfo>()
@@ -456,11 +459,18 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
                 if (finished.getId() == null || finished.getProductMaterial() == null) {
                     continue;
                 }
-                if (ledgeredMaterials.contains(finished.getProductMaterial())) {
-                    continue;   // 该材料今天已盘点 → 盘点值已含这笔到货，不再叠加
+                Long materialId = finished.getProductMaterial();
+                BigDecimal arrived;
+                if (ledgerSavedAt.containsKey(materialId)) {
+                    Date savedAt = ledgerSavedAt.get(materialId);
+                    if (savedAt == null) {
+                        continue;   // 盘点行没有保存时间：无法区分先后，按盘点值为准、不叠加
+                    }
+                    arrived = productProductionMapper.sumDeliveredWeightToStoreCheckedAfter(
+                        storeId, finished.getId(), today, savedAt);
+                } else {
+                    arrived = productProductionMapper.sumDeliveredWeightToStore(storeId, finished.getId(), today);
                 }
-                BigDecimal arrived = productProductionMapper.sumDeliveredWeightToStore(
-                    storeId, finished.getId(), today);
                 if (arrived != null && arrived.signum() > 0) {
                     inboundByMaterial.merge(finished.getProductMaterial(), arrived, BigDecimal::add);
                 }
