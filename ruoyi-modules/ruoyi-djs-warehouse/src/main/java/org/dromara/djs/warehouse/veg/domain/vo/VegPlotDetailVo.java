@@ -81,16 +81,16 @@ public class VegPlotDetailVo implements Serializable {
     private BigDecimal disasterLoss;
 
     /**
-     * 该作物是否已配置「关联产品」：1=已配 / 0=未配（= t_plant_crop_info.related_product 是否非空）。
-     * 0 时 mp 录入软提示「该作物未配置关联产品，建议先在后台作物录入页填写」，不阻断（客户 2026-06-20）。
+     * 该作物能否解析出产出产品：1=能 / 0=不能（作物产品配置 t_plant_crop_product 有存活产品，
+     * 或旧单列 related_product 非空 —— 与采摘录入的产品解析同口径）。
+     * 0 时 mp 打开录入即提示，且 &gt;0 kg 的采摘提交前后端都会拒绝（甲方 2026-10-24）。
      */
     private Integer hasRelatedProduct;
 
     /**
      * 该作物配置的产品清单 + 各自剩余重量（V6 row17/row18，service enrich）。
      *
-     * <p>作物没配任何产品时为空 list —— mp 侧此时不显示产品行、也不带 productId 提交，
-     * 与改造前行为一致（{@link #hasRelatedProduct} 的软提示仍在）。</p>
+     * <p>作物没配任何产品时为空 list —— mp 侧此时不显示产品行、也不带 productId 提交。</p>
      */
     private java.util.List<VegPlotProductVo> products;
 
