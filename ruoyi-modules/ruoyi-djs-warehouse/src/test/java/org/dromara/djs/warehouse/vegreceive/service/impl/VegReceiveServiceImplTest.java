@@ -5,8 +5,6 @@ import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
-import org.dromara.djs.plant.crop.domain.CropInfo;
-import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
@@ -49,11 +47,11 @@ import static org.mockito.Mockito.when;
  *
  * <p>聚焦自产月台中转再入库 {@code inbound} 的 {@code location_stock} 兜底 INSERT 分支（无库存行）：
  * 与直接入库一致，建 {@code product_id+plot_id} 双键篮——product_id 经
- * {@code crop.related_product} 解析（命中 → set；未配置 → 退化为 plot 单键，不抛、不阻塞）。</p>
+ * 作物主产品解析（命中 → set；未配置 → 退化为 plot 单键，不抛、不阻塞）。</p>
  *
  * <ol>
- *   <li>related_product 命中 → 兜底篮 product_id = 映射值 + plot_id 双键</li>
- *   <li>related_product 为空 → 兜底篮 product_id=NULL 单键（不抛、入库照常）</li>
+ *   <li>主产品命中 → 兜底篮 product_id = 主产品 + plot_id 双键</li>
+ *   <li>未配产品 → 兜底篮 product_id=NULL 单键（不抛、入库照常）</li>
  *   <li>已有库存行（addStockByPlotLocation 返 &gt;0）→ 不走兜底 INSERT</li>
  * </ol>
  *
@@ -84,8 +82,6 @@ class VegReceiveServiceImplTest {
     @Mock
     private ImageUrlResolver imageUrlResolver;
     @Mock
-    private CropInfoMapper cropInfoMapper;
-    @Mock
     private ILossFlowService lossFlowService;
     @Mock
     private org.dromara.djs.plant.crop.service.ICropProductService cropProductService;
@@ -100,7 +96,7 @@ class VegReceiveServiceImplTest {
     void setup() {
         service = new VegReceiveServiceImpl(
             vegReceiveMapper, locationStockMapper, locationInfoMapper, stockFlowMapper,
-            productInfoMapper, supplierMapper, bizCodeGenerator, imageUrlResolver, cropInfoMapper, lossFlowService,
+            productInfoMapper, supplierMapper, bizCodeGenerator, imageUrlResolver, lossFlowService,
             cropProductService, barInfoMapper);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
@@ -128,8 +124,17 @@ class VegReceiveServiceImplTest {
             .thenReturn("F2606200IN0001");
     }
 
+    /** 共用：作物 #{cropId} 的产品配置只有 #{productId} 一行（即主产品）。 */
+    private void stubCropConfig(Long cropId, Long productId) {
+        org.dromara.djs.plant.crop.domain.vo.CropProductVo cp = new org.dromara.djs.plant.crop.domain.vo.CropProductVo();
+        cp.setCropId(cropId);
+        cp.setProductId(productId);
+        when(cropProductService.listByCrop(cropId)).thenReturn(java.util.List.of(cp));
+        when(cropProductService.primaryProductId(cropId)).thenReturn(productId);
+    }
+
     /**
-     * 共用：stub related_product=#{id} 指向一个 attr=2 果蔬原料产品（通过 resolveProductIdByCrop 的守门）。
+     * 共用：stub 产品 #{id} 为 attr=2 果蔬原料（通过 resolveProductIdByCrop 的守门）。
      */
     private void stubRawMaterialProduct(Long productId) {
         ProductInfo p = new ProductInfo();
@@ -150,17 +155,14 @@ class VegReceiveServiceImplTest {
     }
 
     @Test
-    @DisplayName("月台中转入库·无库存行：related_product 命中 → 兜底篮 product_id+plot_id 双键")
-    void testInbound_NoStockRow_RelatedProductHit_DoubleKeyBasket() {
+    @DisplayName("月台中转入库·无库存行：主产品命中 → 兜底篮 product_id+plot_id 双键")
+    void testInbound_NoStockRow_PrimaryProductHit_DoubleKeyBasket() {
         stubCommonInbound();
         // 无库存行：plot 维度增量返 0 → 走兜底 INSERT
         when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), any(), eq(9001L)))
             .thenReturn(0);
-        // 作物配置了 related_product=88001（→ t_warehouse_product_info.id，果蔬原料）
-        CropInfo crop = new CropInfo();
-        crop.setId(12001L);
-        crop.setRelatedProduct(88001L);
-        when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
+        // 作物主产品=88001（→ t_warehouse_product_info.id，果蔬原料）
+        stubCropConfig(12001L, 88001L);
         stubRawMaterialProduct(88001L);
 
         service.inbound(sampleBo());
@@ -185,17 +187,13 @@ class VegReceiveServiceImplTest {
     }
 
     @Test
-    @DisplayName("月台中转入库·无库存行：related_product 为空 → 兜底篮退化为 plot 单键（不抛、入库照常）")
-    void testInbound_NoStockRow_RelatedProductNull_DegradesToPlotOnly() {
+    @DisplayName("月台中转入库·无库存行：作物未配产品 → 兜底篮退化为 plot 单键（不抛、入库照常）")
+    void testInbound_NoStockRow_NoProduct_DegradesToPlotOnly() {
         stubCommonInbound();
         when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), any(), eq(9001L)))
             .thenReturn(0);
-        // 作物未配 related_product —— **构造的边界场景**：staging 实测 103 个作物 related_product 全配
-        //（no_related=0），故这条走的是「数据没配」的兜底路径，不是现网常态（旧注释写「现网多为 NULL」，被 DB 证伪）
-        CropInfo crop = new CropInfo();
-        crop.setId(12001L);
-        crop.setRelatedProduct(null);
-        when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
+        // 作物未配产出产品 —— 构造的边界场景（现网作物都配了产品），走「数据没配」的兜底路径
+        when(cropProductService.primaryProductId(12001L)).thenReturn(null);
 
         // 不抛：降级保持现状（product_id 退化为 null、仅 plot 单键篮）
         service.inbound(sampleBo());
@@ -218,11 +216,8 @@ class VegReceiveServiceImplTest {
         // 已有库存行：plot 维度增量返 1 → 不走兜底 INSERT
         when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), any(), eq(9001L)))
             .thenReturn(1);
-        // 作物配了 related_product → 流水 product_id 解析为果蔬原料（让 admin 入库记录「产品」列有值）
-        CropInfo crop = new CropInfo();
-        crop.setId(12001L);
-        crop.setRelatedProduct(88001L);
-        when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
+        // 作物配了主产品 → 流水 product_id 解析为果蔬原料（让 admin 入库记录「产品」列有值）
+        stubCropConfig(12001L, 88001L);
         stubRawMaterialProduct(88001L);
 
         service.inbound(sampleBo());
@@ -241,7 +236,7 @@ class VegReceiveServiceImplTest {
     @DisplayName("resolveProductIdByCrop：cropId 为空 → 返 null，不查作物")
     void testResolveProductIdByCrop_NullCropId() {
         assertThat(service.resolveProductIdByCrop(null)).isNull();
-        verify(cropInfoMapper, Mockito.never()).selectById(anyLong());
+        verify(cropProductService, Mockito.never()).primaryProductId(any());
     }
 
     @Test

@@ -272,17 +272,21 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
                                                            @Param("statMonth") String statMonth);
 
     /**
-     * 批量查询作物当前采摘单价（结算瞬间取快照用）。
+     * 批量查询作物主产品（产品配置首行、产品未删）的绩效金额，作结算的作物级兜底单价。
      *
      * <p>显式 {@code tenant_id='1001'}（V1 单租户）。</p>
      *
      * @param cropIds 作物 id 集合（已 dedupe，非空）
-     * @return key=cropId(Long) / value=pickUnitPrice(BigDecimal，可能为 null)
+     * @return key=cropId(Long) / value=primaryPerfPrice(BigDecimal，可能为 null)
      */
     @Select("<script>" +
-        "SELECT id AS cropId, pick_unit_price AS pickUnitPrice " +
-        "FROM t_plant_crop_info " +
-        "WHERE tenant_id = '1001' AND del_flag = '0' AND id IN " +
+        "SELECT c.id AS cropId, " +
+        "       (SELECT cp.perf_price FROM t_plant_crop_product cp " +
+        "          JOIN t_warehouse_product_info p ON p.id = cp.product_id AND p.tenant_id = '1001' AND p.del_flag = '0' " +
+        "         WHERE cp.crop_id = c.id AND cp.tenant_id = '1001' AND cp.del_flag = '0' " +
+        "         ORDER BY cp.id LIMIT 1) AS primaryPerfPrice " +
+        "FROM t_plant_crop_info c " +
+        "WHERE c.tenant_id = '1001' AND c.del_flag = '0' AND c.id IN " +
         "<foreach collection='cropIds' item='cid' open='(' separator=',' close=')'>#{cid}</foreach>" +
         "</script>")
     List<Map<String, Object>> selectCropUnitPrices(@Param("cropIds") Collection<Long> cropIds);

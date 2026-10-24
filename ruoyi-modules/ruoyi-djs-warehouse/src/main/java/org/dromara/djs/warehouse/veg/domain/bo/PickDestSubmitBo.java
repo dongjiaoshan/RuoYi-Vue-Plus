@@ -31,7 +31,7 @@ public class PickDestSubmitBo {
     /** 地块 id（{@code t_plant_plot_info.id}，非销售去向必填）。 */
     private Long plotId;
 
-    /** 果蔬成品 product_id（= crop.related_product 解析，可空；缺失则台账 product 维度跳过）。 */
+    /** 果蔬成品 product_id（=作物主产品解析，可空；缺失则台账 product 维度跳过）。 */
     private Long productId;
 
     /** 采摘去向（{@code djs_pick_dest}：veg_fresh/platform/loss/feed；sale 不调本方法）。 */

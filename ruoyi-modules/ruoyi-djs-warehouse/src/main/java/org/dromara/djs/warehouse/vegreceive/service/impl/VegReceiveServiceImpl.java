@@ -9,9 +9,7 @@ import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
-import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.domain.vo.CropProductVo;
-import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.crop.service.ICropProductService;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
@@ -118,8 +116,6 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     private final SupplierMapper supplierMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final ImageUrlResolver imageUrlResolver;
-    /** 作物 mapper：自产月台入库解析 {@code crop.related_product} → 果蔬原料 product_id（双键篮，G2）。 */
-    private final CropInfoMapper cropInfoMapper;
     /** 统一损耗门面（WMS-LOSS-001，行59）：地块入库完成时双写一条 {@code transport_loss} 运输损耗。 */
     private final ILossFlowService lossFlowService;
     /** 作物-产品配置（row55）：判断该作物是不是多产品，决定老客户端的收货请求放行还是拒绝。 */
@@ -135,7 +131,6 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
                                  SupplierMapper supplierMapper,
                                  IBizCodeGenerator bizCodeGenerator,
                                  ImageUrlResolver imageUrlResolver,
-                                 CropInfoMapper cropInfoMapper,
                                  ILossFlowService lossFlowService,
                                  ICropProductService cropProductService,
                                  BarInfoMapper barInfoMapper) {
@@ -147,7 +142,6 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         this.supplierMapper = supplierMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.imageUrlResolver = imageUrlResolver;
-        this.cropInfoMapper = cropInfoMapper;
         this.lossFlowService = lossFlowService;
         this.cropProductService = cropProductService;
         this.barInfoMapper = barInfoMapper;
@@ -190,7 +184,7 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         }
         // row55：月台按产品聚合后，详情页收窄到该产品。
         // mp 没传 productId（已发布的老版本小程序）时**不按产品过滤**，返回该作物全部地块——
-        // 这才真等价于改动前的整作物口径。曾经回落成 crop.related_product，实测是错的：
+        // 这才真等价于改动前的整作物口径。回落成作物主产品是错的：
         // 红薯只返 1 块地（50kg），而改动前是 3 块地（200kg），老客户端会少看到货。
         List<VegInboundPlotVo> plots = vegReceiveMapper.selectInboundPlots(cropId, productId);
         // row3 方案B：按作物解析「默认入库库位」（同作物所有地块行一致），有值则回填给每行，mp 打开弹层预填、仍可改
@@ -213,11 +207,11 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     }
 
     /**
-     * 按作物解析「默认存储库位」（row3 方案B）：{@code crop.related_product} → 果蔬原料 product →
+     * 按作物解析「默认存储库位」（row3 方案B）：作物主产品（产品配置首行）→ 果蔬原料 product →
      * {@code product_info.store_location_id}（逗号分隔取第一个）→ {@code location_info.location_name}。
      *
      * <p>容错（任一缺失返 null，前端留空退回手选，不抛、不阻塞列表）：
-     * 作物未配 related_product / 产品非果蔬原料（复用 {@link #resolveProductIdByCrop} 守门）/
+     * 作物未配产出产品 / 产品非果蔬原料（复用 {@link #resolveProductIdByCrop} 守门）/
      * {@code store_location_id} 为空 / 拆出的库位 id 非法 / 库位记录不存在或已软删。</p>
      */
     private DefaultLocation resolveDefaultLocationByCrop(Long cropId) {
@@ -371,7 +365,7 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
             lossFlow.setSourceBizType("transport");
             lossFlow.setSourceBizId(receive.getId());
             lossFlow.setSourceFlowId(flow.getId());
-            // 产品未配 related_product 时 productCode/Name 留空，用作物名兜底标识来源
+            // 作物未配产出产品时 productCode/Name 留空，用作物名兜底标识来源
             if (materialProductId == null) {
                 lossFlow.setProductName(cropName);
             }
@@ -533,8 +527,8 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
      * <p><b>row55</b>：{@code productId} 由调用方给出<b>本次实收的那个产品</b>，不再由
      * {@code resolveProductIdByCrop} 按作物反解 —— 一块地可以先后收红薯和红薯杆，按作物反解会把两笔并进同一张篮。</p>
      *
-     * <p>⚠️ <b>仍有一条路会建出 {@code product_id=NULL} 的无名篮</b>：作物既没有产品配置、又没有
-     * {@code related_product} 时（{@link #resolveReceiveProductId} 返 null），{@link #inbound} 的守门条件
+     * <p>⚠️ <b>仍有一条路会建出 {@code product_id=NULL} 的无名篮</b>：作物没有产品配置时
+     * （{@link #resolveReceiveProductId} 返 null），{@link #inbound} 的守门条件
      * {@code materialProductId == null && receiveProductId != null} 不成立、不会拒。
      * 无名篮的代价要清楚：多张无名篮之间会因 {@code product_id <=> NULL} 互相合并成一张，
      * 且下游领用 {@code consumeVegBaskets(eq(product_id, ?))} 永远匹配不到 NULL，那批货领不出去。
@@ -546,7 +540,7 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         LocationStock stock = new LocationStock();
         stock.setLocationId(locationId);
         // G2：双键篮 = product_id + plot_id（篮子标签）。row55 起 product_id 由调用方给出本次实收的产品。
-        // 注意它仍可能为 null（作物既无产品配置又无 related_product，见方法 javadoc），那种情况会建无名篮。
+        // 注意它仍可能为 null（作物没有产品配置，见方法 javadoc），那种情况会建无名篮。
         stock.setProductId(productId);
         stock.setPlotId(plotId);
         stock.setProductName(cropName);
@@ -558,16 +552,14 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     }
 
     /**
-     * 按作物 {@code crop.related_product}（FK → {@code t_warehouse_product_info.id}）解析果蔬原料 product_id。
+     * 按作物主产品（产品配置首行，{@link ICropProductService#primaryProductId}）解析果蔬原料 product_id。
      *
      * <p>与 {@link org.dromara.djs.warehouse.veg.service.impl.VegetableHandleServiceImpl#resolveProductIdByCrop}
-     * 同规则：作物→产品转换走 {@code t_plant_crop_info.related_product}，重量不变。客户未在 admin 作物录入页填
-     * related_product（现网多为 NULL）时返 {@code null} 并 {@code log.warn}，不抛、不阻塞入库（月台中转篮退化为
+     * 同规则，重量不变。作物没配产品时返 {@code null} 并 {@code log.warn}，不抛、不阻塞入库（月台中转篮退化为
      * plot 单键篮兜底）。protected 便于单测 stub。</p>
      *
      * <p>守门：解析出的产品必须是「果蔬原料」（{@code product_attr=2 且 belong_type='vegetable'}）。
-     * {@code crop.related_product} 仅逻辑关联、无 DB FK 约束，可能脏值（指向不存在产品 / 误配成品 attr=1）。
-     * 非果蔬原料一律返 {@code null}（流水 product_id 兜底空、入库记录「产品」列空），与下游
+     * 产品配置可能误配成品（attr=1）。非果蔬原料一律返 {@code null}（流水 product_id 兜底空、入库记录「产品」列空），与下游
      * {@code MatFlowServiceImpl.bridgeMaterialInhouse / isVegSelfMaterial}（同 attr=2 门）行为一致，
      * 避免成品 id 漏到 {@code veg_receive_in} 流水。</p>
      *
@@ -578,17 +570,16 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         if (cropId == null) {
             return null;
         }
-        CropInfo crop = cropInfoMapper.selectById(cropId);
-        if (crop == null || crop.getRelatedProduct() == null) {
-            log.warn("月台默认库位解析：作物 related_product 未配置，弹层不预填库位、由工人手选 — cropId={}"
-                + "（可在 admin 作物录入页填「关联产品」以启用预填）", cropId);
+        Long primaryProductId = cropProductService.primaryProductId(cropId);
+        if (primaryProductId == null) {
+            log.warn("月台默认库位解析：作物未配置产出产品，弹层不预填库位、由工人手选 — cropId={}"
+                + "（可在 admin 作物管理「产品配置」添加产品以启用预填）", cropId);
             return null;
         }
-        Long relatedProductId = crop.getRelatedProduct();
-        Long checked = resolveVegMaterialProductId(relatedProductId);
+        Long checked = resolveVegMaterialProductId(primaryProductId);
         if (checked == null) {
-            log.warn("月台默认库位解析：作物 related_product={} 非果蔬原料（脏值 / 误配成品 / 产品已删），不预填库位"
-                + " — cropId={}（请在 admin 作物录入页把「关联产品」改为 attr=2 的果蔬原料 SKU）", relatedProductId, cropId);
+            log.warn("月台默认库位解析：作物主产品={} 非果蔬原料（误配成品），不预填库位"
+                + " — cropId={}（请在 admin 作物管理「产品配置」把首行改为 attr=2 的果蔬原料 SKU）", primaryProductId, cropId);
         }
         return checked;
     }
@@ -611,7 +602,7 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
      *
      * <p><b>为什么不能兼容</b>：曾经试过「mp 没传 productId 就不按产品过滤」，结果是
      * <b>写入侧不收窄、台账侧却收窄</b>——额度按整块地算（可入 100kg），而收货记录 product_id 落 NULL、
-     * 列表用 {@code COALESCE(product_id, crop.related_product)} 把整笔挂到单一产品头上。
+     * 列表再把整笔挂到作物单一产品头上。
      * 实测后果：plot20 物理已收满 100kg，系统仍认为红薯杆还剩 30kg 可入（凭空多出 30kg 额度），
      * 同时红薯那张卡因为 pending 变成 −30 被 {@code WHERE ... &gt; 0} 静默吞掉、整张卡消失。
      * 这正是 CLAUDE.md §0 禁止的「两边兼容」。</p>
@@ -628,7 +619,7 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
             // 而库存篮走的是另一套解析，结果是「台账说 A、库存变 B」（QA 实测复现过）。
             //
             // 与毛菜处理侧 resolveRecordProductId 的差别（有意为之，别改成一样）：
-            // 那边在「作物一条产品配置都没有」时会忽略 requested、回落 related_product；
+            // 那边在「作物一条产品配置都没有」时会忽略 requested、返回 null；
             // 这边保留 requested —— 收货是把实物记进库存，调用方明确说了收的是什么就按什么记，
             // 没有配置可比对时没有依据去否定它。现网 103 个作物全部有配置，这一支不可达。
             boolean belongs = configured.isEmpty()
@@ -645,9 +636,7 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         if (configured.size() == 1) {
             return configured.get(0).getProductId();
         }
-        // 作物没配产品配置 → 回落旧的单映射 related_product（多产品出现之前就是这个口径）
-        CropInfo crop = cropId == null ? null : cropInfoMapper.selectById(cropId);
-        return crop != null ? crop.getRelatedProduct() : null;
+        return null;
     }
 
     /**

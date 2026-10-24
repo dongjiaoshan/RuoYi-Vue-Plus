@@ -66,7 +66,7 @@ import java.util.stream.Collectors;
  *       口径与 {@code VegReceiveServiceImpl#resolveVegMaterialProductId} 同一份</li>
  *   <li>库位守门：必须是毛菜鲜品库（{@code location_code='L0006'}，按 code 查 id，不硬编码 id）</li>
  *   <li>入库量守门：&gt; 0 且最多 3 位小数（Bo 上的 Bean Validation 已挡一道，这里是接口直调的兜底）</li>
- *   <li>反查作物：产品 → 作物（先 {@code t_plant_crop_product} 配置表，回落 {@code crop.related_product}）；
+ *   <li>反查作物：产品 → 作物（{@code t_plant_crop_product} 配置表）；
  *       查不到 → 中文报错说清去哪配</li>
  *   <li>写库存：{@code stock_flow}（{@code flow_type=third_phase_in / inout_type=IN}）+
  *       {@code location_stock} —— 口径照抄 {@code VegetableHandleServiceImpl#insertPickStockIn}；
@@ -364,13 +364,7 @@ public class ThirdPhaseInServiceImpl
     /**
      * 产品 → 作物（反向解析）。
      *
-     * <p>两个数据源，先后顺序有意为之：</p>
-     * <ol>
-     *   <li>{@code t_plant_crop_product}（V6 row16 起的作物-产品配置表）—— 现在的权威映射，
-     *       一个作物可配多个产品，建表时已把存量 {@code related_product} 一对一迁进来</li>
-     *   <li>回落 {@code t_plant_crop_info.related_product} —— 迁移之后新配的作物如果只改了老字段
-     *       没进配置表，仍然认得出来</li>
-     * </ol>
+     * <p>数据源：{@code t_plant_crop_product}（作物-产品配置表，一个作物可配多个产品）。</p>
      *
      * <p>正常情况下命中一个作物。若同一个产品被配到多个作物上（数据允许，业务上罕见），
      * 全部返回：地块标识多块都打、作物名逗号拼接 —— 不在这里替甲方挑一个。</p>
@@ -382,11 +376,6 @@ public class ThirdPhaseInServiceImpl
             .stream()
             .map(CropProduct::getCropId)
             .filter(Objects::nonNull)
-            .forEach(cropIds::add);
-        cropInfoMapper.selectList(new LambdaQueryWrapper<CropInfo>()
-                .eq(CropInfo::getRelatedProduct, product.getId()))
-            .stream()
-            .map(CropInfo::getId)
             .forEach(cropIds::add);
         if (cropIds.isEmpty()) {
             throw new ServiceException("产品「" + product.getProductName()

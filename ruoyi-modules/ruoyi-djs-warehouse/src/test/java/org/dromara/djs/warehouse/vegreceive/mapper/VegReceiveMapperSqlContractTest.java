@@ -95,14 +95,16 @@ class VegReceiveMapperSqlContractTest {
             .contains("hr.handle_target = 2");
         assertThat(sql).doesNotContain("send_platform_weight");
         // 聚合键含产品。⚠️ 必须锚到**子句边界** ` )`，不能只锚到列清单（见本类 javadoc「为什么断言必须锚边界」）：
-        // `contains("...coalesce(hr.product_id, cr0.related_product)")` 是**子串**断言，再往后追加一个维度
+        // `contains("...hr.product_id")` 是**子串**断言，再往后追加一个维度
         // （如 `, cr0.id`）依然通过 —— 而 plat CTE 多一个维度就会把同一 (作物,产品) 拆成多行，
         // 下游 `plat_sum` 再 SUM 回去也救不回来（甲方会看到重复/翻倍）。
         assertThat(sql)
-            .contains("group by hr.crop_id, hr.plot_id, coalesce(hr.product_id, cr0.related_product) )");
+            .contains("group by hr.crop_id, hr.plot_id, hr.product_id )");
         // 收货侧同样按产品分组，否则已入库量会在两个产品之间串
         assertThat(sql)
-            .contains("group by vr.crop_id, vr.plot_id, coalesce(vr.product_id, cr1.related_product) )");
+            .contains("group by vr.crop_id, vr.plot_id, vr.product_id )");
+        // 作物上的旧单列已删除，SQL 里不得再引用
+        assertThat(sql).doesNotContain("related_product");
         // 关掉租户行注入后，每层事实表 WHERE 必须自带 tenant_id
         assertThat(sql).contains("hr.tenant_id = '1001'").contains("vr.tenant_id = '1001'");
 
@@ -200,9 +202,9 @@ class VegReceiveMapperSqlContractTest {
         // 正是 row55 要治的病，而三个用例一个都不红。故两段都点名。
         assertThat(plots)
             .as("地块明细·月台量段（handle_record）按产品收窄")
-            .contains("coalesce(hr.product_id, cr0.related_product) = #{productid}")
+            .contains("hr.product_id = #{productid}")
             .as("地块明细·已收段（veg_receive）按产品收窄")
-            .contains("coalesce(vr.product_id, cr1.related_product) = #{productid}");
+            .contains("vr.product_id = #{productid}");
         assertThat(countOf(plots, "<if test=\"productid != null\">"))
             .as("地块明细应恰有 2 段可选收窄")
             .isEqualTo(2);
@@ -214,11 +216,11 @@ class VegReceiveMapperSqlContractTest {
             .isEqualTo(3);
         assertThat(remain)
             .as("月台量段（handle_record）按产品收窄")
-            .contains("coalesce(hr.product_id, cr0.related_product) = #{productid}")
+            .contains("hr.product_id = #{productid}")
             .as("已入库段（veg_receive）按产品收窄")
-            .contains("coalesce(vr.product_id, cr1.related_product) = #{productid}")
+            .contains("vr.product_id = #{productid}")
             .as("已结算损耗段（veg_receive is_finish=1）按产品收窄")
-            .contains("coalesce(vrl.product_id, cr2.related_product) = #{productid}");
+            .contains("vrl.product_id = #{productid}");
 
         // 产品之外的两个轴同样得钉住：删了作物谓词 → 详情页返回所有作物的地块；
         // 删了地块谓词 → 封顶额度按整作物算、跨地块互吃。两者都是合法 SQL、单测照样全绿。

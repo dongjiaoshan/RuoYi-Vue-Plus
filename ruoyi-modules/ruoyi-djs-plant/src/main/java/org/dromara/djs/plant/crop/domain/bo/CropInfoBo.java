@@ -51,9 +51,6 @@ public class CropInfoBo extends BaseEntity {
     @Size(max = 32, message = "{plant.crop.genus.size}")
     private String cropGenus;
 
-    /** 关联产品 FK → t_warehouse_product_info.id。 */
-    private Long relatedProduct;
-
     @Size(max = 64, message = "{plant.crop.season.size}")
     private String plantingSeason;
 
@@ -77,9 +74,6 @@ public class CropInfoBo extends BaseEntity {
 
     @Size(max = 500, message = "{plant.crop.quality.size}")
     private String qualityDesc;
-
-    @PositiveOrZero(message = "{plant.crop.unitPrice.positive}")
-    private BigDecimal pickUnitPrice;
 
     /** 主图 ossId（IMG-LIB-001；用户手选则随提交带 imageSource=1）。 */
     @Size(max = 32, message = "{plant.crop.image.size}")

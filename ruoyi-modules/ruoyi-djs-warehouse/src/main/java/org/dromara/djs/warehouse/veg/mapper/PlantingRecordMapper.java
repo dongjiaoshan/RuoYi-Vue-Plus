@@ -96,9 +96,8 @@ public interface PlantingRecordMapper extends BaseMapperPlus<PlantingRecord, Pla
         + "       GREATEST(COALESCE(pl.plot_area * c.predicted_per,0) - COALESCE(dl.disaster_loss,0),0) AS expectYield,"
         + "       COALESCE(dl.disaster_loss,0) AS disasterLoss,"
         // 与采摘录入的产品解析同口径（VegetableHandleServiceImpl#resolveRecordProductId）：
-        // 先看作物产品配置 t_plant_crop_product（产品已删的配置行不算，同 CropProductMapper#selectByCropIds），
-        // 没有再回落旧单列 related_product
-        + "       CASE WHEN c.related_product IS NOT NULL OR EXISTS (SELECT 1 FROM t_plant_crop_product cp"
+        // 作物产品配置 t_plant_crop_product 里有存活产品（产品已删的配置行不算，同 CropProductMapper#selectByCropIds）
+        + "       CASE WHEN EXISTS (SELECT 1 FROM t_plant_crop_product cp"
         + "              JOIN t_warehouse_product_info cpp ON cpp.id = cp.product_id"
         + "               AND cpp.del_flag='0' AND cpp.tenant_id='1001'"
         + "              WHERE cp.crop_id = p.crop_id AND cp.del_flag='0' AND cp.tenant_id='1001')"

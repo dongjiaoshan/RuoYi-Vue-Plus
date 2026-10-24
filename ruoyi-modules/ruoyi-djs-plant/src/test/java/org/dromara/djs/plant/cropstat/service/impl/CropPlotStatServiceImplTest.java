@@ -42,12 +42,12 @@ class CropPlotStatServiceImplTest {
     }
 
     @Test
-    @DisplayName("happy path：原样透传聚合行（作物 / 关联产品 / 地块数 / 预计产量 / 采摘日期区间）")
+    @DisplayName("happy path：原样透传聚合行（作物 / 主产品 / 地块数 / 预计产量 / 采摘日期区间）")
     void listPlotStatReturnsAggregatedRows() {
         CropPlotStatVo row = new CropPlotStatVo();
         row.setCropId(9306000000000084L);
         row.setCropName("糯玉米");
-        row.setRelatedProduct(9303000000000123L);
+        row.setPrimaryProductId(9303000000000123L);
         row.setRemainPlotCount(4);
         row.setExpectYield(new BigDecimal("1600.000"));
         row.setEarliestPickDate("2026-07-22");
@@ -60,7 +60,7 @@ class CropPlotStatServiceImplTest {
         CropPlotStatVo vo = result.get(0);
         assertThat(vo.getCropId()).isEqualTo(9306000000000084L);
         assertThat(vo.getCropName()).isEqualTo("糯玉米");
-        assertThat(vo.getRelatedProduct()).isEqualTo(9303000000000123L);
+        assertThat(vo.getPrimaryProductId()).isEqualTo(9303000000000123L);
         assertThat(vo.getRemainPlotCount()).isEqualTo(4);
         assertThat(vo.getExpectYield()).isEqualByComparingTo("1600.000");
         assertThat(vo.getEarliestPickDate()).isEqualTo("2026-07-22");

@@ -20,8 +20,7 @@ import java.util.Map;
  * 原材料 id = COALESCE(product_material, product.id)
  *   —— 加工成品（如「有机上海青250g」）走 product_material 指向的基础菜；
  *      基础果蔬（如「上海青」attr=2，product_material 为 NULL）即自身为原材料，回落 product.id。
- *   → t_plant_crop_info WHERE related_product = 原材料 id → 得作物 crop
- *      （crop_info.related_product 直接指向基础果蔬 product 的 id）
+ *   → 主产品（t_plant_crop_product 首行）= 原材料 id 的作物 crop
  *   → t_plant_crop_organic_rel（一证多作物关联表）WHERE crop_id = crop.id 且 del_flag='0'
  *   → t_plant_crop_organic WHERE id = rel.organic_id 且 crop_cert_valid >= CURDATE() 且 del_flag='0'
  *     存在即「有有效有机证书」。
@@ -31,7 +30,7 @@ import java.util.Map;
  * 旧单值链，已废弃置 NULL，当前关联全在 {@code t_plant_crop_organic_rel}（organic_id ↔ crop_id）。
  * 直 JOIN {@code crop_organic.crop_id} 会恒查空 → 果蔬永远显示别名（本次「顽固」根因）。</p>
  *
- * <p><b>雪花 id 整数比较</b>：{@code related_product} / {@code product_material} / {@code product.id}
+ * <p><b>雪花 id 整数比较</b>：{@code crop_product.product_id} / {@code product_material} / {@code product.id}
  * 均为 BIGINT 雪花 id（&gt; 2^53），JOIN key 外层保留 {@code CAST(... AS SIGNED)} 锁定整数语义；
  * 一旦任一侧以字符串参与比较（如把 id 转 CHAR 或改传字符串参数），MySQL 隐式转 DOUBLE，
  * 相邻雪花 id 浮点精度丢失而误命中相邻作物（实测 {@code 9303000000000003 = '9303000000000005'} 返 TRUE）。
@@ -72,7 +71,7 @@ public interface VegDisplayNameMapper {
                          AND o.crop_cert_valid &gt;= CURDATE()
                         WHERE c.del_flag = '0'
                           AND c.tenant_id = '1001'
-                          AND c.related_product = CAST(COALESCE(p.product_material, p.id) AS SIGNED)
+                          AND (SELECT cp.product_id FROM t_plant_crop_product cp JOIN t_warehouse_product_info cpp ON cpp.id = cp.product_id AND cpp.del_flag = '0' AND cpp.tenant_id = '1001' WHERE cp.crop_id = c.id AND cp.del_flag = '0' AND cp.tenant_id = '1001' ORDER BY cp.id LIMIT 1) = CAST(COALESCE(p.product_material, p.id) AS SIGNED)
                       ) THEN p.product_name
                  ELSE COALESCE(NULLIF(p.product_alias, ''), p.product_name)
                END
@@ -111,7 +110,7 @@ public interface VegDisplayNameMapper {
                          AND o.crop_cert_valid &gt;= CURDATE()
                         WHERE c.del_flag = '0'
                           AND c.tenant_id = '1001'
-                          AND c.related_product = CAST(COALESCE(p.product_material, p.id) AS SIGNED)
+                          AND (SELECT cp.product_id FROM t_plant_crop_product cp JOIN t_warehouse_product_info cpp ON cpp.id = cp.product_id AND cpp.del_flag = '0' AND cpp.tenant_id = '1001' WHERE cp.crop_id = c.id AND cp.del_flag = '0' AND cp.tenant_id = '1001' ORDER BY cp.id LIMIT 1) = CAST(COALESCE(p.product_material, p.id) AS SIGNED)
                       ) THEN p.product_name
                  ELSE COALESCE(NULLIF(p.product_alias, ''), p.product_name)
                END AS displayName
@@ -127,7 +126,7 @@ public interface VegDisplayNameMapper {
     /**
      * 果蔬产品「当前有效」有机证书清单（追溯页有机证书块 · row149）。
      *
-     * <p>走与 {@link #resolveDisplayName} 同一条映射链（原材料 → 作物 {@code related_product} →
+     * <p>走与 {@link #resolveDisplayName} 同一条映射链（原材料 → 主产品为它的作物（产品配置首行）→
      * 关联表 {@code t_plant_crop_organic_rel} → 证书 {@code t_plant_crop_organic}），只取
      * {@code crop_cert_valid >= CURDATE()}（有效期内）的证书。追溯码只存 {@code product_id}（无 crop_id、
      * 且 {@code crop_cert_id} 在一证多作物重构后废弃置 NULL），故追溯页有机证书必须在读时按产品→作物→关联表
@@ -144,7 +143,7 @@ public interface VegDisplayNameMapper {
         SELECT DISTINCT o.id
         FROM t_warehouse_product_info p
         JOIN t_plant_crop_info c
-          ON c.related_product = CAST(COALESCE(p.product_material, p.id) AS SIGNED)
+          ON (SELECT cp.product_id FROM t_plant_crop_product cp JOIN t_warehouse_product_info cpp ON cpp.id = cp.product_id AND cpp.del_flag = '0' AND cpp.tenant_id = '1001' WHERE cp.crop_id = c.id AND cp.del_flag = '0' AND cp.tenant_id = '1001' ORDER BY cp.id LIMIT 1) = CAST(COALESCE(p.product_material, p.id) AS SIGNED)
          AND c.del_flag = '0'
          AND c.tenant_id = '1001'
         JOIN t_plant_crop_organic_rel rel

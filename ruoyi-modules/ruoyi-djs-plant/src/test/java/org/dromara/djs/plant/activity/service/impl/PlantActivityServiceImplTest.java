@@ -8,8 +8,6 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.plant.activity.domain.PlantActivity;
 import org.dromara.djs.plant.activity.domain.bo.PickActivityRecordBo;
 import org.dromara.djs.plant.activity.mapper.PlantActivityMapper;
-import org.dromara.djs.plant.crop.domain.CropInfo;
-import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.junit.jupiter.api.BeforeAll;
@@ -55,7 +53,7 @@ class PlantActivityServiceImplTest {
     @Mock
     private PlantActivityMapper baseMapper;
     @Mock
-    private CropInfoMapper cropInfoMapper;
+    private org.dromara.djs.plant.crop.service.ICropProductService cropProductService;
     @Mock
     private PlantDetailsMapper plantDetailsMapper;
     @Mock
@@ -80,17 +78,14 @@ class PlantActivityServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new PlantActivityServiceImpl(baseMapper, cropInfoMapper, plantDetailsMapper, plotInfoMapper, teamLinkService);
+        service = new PlantActivityServiceImpl(baseMapper, cropProductService, plantDetailsMapper, plotInfoMapper, teamLinkService);
     }
 
     @Test
     @DisplayName("非销售去向：写 activity 行 + 累加所选地块产量")
     void recordPickActivity_nonSale_accumulatesPlotYield() {
-        // crop.related_product 解析出 product_id
-        CropInfo crop = new CropInfo();
-        crop.setId(10L);
-        crop.setRelatedProduct(200L);
-        when(cropInfoMapper.selectById(10L)).thenReturn(crop);
+        // 作物主产品解析出 product_id
+        when(cropProductService.primaryProductId(10L)).thenReturn(200L);
 
         // 定位到一行 plant_details（actual_yield 现 5.0），先命中未结束种植查询
         PlantDetails detail = new PlantDetails();
@@ -130,10 +125,7 @@ class PlantActivityServiceImplTest {
     @Test
     @DisplayName("销售去向：写 activity 行 plot_id 留空，不累加地块产量")
     void recordPickActivity_sale_noPlotYield() {
-        CropInfo crop = new CropInfo();
-        crop.setId(10L);
-        crop.setRelatedProduct(null);
-        when(cropInfoMapper.selectById(10L)).thenReturn(crop);
+        when(cropProductService.primaryProductId(10L)).thenReturn(null);
 
         PickActivityRecordBo bo = new PickActivityRecordBo();
         bo.setCropId(10L);

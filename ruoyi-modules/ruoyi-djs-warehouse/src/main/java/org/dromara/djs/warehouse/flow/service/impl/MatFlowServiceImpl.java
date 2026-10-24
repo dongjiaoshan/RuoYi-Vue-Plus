@@ -25,8 +25,6 @@ import org.dromara.djs.warehouse.flow.service.IMatFlowService;
 import org.dromara.djs.warehouse.loss.service.ILossFlowService;
 import org.dromara.djs.warehouse.veg.domain.FeedLog;
 import org.dromara.djs.warehouse.veg.mapper.FeedLogMapper;
-import org.dromara.djs.plant.crop.domain.CropInfo;
-import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.domain.vo.MatEstimatedDemandVo;
@@ -183,7 +181,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
     private final LocationInfoMapper locationInfoMapper;
     private final ProductInfoMapper productInfoMapper;
     private final ProductInhouseMapper productInhouseMapper;
-    private final CropInfoMapper cropInfoMapper;
+    private final org.dromara.djs.plant.crop.service.ICropProductService cropProductService;
     private final BarInfoMapper barInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final IStockCheckService stockCheckService;
@@ -196,7 +194,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
                               LocationInfoMapper locationInfoMapper,
                               ProductInfoMapper productInfoMapper,
                               ProductInhouseMapper productInhouseMapper,
-                              CropInfoMapper cropInfoMapper,
+                              org.dromara.djs.plant.crop.service.ICropProductService cropProductService,
                               BarInfoMapper barInfoMapper,
                               IBizCodeGenerator bizCodeGenerator,
                               IStockCheckService stockCheckService,
@@ -208,7 +206,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         this.locationInfoMapper = locationInfoMapper;
         this.productInfoMapper = productInfoMapper;
         this.productInhouseMapper = productInhouseMapper;
-        this.cropInfoMapper = cropInfoMapper;
+        this.cropProductService = cropProductService;
         this.barInfoMapper = barInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.stockCheckService = stockCheckService;
@@ -246,7 +244,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         // （跨产品双扣、库存被放大扣减；不是「扣错一篮」）；且上游列表 selfVegIssueItems 现已恒返空、
         // 无导航入口。现行主路径是「按源手选」（bo.batchId 非空 → pickByBatch / deductStockById）。
         // 复活本分支前先读 doc/14「自产果蔬领用路径」，并同步修 deductByPlotLocation + selectSelfVegIssueItems。
-        // pick_out 流水带 plot_id，且 product_id 走 crop.related_product 解析（与 admin 打包统计契约）。
+        // pick_out 流水带 plot_id，且 product_id 走作物主产品解析（与 admin 打包统计契约）。
         if (bo.getPlotId() != null) {
             return pickSelfVeg(bo);
         }
@@ -314,7 +312,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
     @Override
     public boolean canIssueMaterial(String productId, String plotId) {
         Long materialId = resolveMaterialId(productId, plotId);
-        // 解析不到原材料 id（productId/plotId 都空，或 plot 查不到 crop/related_product）→ 不拦，允许领用。
+        // 解析不到原材料 id（productId/plotId 都空，或 plot 查不到 crop/主产品）→ 不拦，允许领用。
         if (materialId == null) {
             return true;
         }
@@ -334,7 +332,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
      * 解析本次领用的原材料 product_id（mp 软校验用）。
      *
      * <p>productId 非空 → 直接 parse；否则 plotId 非空 → 复用 {@link #resolveVegProductId}（plot→crop→
-     * {@code crop.related_product}）。解析不到（皆空 / 非数字 / plot 查不到 crop 或 related_product，
+     * 作物主产品）。解析不到（皆空 / 非数字 / plot 查不到 crop 或主产品，
      * {@code resolveVegProductId} 兜底返 0）→ 返 {@code null}（调用方据此返 true 不打扰）。</p>
      */
     private Long resolveMaterialId(String productId, String plotId) {
@@ -358,7 +356,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
                 log.warn("canIssueMaterial: plotId 非数字，跳过校验 — plotId={}", plotId);
                 return null;
             }
-            // resolveVegProductId 兜底返 0L（plot 无收货 / 作物未配 related_product）→ 归一成 null 表示「解析不到」
+            // resolveVegProductId 兜底返 0L（plot 无收货 / 作物未配产出产品）→ 归一成 null 表示「解析不到」
             Long resolved = resolveVegProductId(parsedPlotId);
             return resolved != null && resolved != 0L ? resolved : null;
         }
@@ -1138,7 +1136,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
      * <ol>
      *   <li>解析库位（bo 传了用 bo 的；为空按 plot 取库存最多库位）+ 盘点锁校验；</li>
      *   <li>INSERT pick_out 流水：<b>setPlotId(plotId)</b>（贯穿地块编号）+ product_id 走
-     *       plot→crop→{@code crop.related_product} 解析（让 admin 打包 {@code belong_type='vegetable'}
+     *       plot→crop→作物主产品 解析（让 admin 打包 {@code belong_type='vegetable'}
      *       的 join 能计入；解析不到兜底 0 + warn，不阻塞领用）；</li>
      *   <li>UPDATE location_stock 按 (plot, location) 行锁扣减 + 数量校验。</li>
      * </ol>
@@ -1158,8 +1156,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         // 领用人：mp 弹层选了用所选（代他人领用），否则取当前登录人兜底
         Long userId = resolveOperatorId(bo.getOperatorId());
 
-        // product_id：plot→crop→crop.related_product 解析果蔬成品（与 admin 打包统计 join 契约）；
-        // 解析不到兜底 0 + warn（作物未配 related_product，与步5/步6 数据治理同源，不阻塞领用）
+        // product_id：plot→crop→作物主产品 解析果蔬成品（与 admin 打包统计 join 契约）；
+        // 解析不到兜底 0 + warn（作物未配产出产品，与步5/步6 数据治理同源，不阻塞领用）
         Long resolvedProductId = resolveVegProductId(plotId);
 
         // 1. INSERT stock_flow（pick_out 出库，带 plot_id + 解析出的果蔬成品 product_id）
@@ -1235,11 +1233,11 @@ public class MatFlowServiceImpl implements IMatFlowService {
     }
 
     /**
-     * 自产果蔬 plot→crop→{@code crop.related_product} 解析果蔬成品 product_id。
+     * 自产果蔬 plot→crop→作物主产品 解析果蔬成品 product_id。
      *
      * <p>自产果蔬库存行<b>不存 crop_id</b>，先按 plot 反查最近一条自产收货的 crop_id，再取
-     * {@code crop.related_product}（作物↔果蔬成品映射，与 {@code VegetableHandleServiceImpl.resolveProductIdByCrop}
-     * 同规则）。任一环节缺失（无收货记录 / 作物已删 / 未配 related_product）→ 返 0 + warn，不阻塞领用
+     * 作物主产品（作物↔果蔬成品映射，与 {@code VegetableHandleServiceImpl.resolveProductIdByCrop}
+     * 同规则）。任一环节缺失（无收货记录 / 作物已删 / 未配产出产品）→ 返 0 + warn，不阻塞领用
      * （与步5/步6 数据治理同源；product_id=0 不影响领用本身，只是 admin 打包 vegetable 统计 join 不命中）。</p>
      *
      * <p>protected 便于单测 stub。</p>
@@ -1253,13 +1251,13 @@ public class MatFlowServiceImpl implements IMatFlowService {
             log.warn("自产果蔬领用：plot 无自产收货记录，无法反查作物，product_id 兜底 0 — plotId={}", plotId);
             return 0L;
         }
-        CropInfo crop = cropInfoMapper.selectById(cropId);
-        if (crop == null || crop.getRelatedProduct() == null) {
-            log.warn("自产果蔬领用：作物 related_product 未配置，product_id 兜底 0 — plotId={} cropId={}"
-                + "（请在 admin 作物录入页填写「关联产品」建立作物↔果蔬成品映射）", plotId, cropId);
+        Long productId = cropProductService.primaryProductId(cropId);
+        if (productId == null) {
+            log.warn("自产果蔬领用：作物未配置产出产品，product_id 兜底 0 — plotId={} cropId={}"
+                + "（请在 admin 作物管理「产品配置」添加产品建立作物↔果蔬成品映射）", plotId, cropId);
             return 0L;
         }
-        return crop.getRelatedProduct();
+        return productId;
     }
 
     @Override

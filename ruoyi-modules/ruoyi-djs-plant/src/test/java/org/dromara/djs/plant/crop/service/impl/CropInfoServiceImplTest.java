@@ -54,12 +54,16 @@ class CropInfoServiceImplTest {
     @Mock
     private ImageUrlResolver imageUrlResolver;
 
+    @Mock
+    private org.dromara.djs.plant.crop.mapper.CropProductMapper cropProductMapper;
+
     private TestableCropInfoServiceImpl service;
 
     static class TestableCropInfoServiceImpl extends CropInfoServiceImpl {
         TestableCropInfoServiceImpl(CropInfoMapper baseMapper,
-                                    ImageUrlResolver imageUrlResolver) {
-            super(baseMapper, imageUrlResolver);
+                                    ImageUrlResolver imageUrlResolver,
+                                    org.dromara.djs.plant.crop.mapper.CropProductMapper cropProductMapper) {
+            super(baseMapper, imageUrlResolver, cropProductMapper);
         }
 
         @Override
@@ -71,12 +75,10 @@ class CropInfoServiceImplTest {
             e.setCropName(bo.getCropName());
             e.setVarietyName(bo.getVarietyName());
             e.setCropFamily(bo.getCropFamily());
-            e.setRelatedProduct(bo.getRelatedProduct());
             e.setPlantingSeason(bo.getPlantingSeason());
             e.setMaxCycle(bo.getMaxCycle());
             e.setMinCycle(bo.getMinCycle());
             e.setPredictedPer(bo.getPredictedPer());
-            e.setPickUnitPrice(bo.getPickUnitPrice());
             e.setCropImagePreview(bo.getCropImagePreview());
             e.setCropImageUrl(bo.getCropImageUrl());
             return e;
@@ -85,7 +87,7 @@ class CropInfoServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableCropInfoServiceImpl(cropInfoMapper, imageUrlResolver);
+        service = new TestableCropInfoServiceImpl(cropInfoMapper, imageUrlResolver, cropProductMapper);
     }
 
     private CropInfoBo sampleBo() {
@@ -98,7 +100,6 @@ class CropInfoServiceImplTest {
         bo.setMaxCycle(120);
         bo.setMinCycle(60);
         bo.setPredictedPer(new BigDecimal("3500.000"));
-        bo.setPickUnitPrice(new BigDecimal("3.50"));
         return bo;
     }
 

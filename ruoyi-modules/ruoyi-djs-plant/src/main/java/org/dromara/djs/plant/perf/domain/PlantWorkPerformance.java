@@ -18,7 +18,7 @@ import java.math.BigDecimal;
  *
  * <p>结算口径：按 <b>班组(team_id) × 作物(crop_id) × 月份(stat_month)</b> 聚合
  * {@code t_plant_plant_details.actual_yield}（采摘量，公斤）× 作物单价快照
- * {@code unit_price_snapshot}（元/公斤，结算瞬间读 {@code t_plant_crop_info.pick_unit_price}）
+ * {@code unit_price_snapshot}（元/公斤，结算瞬间读 {@code t_plant_crop_product.perf_price}）
  * = 应付绩效金额 {@code performance_amount}。
  * 后续改单价不回写历史月（只认快照值）。</p>
  *
@@ -76,7 +76,7 @@ public class PlantWorkPerformance extends TenantEntity {
     private BigDecimal pickWeight;
 
     /**
-     * 单价快照（元/公斤，结算瞬间读 {@code t_plant_crop_info.pick_unit_price}）。
+     * 单价快照（元/公斤，结算瞬间读 {@code t_plant_crop_product.perf_price}）。
      */
     private BigDecimal unitPriceSnapshot;
 

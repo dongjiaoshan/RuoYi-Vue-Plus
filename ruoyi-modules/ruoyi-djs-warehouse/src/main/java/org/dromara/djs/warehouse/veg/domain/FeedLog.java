@@ -54,7 +54,7 @@ public class FeedLog extends TenantEntity {
 
     /**
      * 产品 ID（FK → {@code t_warehouse_product_info.id}；按产品归集饲喂量用，
-     * 毛菜间来源经 crop→related_product 反解可空）。
+     * 毛菜间来源经 crop→主产品 反解可空）。
      */
     private Long productId;
 

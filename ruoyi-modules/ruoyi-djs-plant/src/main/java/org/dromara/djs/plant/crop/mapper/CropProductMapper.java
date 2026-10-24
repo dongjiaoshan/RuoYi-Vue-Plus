@@ -56,4 +56,25 @@ public interface CropProductMapper extends BaseMapperPlus<CropProduct, CropProdu
     @Select("SELECT COUNT(1) FROM t_warehouse_product_info "
         + "WHERE id = #{productId} AND tenant_id = '1001' AND del_flag = '0'")
     int countLiveProduct(@Param("productId") Long productId);
+
+    /**
+     * 主产品是 {@code productId} 的在用作物（主产品 = 配置首行、产品未删，同 {@link #selectByCropIds} 的排序与过滤）。
+     *
+     * @param productId 产品 id
+     * @return 作物 id；没有返回 null
+     */
+    @Select("""
+        SELECT c.id
+          FROM t_plant_crop_info c
+         WHERE c.tenant_id = '1001' AND c.del_flag = '0'
+           AND (SELECT cp.product_id
+                  FROM t_plant_crop_product cp
+                  JOIN t_warehouse_product_info p
+                         ON p.id = cp.product_id AND p.tenant_id = '1001' AND p.del_flag = '0'
+                 WHERE cp.crop_id = c.id AND cp.tenant_id = '1001' AND cp.del_flag = '0'
+                 ORDER BY cp.id LIMIT 1) = #{productId}
+         ORDER BY c.id
+         LIMIT 1
+        """)
+    Long selectCropIdByPrimaryProduct(@Param("productId") Long productId);
 }

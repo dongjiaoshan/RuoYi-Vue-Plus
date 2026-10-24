@@ -54,7 +54,7 @@ public class PlantActivity extends TenantEntity {
     /** DENGBO-R21/R24 销售量分摊结算轮次：0=未结算(当前批次)，&gt;0=已随第 N 次「录入完成」结算。 */
     private Integer settleRound;
 
-    /** 果蔬成品 product_id（= {@code crop.related_product} 解析，可空）。 */
+    /** 果蔬成品 product_id（=作物主产品解析，可空）。 */
     private Long productId;
 
     /** 地块 id（{@code t_plant_plot_info.id}；非销售去向必填，销售去向为空）。 */

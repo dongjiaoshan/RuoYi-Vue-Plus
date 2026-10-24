@@ -8,7 +8,6 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.crop.domain.CropInfo;
-import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
@@ -88,7 +87,7 @@ class MatFlowServiceImplTest {
     @Mock private org.dromara.djs.warehouse.location.mapper.LocationInfoMapper locationInfoMapper;
     @Mock private ProductInfoMapper productInfoMapper;
     @Mock private org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper productInhouseMapper;
-    @Mock private CropInfoMapper cropInfoMapper;
+    @Mock private org.dromara.djs.plant.crop.service.ICropProductService cropProductService;
     @Mock private BarInfoMapper barInfoMapper;
     @Mock private IBizCodeGenerator bizCodeGenerator;
     @Mock private IStockCheckService stockCheckService;
@@ -123,7 +122,7 @@ class MatFlowServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new MatFlowServiceImpl(stockFlowMapper, locationStockMapper, locationInfoMapper, productInfoMapper, productInhouseMapper, cropInfoMapper, barInfoMapper, bizCodeGenerator, stockCheckService, imageUrlResolver, lossFlowService, feedLogMapper);
+        service = new MatFlowServiceImpl(stockFlowMapper, locationStockMapper, locationInfoMapper, productInfoMapper, productInhouseMapper, cropProductService, barInfoMapper, bizCodeGenerator, stockCheckService, imageUrlResolver, lossFlowService, feedLogMapper);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
 
@@ -447,13 +446,10 @@ class MatFlowServiceImplTest {
     }
 
     @Test
-    @DisplayName("自产果蔬 pick happy：plotId 非空 → 走 plot 维度扣减 + 流水带 plot_id + product_id=related_product")
+    @DisplayName("自产果蔬 pick happy：plotId 非空 → 走 plot 维度扣减 + 流水带 plot_id + product_id=作物主产品")
     void testPickSelfVeg_Happy() {
         when(locationStockMapper.selectCropIdByPlot(eq(PLOT_ID))).thenReturn(CROP_ID);
-        CropInfo crop = new CropInfo();
-        crop.setId(CROP_ID);
-        crop.setRelatedProduct(RELATED_PRODUCT_ID);
-        when(cropInfoMapper.selectById(eq(CROP_ID))).thenReturn(crop);
+        when(cropProductService.primaryProductId(eq(CROP_ID))).thenReturn(RELATED_PRODUCT_ID);
         when(locationStockMapper.deductByPlotLocation(eq(LOCATION_ID), eq(PLOT_ID), any(BigDecimal.class), eq(USER_ID)))
             .thenReturn(1);
 
@@ -476,13 +472,10 @@ class MatFlowServiceImplTest {
     }
 
     @Test
-    @DisplayName("自产果蔬 pick：作物未配 related_product → product_id 兜底 0，不阻塞领用")
+    @DisplayName("自产果蔬 pick：作物未配产出产品 → product_id 兜底 0，不阻塞领用")
     void testPickSelfVeg_FallbackProductZero() {
         when(locationStockMapper.selectCropIdByPlot(eq(PLOT_ID))).thenReturn(CROP_ID);
-        CropInfo crop = new CropInfo();
-        crop.setId(CROP_ID);
-        crop.setRelatedProduct(null);
-        when(cropInfoMapper.selectById(eq(CROP_ID))).thenReturn(crop);
+        when(cropProductService.primaryProductId(eq(CROP_ID))).thenReturn(null);
         when(locationStockMapper.deductByPlotLocation(eq(LOCATION_ID), eq(PLOT_ID), any(BigDecimal.class), eq(USER_ID)))
             .thenReturn(1);
 

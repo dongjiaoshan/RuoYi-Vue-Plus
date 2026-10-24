@@ -196,7 +196,7 @@ public class AppletMatFlowController extends BaseController {
      *
      * <p>打包业态（果蔬/猪肉/鸡蛋/干货/其他）的原材料(attr=2) 必须有对应成品（{@code product_material} 反查，
      * {@code product_attr=1}），无则前端弹「原材料没有对应的生产产品，请先创建」并禁止领用。包材/饲料/种子/白条
-     * 等非打包业态恒允许。{@code productId} 非空走产品直查；否则 {@code plotId} 走 plot→crop→{@code related_product}
+     * 等非打包业态恒允许。{@code productId} 非空走产品直查；否则 {@code plotId} 走 plot→crop→主产品
      * 解析（自产果蔬）。解析不到原料 / 非原材料 / 非打包业态 → 返 {@code true}（允许领用）。</p>
      *
      * @param productId 原材料产品 id（snowflake string，可空；外购/包材、按篮领用传）

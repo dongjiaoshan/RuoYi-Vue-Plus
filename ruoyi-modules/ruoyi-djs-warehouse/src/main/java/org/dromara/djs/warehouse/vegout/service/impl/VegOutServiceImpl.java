@@ -194,6 +194,7 @@ public class VegOutServiceImpl implements IVegOutService {
     private final ILocationStockService locationStockService;
     private final org.dromara.djs.common.encoder.IBizCodeGenerator bizCodeGenerator;
     private final UserService userService;
+    private final org.dromara.djs.plant.crop.service.ICropProductService cropProductService;
 
     /**
      * 一张出库单最多几个<b>产品</b> —— 与 admin 打印模板 {@code printSheet.ts} 的 `ROWS_PER_PAGE` 同一个数。
@@ -515,7 +516,7 @@ public class VegOutServiceImpl implements IVegOutService {
      * <p>定位链：① 篮子的 {@code source_biz_id}（毛菜采摘录入建的地块篮）→ 精确定位到建它的那条种植记录
      * 的汇总行。这一步优先于 ② —— 同一 {@code (作物, 地块)} 可能有两条种植记录，
      * ② 的 {@code ORDER BY id DESC LIMIT 1} 会把账挂到最新那条上，而货其实是老那条采的。
-     * ② 库存行 product_id → 作物（{@code t_plant_crop_info.related_product} 反查，1:1）+ 库存行 plot_id
+     * ② 库存行 product_id → 作物（作物主产品 反查，1:1）+ 库存行 plot_id
      * → {@code t_warehouse_vegetable_handle}；查不到则按需补建一条最小行。</p>
      *
      * <p><b>为什么 ② 定位不到时要按需补建而不是直接跳过或直接拦死</b>：</p>
@@ -532,7 +533,7 @@ public class VegOutServiceImpl implements IVegOutService {
      *       用户根本没有补录入口。</li>
      * </ul>
      *
-     * @param cropId   已解析好的作物 id（{@code product.related_product} 反查，可为 null）
+     * @param cropId   已解析好的作物 id（作物主产品 反查，可为 null）
      * @param required {@code true}（果蔬月台去向）= 定不出归属就抛，绝不放行；
      *                 {@code false}（饲料 / 后厨等去向）= 返 null，调用方跳过回写。
      *                 干货 / 蛋类反查不到作物，属正常情况 —— 它们在本表本就没有汇总行，
@@ -681,16 +682,9 @@ public class VegOutServiceImpl implements IVegOutService {
         return loc != null && LOCATION_CODE_FRESH_VEG.equals(loc.getLocationCode());
     }
 
-    /** 产品 → 作物反查（{@code crop_info.related_product}，全库 1:1）。查不到返 null。 */
+    /** 产品 → 作物反查（主产品是该产品的在用作物，至多一个）。查不到返 null。 */
     private Long resolveCropIdByProduct(Long productId) {
-        if (productId == null) {
-            return null;
-        }
-        CropInfo crop = cropInfoMapper.selectOne(new LambdaQueryWrapper<CropInfo>()
-            .eq(CropInfo::getRelatedProduct, productId)
-            .orderByAsc(CropInfo::getId)
-            .last("LIMIT 1"));
-        return crop != null ? crop.getId() : null;
+        return cropProductService.cropIdByPrimaryProduct(productId);
     }
 
     private String cropNameOf(Long cropId) {
