@@ -922,8 +922,8 @@ class VegetableHandleServiceImplTest {
     }
 
     @Test
-    @DisplayName("row102⑦：作物未配产出产品 → 采摘照常落库（不挡地头称重），只是不建库存篮、stock_in 不加")
-    void testHarvest_NoCropProduct_RecordsButNoStock() {
+    @DisplayName("作物未配产出产品 + >0 kg → 拒绝录入，一行都不写（甲方 2026-10-24：没有对应产品不应能录入）")
+    void testHarvest_NoCropProduct_PositiveWeight_Rejected() {
         PlantingRecord planting = samplePlanting("processing");
         planting.setProductId(null);
         when(plantingRecordMapper.selectById(60001L)).thenReturn(planting);
@@ -934,20 +934,38 @@ class VegetableHandleServiceImplTest {
         crop.setRelatedProduct(null);
         when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
 
-        Long handleId = service.submitHarvest(harvestBo("30.000", 0, List.of(30001L)));
-        assertThat(handleId).isEqualTo(70001L);
+        assertThatThrownBy(() -> service.submitHarvest(harvestBo("30.000", 0, List.of(30001L))))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("还没有配置产出产品");
 
-        // 采摘记录 + 聚合照常落库
-        verify(recordMapper, times(1)).insert(any(HandleRecord.class));
-        // 但不写流水、不建篮
+        verify(recordMapper, never()).insert(any(HandleRecord.class));
+        verify(recordTeamMapper, never()).insert(any(org.dromara.djs.warehouse.veg.domain.HandleRecordTeam.class));
+        verify(handleMapper, never()).insert(any(VegetableHandle.class));
+        verify(handleMapper, never()).updateById(any(VegetableHandle.class));
         verify(stockFlowMapper, never()).insert(any(StockFlow.class));
         verify(locationStockMapper, never())
             .insert(any(org.dromara.djs.warehouse.stock.domain.LocationStock.class));
+    }
 
-        ArgumentCaptor<VegetableHandle> updCap = ArgumentCaptor.forClass(VegetableHandle.class);
-        verify(handleMapper, times(1)).updateById(updCap.capture());
-        assertThat(updCap.getValue().getPickedWeight()).isEqualByComparingTo("80.000");
-        assertThat(updCap.getValue().getStockInWeight()).isEqualByComparingTo("0");
+    @Test
+    @DisplayName("作物未配产出产品 + 0 kg 收口 → 放行（收口不入库，不需要产品）")
+    void testHarvest_NoCropProduct_ZeroWeightFinish_Ok() {
+        PlantingRecord planting = samplePlanting("processing");
+        planting.setProductId(null);
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(planting);
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(harvestHandle("50.000"));
+        when(plantDetailsMapper.selectCount(any())).thenReturn(1L);
+        CropInfo crop = new CropInfo();
+        crop.setId(12001L);
+        crop.setRelatedProduct(null);
+        when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
+
+        service.submitHarvest(harvestBo("0", 1, List.of()));
+
+        ArgumentCaptor<HandleRecord> recCap = ArgumentCaptor.forClass(HandleRecord.class);
+        verify(recordMapper, times(1)).insert(recCap.capture());
+        assertThat(recCap.getValue().getProductId()).isNull();
+        verify(stockFlowMapper, never()).insert(any(StockFlow.class));
     }
 
     @Test
@@ -1216,6 +1234,8 @@ class VegetableHandleServiceImplTest {
     void testHarvest_PerfPercentAndRemark_PersistedOnSameRow() {
         when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
         when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(harvestHandle("50.000"));
+        mockCropProduct();
+        mockFreshLocation();
 
         org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo bo = harvestBo("100.000", 0, List.of(30001L));
         bo.setPerfPercent(80);
@@ -1235,6 +1255,8 @@ class VegetableHandleServiceImplTest {
     void testHarvest_PerfPercentMissing_DefaultsTo100() {
         when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
         when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(harvestHandle("50.000"));
+        mockCropProduct();
+        mockFreshLocation();
 
         service.submitHarvest(harvestBo("100.000", 0, List.of(30001L)));
 

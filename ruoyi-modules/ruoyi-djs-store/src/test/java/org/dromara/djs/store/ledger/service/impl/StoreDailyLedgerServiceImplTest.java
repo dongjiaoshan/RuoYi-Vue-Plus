@@ -47,6 +47,7 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -222,6 +223,74 @@ class StoreDailyLedgerServiceImplTest {
         assertThat(vo.getInboundQty()).as("取需求量 3 会让期末 0 时的损耗虚增成 3").isNotEqualByComparingTo("3.000");
         // 新到货行入库只读（工人改不了），值必须由后端一次算对
         assertThat(vo.getInboundReadonly()).isTrue();
+    }
+
+    @Test
+    @DisplayName("row307：同日两批材料外售到店、第一批到了就先盘点 → 候选给出盘点保存之后才到的那批")
+    void testListCandidates_MaterialSoldArrivedAfterSave() {
+        Long finishedId = 2087538561113473026L;   // 通排（生产产品，原材料外售=是，原材料=字典部位）
+        Long demandId = 9430700000000002L;
+        Date savedAt = new Date(1_792_000_000_000L);
+        stubMaterialSoldDelivery(finishedId, demandId, new BigDecimal("3.500"));
+
+        StoreDailyLedger saved = new StoreDailyLedger();
+        saved.setProductId(PORK_PRODUCT_ID);
+        saved.setInboundQty(new BigDecimal("1.000"));
+        saved.setCreateTime(new Date(savedAt.getTime() - 60_000));
+        saved.setUpdateTime(savedAt);
+        when(baseMapper.selectList(any())).thenReturn(List.of(saved));
+        when(productProductionMapper.sumDeliveredWeightToStoreCheckedAfter(STORE_ID, finishedId, DATE, savedAt))
+            .thenReturn(new BigDecimal("2.500"));
+
+        List<StoreDailyLedgerCandidateVo> rows = service.listCandidates(STORE_ID, DATE);
+
+        assertThat(rows).hasSize(1);
+        StoreDailyLedgerCandidateVo vo = rows.get(0);
+        assertThat(vo.getProductId()).isEqualTo(PORK_PRODUCT_ID);
+        assertThat(vo.getInboundReadonly()).as("猪肉行入库可手改，修改盘点时前端取上次保存值").isFalse();
+        assertThat(vo.getInboundQty()).as("全天两批到店实称重").isEqualByComparingTo("3.500");
+        assertThat(vo.getInboundArrivedAfterSave())
+            .as("只给盘点保存（update_time）之后到店的第二批，前端叠加到上次保存的 1.000 上")
+            .isEqualByComparingTo("2.500");
+    }
+
+    @Test
+    @DisplayName("row307：当日还没盘点 → 不查后到货，增量为 0（新增盘点直接取实时入库）")
+    void testListCandidates_NoSavedLedger_NoArrivedAfterSave() {
+        Long finishedId = 2087538561113473026L;
+        stubMaterialSoldDelivery(finishedId, 9430700000000002L, new BigDecimal("3.500"));
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+
+        List<StoreDailyLedgerCandidateVo> rows = service.listCandidates(STORE_ID, DATE);
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getInboundQty()).isEqualByComparingTo("3.500");
+        assertThat(rows.get(0).getInboundArrivedAfterSave()).isEqualByComparingTo("0");
+        verify(productProductionMapper, never()).sumDeliveredWeightToStoreCheckedAfter(any(), any(), any(), any());
+    }
+
+    /** 字典部位五花肉 + 一个以它为原材料的材料外售成品当日到店 {@code weight} kg（发货 1 单）。 */
+    private void stubMaterialSoldDelivery(Long finishedId, Long demandId, BigDecimal weight) {
+        when(dictService.getAllDictByDictType(DICT_WHITE_BAR_RETURN_PRODUCT))
+            .thenReturn(new LinkedHashMap<>(Map.of(PORK_PRODUCT_CODE, "五花肉")));
+        ProductInfo finished = new ProductInfo();
+        finished.setId(finishedId);
+        finished.setProductMaterial(PORK_PRODUCT_ID);
+        // selectList 依次：① 字典业务码 → 产品；② 材料外售 swap；③ 展示产品明细。
+        when(productInfoMapper.selectList(any())).thenReturn(
+            List.of(porkProduct()), List.of(finished), List.of(porkProduct()));
+        Shipment shipment = new Shipment();
+        shipment.setDemandId(demandId);
+        when(shipmentMapper.selectList(any())).thenReturn(List.of(shipment));
+        DemandManage demand = new DemandManage();
+        demand.setId(demandId);
+        demand.setProductId(finishedId);
+        when(demandManageMapper.selectList(any())).thenReturn(List.of(demand));
+        when(arrivedQuantityFiller.resolve(List.of(demandId))).thenReturn(Map.of(demandId, weight));
+        when(productProductionMapper.sumDeliveredWeightToStore(STORE_ID, finishedId, DATE)).thenReturn(weight);
+        when(storeInventoryMapper.selectList(any())).thenReturn(List.of());
+        when(saleRecordMapper.selectList(any())).thenReturn(List.of());
+        when(storeReturnMapper.selectList(any())).thenReturn(List.of());
     }
 
     @Test

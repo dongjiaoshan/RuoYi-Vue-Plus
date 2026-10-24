@@ -45,6 +45,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -189,6 +190,9 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         // row29：材料外售成品折进原材料行后，「当日入库」默认取其发货**实际重量**(kg，盘点按原材料按重盘)，
         // 而非份数——用户可在此基础上更正为白条分割成原材料的实际重量。materialId → Σ材料外售成品发货 product_weight。
         Map<Long, BigDecimal> materialSoldInboundWeight = resolveMaterialSoldInboundWeight(storeId, date, porkSwap);
+        // row307：上次保存盘点之后才到店的材料外售成品实称重（materialId → kg）。修改盘点时猪肉行保留上次的入库值，
+        // 只把这部分叠加上去；同日分两批到店、第一批到了就先盘点的场景，第二批靠它计入。
+        Map<Long, BigDecimal> arrivedAfterSave = resolveMaterialSoldArrivedAfterSave(storeId, date, porkSwap);
 
         // 类别归属：优先级 pork > stock > inbound（库存优先于新到货以保留期初）。
         Map<Long, String> categoryByProduct = new LinkedHashMap<>();
@@ -257,6 +261,7 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             vo.setOpeningQty(opening);
             vo.setInboundQty(inbound);
             vo.setInboundReadonly(!porkRow);
+            vo.setInboundArrivedAfterSave(nz(arrivedAfterSave.get(pid)));
             vo.setReturnSaleQty(returnSaleMap.getOrDefault(pid, BigDecimal.ZERO));
 
             // V6-R215（甲方 2026-09-13）：猪肉原材料行换一套口径 —— 销售量取现场打包追溯码的原材料消耗量、
@@ -473,6 +478,43 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         }
         swap.forEach((finishedId, materialId) -> {
             BigDecimal w = productProductionMapper.sumDeliveredWeightToStore(storeId, finishedId, date);
+            if (w != null && w.signum() > 0) {
+                out.merge(materialId, w, BigDecimal::add);
+            }
+        });
+        return out;
+    }
+
+    /**
+     * row307：该门店该日已保存的盘点行之后才到店的材料外售成品实称重，按原材料累加。
+     *
+     * <p>口径同 {@link #resolveMaterialSoldInboundWeight}（当日发往该店的实际称重），只多一个下界：
+     * 发货清点时间晚于该原材料盘点行的上次保存时间（{@code update_time}）。盘点行里的入库量是保存那一刻
+     * 的值（可能已按分割实重手改过），所以修改盘点时只叠加这之后到的货，不重复计入已盘部分。
+     * 该原材料当日还没有盘点行 → 不出现在结果里（新增盘点直接取实时入库）。</p>
+     */
+    private Map<Long, BigDecimal> resolveMaterialSoldArrivedAfterSave(Long storeId, LocalDate date, Map<Long, Long> swap) {
+        Map<Long, BigDecimal> out = new LinkedHashMap<>();
+        if (swap == null || swap.isEmpty()) {
+            return out;
+        }
+        Map<Long, Date> savedAtByProduct = new LinkedHashMap<>();
+        for (StoreDailyLedger l : baseMapper.selectList(new LambdaQueryWrapper<StoreDailyLedger>()
+                .eq(StoreDailyLedger::getStoreId, storeId)
+                .eq(StoreDailyLedger::getLedgerDate, date)
+                .in(StoreDailyLedger::getProductId, new LinkedHashSet<>(swap.values()))
+                .select(StoreDailyLedger::getProductId, StoreDailyLedger::getCreateTime, StoreDailyLedger::getUpdateTime))) {
+            Date savedAt = l.getUpdateTime() != null ? l.getUpdateTime() : l.getCreateTime();
+            if (l.getProductId() != null && savedAt != null) {
+                savedAtByProduct.put(l.getProductId(), savedAt);
+            }
+        }
+        swap.forEach((finishedId, materialId) -> {
+            Date savedAt = savedAtByProduct.get(materialId);
+            if (savedAt == null) {
+                return;
+            }
+            BigDecimal w = productProductionMapper.sumDeliveredWeightToStoreCheckedAfter(storeId, finishedId, date, savedAt);
             if (w != null && w.signum() > 0) {
                 out.merge(materialId, w, BigDecimal::add);
             }

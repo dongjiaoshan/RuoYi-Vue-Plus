@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
+import java.time.LocalDate;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -67,6 +68,25 @@ class ProductProductionMapperSqlContractTest {
         // 否则「到店量 100 / 明细只有 50」会重演（线上实证：需求 2089615514926686209）。
         // D-0048 待甲方拍板前，两边都保持"不过滤"。
         assertThat(sql).doesNotContain("deliver_dest");
+    }
+
+    @Test
+    @DisplayName("row307：「盘点保存之后到店」的重量 = 当日到店重量同一条 SQL 只多一个清点时间下界")
+    void deliveredWeightCheckedAfterOnlyAddsLowerBound() throws Exception {
+        String whole = selectSql("sumDeliveredWeightToStore", Long.class, Long.class, LocalDate.class);
+        String after = selectSql("sumDeliveredWeightToStoreCheckedAfter", Long.class, Long.class, LocalDate.class, Date.class);
+
+        // 两边一旦分叉（比如有人只给全天口径加了业态过滤），盘点入库与打包剩余就会对不上同一批货
+        assertThat(after.replace("and pp.delivery_check_time > #{checkedafter} ", "")).isEqualTo(whole);
+        assertThat(after).contains("pp.delivery_check_time > #{checkedafter}");
+    }
+
+    private static String selectSql(String name, Class<?>... params) throws Exception {
+        Select select = ProductProductionMapper.class.getMethod(name, params).getAnnotation(Select.class);
+        assertThat(select).as("ProductProductionMapper#" + name + " 应带 @Select").isNotNull();
+        return String.join(" ", select.value())
+            .replaceAll("\\s+", " ")
+            .toLowerCase(Locale.ROOT);
     }
 
     private static String arrivedQuantitySql() throws Exception {

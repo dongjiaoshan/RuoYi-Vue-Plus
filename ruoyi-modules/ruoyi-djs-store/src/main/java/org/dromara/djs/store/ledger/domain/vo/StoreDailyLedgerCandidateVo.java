@@ -73,6 +73,14 @@ public class StoreDailyLedgerCandidateVo implements Serializable {
     /** 入库量是否只读（新到货=true 不可编辑；猪肉=false 可手动且有上限）。 */
     private Boolean inboundReadonly;
 
+    /**
+     * 该门店该日盘点行上次保存之后才到店的材料外售成品实称重（原材料行，kg；无盘点行或无后到货 = 0）。
+     *
+     * <p>修改盘点时，可编辑的猪肉行保留上次保存的入库量（可能已按分割实重手改过），再叠加这部分，
+     * 同日分批到店、先到先盘的场景下后到的那批才能计入（row307）。只读行前端恒取 {@link #inboundQty} 实时值，不用它。</p>
+     */
+    private BigDecimal inboundArrivedAfterSave;
+
     /** 预填销售量（销售流水当日聚合，无则 0）。 */
     private BigDecimal saleQty;
 

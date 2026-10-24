@@ -903,6 +903,16 @@ public class VegetableHandleServiceImpl
             requirePlantHarvestCompleted(planting.getPlotId(), planting.getCropId());
         }
 
+        // Step 1.2：本次过磅算作哪个产品（row17：作物多产品时由录入人选，单产品时服务端补首个）。
+        // 必须在写任何一行之前解析：>0 kg 的称重会当场入毛菜保鲜库，作物一个产出产品都没配就没有可入库的实体，
+        // 放行只会留下一条「采了但永远领不出来」的重量（甲方 2026-10-24：没有对应产品不应能录入）。
+        // 0 kg 收口不入库，不要求产品。
+        Long recordProductId = resolveRecordProductId(planting.getCropId(), bo.getProductId());
+        if (weight.signum() > 0 && recordProductId == null) {
+            throw new ServiceException("作物「" + planting.getCropName() + "」还没有配置产出产品，不能录入采摘重量。"
+                + "请先在后台 作物管理 → 编辑作物 →「产品配置」添加产品", 400);
+        }
+
         // Step 2：找到 / 创建 vegetable_handle 汇总
         VegetableHandle handle = baseMapper.selectByPlantingRecordId(planting.getId());
         if (handle == null) {
@@ -922,8 +932,7 @@ public class VegetableHandleServiceImpl
         record.setHandleId(handle.getId());
         record.setPlotId(planting.getPlotId());
         record.setCropId(planting.getCropId());
-        // row17：本次过磅算作哪个产品（作物多产品时由录入人选，单产品时服务端补首个）
-        record.setProductId(resolveRecordProductId(planting.getCropId(), bo.getProductId()));
+        record.setProductId(recordProductId);
         // row64：旧单列写多选第一个，作为 row39 班组绩效按组采收总重量的统计维度（口径不变）
         record.setTeamId(teamIds.isEmpty() ? null : teamIds.get(0));
         record.setRecordType(RECORD_TYPE_PICK);
@@ -984,28 +993,15 @@ public class VegetableHandleServiceImpl
     /**
      * 采摘录入即入毛菜保鲜库（V6 row102 第 1 条：采摘录入后系统直接把作物化为产品，默认进毛菜保鲜库）。
      *
-     * <p><b>产品解析不到时降级、不抛</b>：既有入库路径（{@link #insertVegStockInFlow} /
-     * {@link #insertPickStockIn}）对「作物没配产出产品」是 fail-fast 的，那在处理/活动录入里说得通
-     * —— 工人在屋里、可以喊人去后台补配置。但采摘录入是工人在地头对着秤按的，把它挡住等于当场停工，
-     * 而重量本身是真实发生的事实、必须先记下来。故此处 {@code log.warn} + 跳过库存写入，
-     * 采摘记录照常落库；这批货后续要么补齐产品配置后由盘点/毛菜间出库补账，要么在地块收口时算进损耗。
-     * 代价是这类地块的「剩余重量」会显 0、处理录入会被库存上限挡住 —— 这是刻意的：
-     * 没有产品就没有可出库的实体，宁可显 0 也不能凭空造一笔出不掉的账。</p>
+     * <p>&gt;0 kg 时 {@code productId} 必然非空：{@link #submitHarvest} Step 1.2 已拒绝「作物没配产出产品」的称重。</p>
      *
-     * @param productId 本次采摘算作哪个产品（{@code handle_record.product_id}，可能为 null）
-     * @return 实际入毛菜间的重量（0 = 未入库：0kg 收口记录 / 产品未配置 / 产品主数据缺失）
+     * @param productId 本次采摘算作哪个产品（{@code handle_record.product_id}）
+     * @return 实际入毛菜间的重量（0 = 未入库：0kg 收口记录 / 产品主数据缺失）
      */
     private BigDecimal stockInHarvestToFreshVeg(PlantingRecord planting, BigDecimal weight,
                                                 Long productId, Long userId, Date now) {
         // 0 kg 收口记录不写库存、不写流水（写了只会造出空篮子进果蔬打包的 FIFO 领用列表，纯噪声）
         if (weight == null || weight.signum() <= 0) {
-            return BigDecimal.ZERO;
-        }
-        if (productId == null) {
-            log.warn("采摘录入未入毛菜保鲜库：作物「{}」(cropId={}) 未配置产出产品，本次 {} kg 只记采摘不建库存篮"
-                    + " — plantingRecordId={}。请在 admin 作物管理 → 编辑作物 →「产品配置」补齐后，"
-                    + "用盘点 / 毛菜间出库为这批货补账。",
-                planting.getCropName(), planting.getCropId(), weight, planting.getId());
             return BigDecimal.ZERO;
         }
         boolean stocked = writeFreshVegStockIn(requireFreshVegLocationId(), productId, planting.getPlotId(),
