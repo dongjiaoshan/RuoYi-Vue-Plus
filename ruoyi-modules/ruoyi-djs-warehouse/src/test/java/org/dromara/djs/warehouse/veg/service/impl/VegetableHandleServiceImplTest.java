@@ -147,12 +147,15 @@ class VegetableHandleServiceImplTest {
         when(locationInfoMapper.selectOne(any())).thenReturn(loc);
     }
 
-    /** 作物 12001 配了产出产品（{@code related_product}），且产品主数据存在。 */
+    /** 作物 12001 配了产出产品（产品配置首行 = PRODUCT_ID），且产品主数据存在。 */
     private void mockCropProduct() {
-        CropInfo crop = new CropInfo();
-        crop.setId(12001L);
-        crop.setRelatedProduct(PRODUCT_ID);
-        when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
+        org.dromara.djs.plant.crop.domain.vo.CropProductVo cp =
+            new org.dromara.djs.plant.crop.domain.vo.CropProductVo();
+        cp.setCropId(12001L);
+        cp.setProductId(PRODUCT_ID);
+        cp.setProductName("小白菜");
+        when(cropProductService.listByCrop(12001L)).thenReturn(List.of(cp));
+        when(cropProductService.primaryProductId(12001L)).thenReturn(PRODUCT_ID);
         org.dromara.djs.warehouse.product.domain.ProductInfo p =
             new org.dromara.djs.warehouse.product.domain.ProductInfo();
         p.setId(PRODUCT_ID);
@@ -311,18 +314,15 @@ class VegetableHandleServiceImplTest {
     @DisplayName("F-1④：收口范围与读侧同源 —— 产品被移出作物配置后，它的篮子照样结转（picked = handled + loss）")
     void testFinish_SettlesProductRemovedFromCropConfig() {
         // QA 活体复现：作物配 P1(88001)/P2(77001) 各采 30/20kg，删掉 P2 的作物产品配置后收口。
-        // 第二轮按「作物产品配置 ∪ crop.related_product ∪ handle.product_id」枚举产品，P2 已不在任何一处
-        //（handle.product_id 是建汇总行时写死的单值 = crop.related_product，不是采收过的产品集合）
+        // 按「作物产品配置 ∪ handle.product_id」枚举产品时，P2 已不在任何一处
+        //（handle.product_id 是建汇总行时写死的单值 = 当时的作物主产品，不是采收过的产品集合）
         // → loss 只有 P1 的 30，P2 的 20kg 一分没结没扣：篮子成僵尸、picked(50) ≠ handled(0) + loss(30)。
         when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
         when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(sampleHandle("50.000", "0", 1));
         when(plantingRecordMapper.advanceHandleStatus(anyLong(), any(), any(), anyLong())).thenReturn(1);
         mockFreshLocation();
         // 作物配置里现在只剩 P1（P2 已被删）
-        CropInfo crop = new CropInfo();
-        crop.setId(12001L);
-        crop.setRelatedProduct(PRODUCT_ID);
-        when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
+        when(cropProductService.primaryProductId(12001L)).thenReturn(PRODUCT_ID);
         org.dromara.djs.plant.crop.domain.vo.CropProductVo onlyP1 =
             new org.dromara.djs.plant.crop.domain.vo.CropProductVo();
         onlyP1.setProductId(PRODUCT_ID);
@@ -776,11 +776,8 @@ class VegetableHandleServiceImplTest {
     void testProcess_ToFeed_FeedLogUsesSelectedProduct() {
         when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
         when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(sampleHandle("50.000", "10.000", 1));
-        // 作物默认产品是 88001（related_product），工人这次选的是 77001（如「红薯杆」）
-        CropInfo crop = new CropInfo();
-        crop.setId(12001L);
-        crop.setRelatedProduct(88001L);
-        when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
+        // 作物主产品是 88001，工人这次选的是 77001（如「红薯杆」）
+        when(cropProductService.primaryProductId(12001L)).thenReturn(88001L);
         org.dromara.djs.plant.crop.domain.vo.CropProductVo a =
             new org.dromara.djs.plant.crop.domain.vo.CropProductVo();
         a.setProductId(88001L);
@@ -928,11 +925,7 @@ class VegetableHandleServiceImplTest {
         planting.setProductId(null);
         when(plantingRecordMapper.selectById(60001L)).thenReturn(planting);
         when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(harvestHandle("50.000"));
-        // 作物既没有产品配置、也没有 related_product
-        CropInfo crop = new CropInfo();
-        crop.setId(12001L);
-        crop.setRelatedProduct(null);
-        when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
+        // 作物没有产品配置（cropProductService 默认返回空配置 / null 主产品）
 
         assertThatThrownBy(() -> service.submitHarvest(harvestBo("30.000", 0, List.of(30001L))))
             .isInstanceOf(ServiceException.class)
@@ -955,10 +948,6 @@ class VegetableHandleServiceImplTest {
         when(plantingRecordMapper.selectById(60001L)).thenReturn(planting);
         when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(harvestHandle("50.000"));
         when(plantDetailsMapper.selectCount(any())).thenReturn(1L);
-        CropInfo crop = new CropInfo();
-        crop.setId(12001L);
-        crop.setRelatedProduct(null);
-        when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
 
         service.submitHarvest(harvestBo("0", 1, List.of()));
 

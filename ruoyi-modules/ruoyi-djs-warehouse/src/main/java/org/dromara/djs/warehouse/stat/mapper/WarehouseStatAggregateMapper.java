@@ -29,7 +29,7 @@ import java.util.Map;
  *   <li>{@code t_warehouse_feed_log}：作物维度饲喂量（权威台账，毛菜间 + 仓库领用两路径，按 crop_id GROUP，feed_date）</li>
  *   <li>{@code t_warehouse_veg_receive}：月台接收（receive_type=1 自产，receive_time）</li>
  *   <li>{@code t_warehouse_stock_flow}：生产领用 / 生产退回（prod_pick_out / prod_return_in，flow_date）</li>
- *   <li>{@code t_warehouse_loss_flow}：作物维度损耗（veg_handle_loss 经 plot→crop；production_loss/manual_loss 经 product_id→crop.related_product）</li>
+ *   <li>{@code t_warehouse_loss_flow}：作物维度损耗（veg_handle_loss 经 plot→crop；production_loss/manual_loss 经 product_id→作物主产品）</li>
  * </ul>
  *
  * @author djs
@@ -375,7 +375,7 @@ public interface WarehouseStatAggregateMapper {
      *   <li>毛菜损耗 veg_handle_loss：毛菜间产生、带 plot_id → 经 t_warehouse_planting_record
      *       的 plot_id→crop_id 桥接（取 statDate 当日有效的最近一条种植记录，避免轮作多记录行膨胀）。</li>
      *   <li>生产损耗 production_loss / 录入损耗 manual_loss：product 维度产生、plot_id 多为 NULL，
-     *       经 product_id → t_plant_crop_info.related_product 反解到 crop_id（crop.related_product = lf.product_id）。
+     *       经 product_id → 作物主产品反解到 crop_id（作物主产品 = lf.product_id）。
      *       原 plot 桥接会因 plot_id NULL 整条漏量，改 product 归集补全。</li>
      * </ul>
      * <p>两路按 crop_id UNION ALL 后外层再 GROUP，service 端按 crop 取三损耗值。</p>
@@ -407,7 +407,12 @@ public interface WarehouseStatAggregateMapper {
                  CASE WHEN lf.loss_type = 'production_loss' THEN lf.loss_weight ELSE 0 END AS productionLoss,
                  CASE WHEN lf.loss_type = 'manual_loss'     THEN lf.loss_weight ELSE 0 END AS manualLoss
           FROM t_warehouse_loss_flow lf
-          JOIN t_plant_crop_info c ON c.related_product = lf.product_id AND c.del_flag = '0' AND c.tenant_id = #{tenantId}
+          JOIN t_plant_crop_info c ON c.del_flag = '0' AND c.tenant_id = #{tenantId}
+           AND lf.product_id = (SELECT cp.product_id FROM t_plant_crop_product cp
+                                  JOIN t_warehouse_product_info p
+                                         ON p.id = cp.product_id AND p.del_flag = '0' AND p.tenant_id = #{tenantId}
+                                 WHERE cp.crop_id = c.id AND cp.del_flag = '0' AND cp.tenant_id = #{tenantId}
+                                 ORDER BY cp.id LIMIT 1)
           WHERE lf.del_flag = '0' AND lf.tenant_id = #{tenantId}
             AND DATE(lf.loss_date) = #{statDate}
             AND lf.loss_type IN ('production_loss', 'manual_loss')

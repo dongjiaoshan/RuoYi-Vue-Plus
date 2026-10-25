@@ -47,7 +47,7 @@ public class VegReceiveItemVo implements Serializable {
     /**
      * 产品 ID（row55；自产列表的<b>聚合键</b>，详情页与入库提交都按它收窄）。
      *
-     * <p>自产：来自 {@code handle_record.product_id}（空则回落 {@code crop.related_product}）。
+     * <p>自产：来自 {@code handle_record.product_id}。
      * 一个作物可关联多个产品（红薯 / 红薯杆），各自一张卡、各自一份待入库量。
      * 外购：不填（外购的 {@code cropId} 本身就是产品 id）。</p>
      */
@@ -63,7 +63,7 @@ public class VegReceiveItemVo implements Serializable {
      *
      * <ul>
      *   <li>自产（{@code /self}）：优先取作物「关联产品」的业务码
-     *       （{@code t_warehouse_product_info.product_id}，经 {@code crop.related_product} 解析）；
+     *       （{@code t_warehouse_product_info.product_id}，经作物主产品解析）；
      *       作物未配关联产品时回退作物业务码 {@code t_plant_crop_info.crop_code}。</li>
      *   <li>外购（{@code /purchased}）：取产品业务码 {@code t_warehouse_product_info.product_id}。</li>
      * </ul>

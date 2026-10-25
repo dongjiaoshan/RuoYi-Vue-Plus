@@ -16,9 +16,8 @@ import java.math.BigDecimal;
  *
  * <p>对应表 {@code t_plant_crop_info}（V202606050900）：</p>
  * <ul>
- *   <li>{@code relatedProduct} → {@code t_warehouse_product_info.id}（D8 WMS-MD-002 同日，逻辑关联不写 FK）</li>
  *   <li>{@code plantingSeason} 字典 {@code djs_planting_season} 多选逗号分隔（spring,summer 等）</li>
- *   <li>{@code pickUnitPrice} 采摘单价（元/公斤），P1#14 单价位置 V1 暂放此</li>
+ *   <li>作物产出哪些产品、各自绩效金额：见 {@code t_plant_crop_product}（{@link CropProduct}）</li>
  * </ul>
  *
  * @author djs
@@ -59,9 +58,6 @@ public class CropInfo extends TenantEntity {
     /** 作物属（自由文本，例 芸薹属）。 */
     private String cropGenus;
 
-    /** 关联产品 FK → t_warehouse_product_info.id（D8 WMS-MD-002 同日，逻辑关联）。 */
-    private Long relatedProduct;
-
     /** 种植季节（字典 djs_planting_season，多选逗号分隔）。 */
     private String plantingSeason;
 
@@ -85,9 +81,6 @@ public class CropInfo extends TenantEntity {
 
     /** 品质描述。 */
     private String qualityDesc;
-
-    /** 采摘单价（元/公斤）。 */
-    private BigDecimal pickUnitPrice;
 
     /** 主图 ossId（IMG-LIB-001 4 层 resolver L1；create 时按 cropName 自动匹配存入）。 */
     private String imageOssId;

@@ -54,7 +54,7 @@ public class MatPickBo {
      * 而入库实际是 {@code (plot, product)} 双键（见 {@code VegReceiveServiceImpl.insertPlotStockRow}），
      * 且 {@code deductByPlotLocation} 是**无 {@code LIMIT} 的 UPDATE**、会把同 {@code (库位, 地块)} 的
      * **每一篮都扣一次**（跨产品双扣、库存被放大扣减）—— 复活该路径前必须同时修这两处。service 此时把 plotId 写入
-     * pick_out 流水的 {@code plot_id}；同时按 plot→crop→{@code crop.related_product} 解析果蔬成品
+     * pick_out 流水的 {@code plot_id}；同时按 plot→crop→作物主产品 解析果蔬成品
      * product_id 写入流水（与 admin 打包 {@code belong_type='vegetable'} 统计 join 的契约）。</p>
      *
      * <p>为空 = 外购果蔬 / 包材等 product 维度领用（现有路径，不回归）。</p>

@@ -344,7 +344,7 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
             items.add(new ImageUrlResolver.Item(pickImageOssId(p), p.getBelongType()));
         }
         List<String> urls = imageUrlResolver.resolveList(items);
-        // 果蔬最早采摘日：作物 → 产品是反向关联（crop.related_product），同一产品可能被多条作物指向，取 min
+        // 果蔬最早采摘日：按作物主产品（产品配置首行）归到产品上，取 min
         Map<Long, String> earliestPickByProduct = buildEarliestPickDateIndex();
         // 本店最近一次下单该产品的时间
         Map<Long, String> lastOrderByProduct = new HashMap<>();
@@ -370,7 +370,7 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
             vo.setDemandProductType(toDemandProductType(p.getBelongType()));
             if (BELONG_VEGETABLE.equals(p.getBelongType())) {
                 // 加工果蔬成品挂原材料基础菜（productMaterial），基础果蔬自身即原材料 —— 与 admin
-                // cropStatOf(product) 的 `relatedProduct == (productMaterial ?? id)` 逐字一致
+                // cropStatOf(product) 的 `primaryProductId == (productMaterial ?? id)` 逐字一致
                 Long cropKey = p.getProductMaterial() != null ? p.getProductMaterial() : p.getId();
                 vo.setEarliestPickDate(earliestPickByProduct.get(cropKey));
             }
@@ -488,8 +488,7 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
     /**
      * 「基础果蔬产品 → 最早可采摘日」索引。
      *
-     * <p>同一基础产品可能被多条作物指向（如「甘蓝」挂两条作物），日期取 min ——
-     * 直接按 relatedProduct 建 Map 会互相覆盖（与 admin {@code buildCropPlotStatByProduct} 同口径）。</p>
+     * <p>按 primaryProductId 归并，同一产品出现多次时日期取 min（与 admin {@code buildCropPlotStatByProduct} 同口径）。</p>
      */
     private Map<Long, String> buildEarliestPickDateIndex() {
         Map<Long, String> map = new HashMap<>();
@@ -498,7 +497,7 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
             return map;
         }
         for (CropPlotStatVo row : stats) {
-            Long key = row.getRelatedProduct();
+            Long key = row.getPrimaryProductId();
             String date = row.getEarliestPickDate();
             if (key == null || StringUtils.isBlank(date)) {
                 continue;

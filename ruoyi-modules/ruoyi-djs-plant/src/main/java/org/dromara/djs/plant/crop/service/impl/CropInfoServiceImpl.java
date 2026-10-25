@@ -18,7 +18,9 @@ import org.dromara.djs.plant.crop.domain.vo.CropFarmworkVo;
 import org.dromara.djs.plant.crop.domain.vo.CropInfoVo;
 import org.dromara.djs.plant.crop.domain.vo.CropPlantingRecordVo;
 import org.dromara.djs.plant.crop.domain.vo.CropPlantingStatVo;
+import org.dromara.djs.plant.crop.domain.vo.CropProductVo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
+import org.dromara.djs.plant.crop.mapper.CropProductMapper;
 import org.dromara.djs.plant.crop.service.ICropInfoService;
 import org.springframework.stereotype.Service;
 
@@ -47,11 +49,14 @@ public class CropInfoServiceImpl extends DjsBaseServiceImpl<CropInfoMapper, Crop
     private static final String CROP_BELONG_TYPE = "vegetable";
 
     private final ImageUrlResolver imageUrlResolver;
+    private final CropProductMapper cropProductMapper;
 
     public CropInfoServiceImpl(CropInfoMapper baseMapper,
-                               ImageUrlResolver imageUrlResolver) {
+                               ImageUrlResolver imageUrlResolver,
+                               CropProductMapper cropProductMapper) {
         super(baseMapper);
         this.imageUrlResolver = imageUrlResolver;
+        this.cropProductMapper = cropProductMapper;
     }
 
     @Override
@@ -187,35 +192,28 @@ public class CropInfoServiceImpl extends DjsBaseServiceImpl<CropInfoMapper, Crop
     }
 
     /**
-     * 批量回填关联产品名称（relatedProduct → t_warehouse_product_info.product_name，禁 N+1）。
+     * 批量回填关联产品名称：作物产品配置（t_plant_crop_product）里的产品名按配置顺序用「、」拼接，禁 N+1。
      *
-     * <p>收集非空 relatedProduct 去重 IN 查产品名，回填 relatedProductName；查不到留 null。</p>
+     * <p>一次 IN 查完；产品已删的配置行 {@link CropProductMapper#selectByCropIds} 不返回。没配产品留 null。</p>
      */
     private void fillRelatedProductNames(List<CropInfoVo> records) {
         if (records == null || records.isEmpty()) {
             return;
         }
-        List<Long> productIds = records.stream()
-            .map(CropInfoVo::getRelatedProduct)
+        List<Long> cropIds = records.stream()
+            .map(CropInfoVo::getId)
             .filter(java.util.Objects::nonNull)
             .distinct()
             .collect(Collectors.toList());
-        if (productIds.isEmpty()) {
+        if (cropIds.isEmpty()) {
             return;
         }
-        List<Map<String, Object>> rows = baseMapper.selectProductNames(productIds);
-        Map<Long, String> nameMap = new java.util.HashMap<>(rows.size());
-        for (Map<String, Object> row : rows) {
-            Object idObj = row.get("id");
-            Object nameObj = row.get("productName");
-            if (idObj != null && nameObj != null) {
-                nameMap.put(Long.valueOf(idObj.toString()), nameObj.toString());
-            }
-        }
+        Map<Long, String> nameMap = cropProductMapper.selectByCropIds(cropIds).stream()
+            .filter(cp -> cp.getProductName() != null)
+            .collect(Collectors.groupingBy(CropProductVo::getCropId, java.util.LinkedHashMap::new,
+                Collectors.mapping(CropProductVo::getProductName, Collectors.joining("、"))));
         for (CropInfoVo vo : records) {
-            if (vo.getRelatedProduct() != null) {
-                vo.setRelatedProductName(nameMap.get(vo.getRelatedProduct()));
-            }
+            vo.setRelatedProductName(nameMap.get(vo.getId()));
         }
     }
 

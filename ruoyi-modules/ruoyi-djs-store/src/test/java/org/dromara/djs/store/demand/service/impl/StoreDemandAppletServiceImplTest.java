@@ -632,9 +632,9 @@ class StoreDemandAppletServiceImplTest {
         verify(demandManageMapper, never()).selectLastOrderTimeByStore(anyLong(), any(Collection.class));
     }
 
-    private CropPlotStatVo cropStat(Long relatedProduct, String earliestPickDate) {
+    private CropPlotStatVo cropStat(Long primaryProductId, String earliestPickDate) {
         CropPlotStatVo vo = new CropPlotStatVo();
-        vo.setRelatedProduct(relatedProduct);
+        vo.setPrimaryProductId(primaryProductId);
         vo.setEarliestPickDate(earliestPickDate);
         return vo;
     }

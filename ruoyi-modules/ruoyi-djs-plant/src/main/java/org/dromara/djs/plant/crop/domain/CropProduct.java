@@ -14,8 +14,8 @@ import java.math.BigDecimal;
  * 作物关联产品配置实体（V6 row16）。
  *
  * <p>对应表 {@code t_plant_crop_product}（V202608290100）。一个作物可产出多个产品，
- * 每个产品带自己的绩效金额；原先挂在 {@code t_plant_crop_info} 上的
- * {@code related_product} / {@code pick_unit_price} 一对一数据已迁入本表作首行。</p>
+ * 每个产品带自己的绩效金额。首行（id 最小、产品未删）= 作物主产品，见
+ * {@link org.dromara.djs.plant.crop.service.ICropProductService#primaryProductId}。</p>
  *
  * @author djs
  */

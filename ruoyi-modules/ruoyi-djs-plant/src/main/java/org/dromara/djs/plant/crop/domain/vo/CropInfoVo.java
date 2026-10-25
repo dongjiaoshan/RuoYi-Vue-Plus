@@ -54,13 +54,10 @@ public class CropInfoVo implements Serializable {
     @ExcelProperty(value = "作物属")
     private String cropGenus;
 
-    @ExcelProperty(value = "关联产品ID")
-    private Long relatedProduct;
-
     /**
-     * 关联产品名称（派生，按 relatedProduct → t_warehouse_product_info.product_name 批量 enrich）。
+     * 关联产品名称（派生：作物产品配置 t_plant_crop_product 里的全部产品名，按配置顺序用「、」拼接）。
      *
-     * <p>service 层批量回填，避免 N+1；列表 / 详情展示用，替代直接显示雪花 id。</p>
+     * <p>service 层批量回填，避免 N+1；列表 / 详情展示用。</p>
      */
     @ExcelProperty(value = "关联产品")
     private String relatedProductName;
@@ -89,9 +86,6 @@ public class CropInfoVo implements Serializable {
 
     @ExcelProperty(value = "品质描述")
     private String qualityDesc;
-
-    @ExcelProperty(value = "采摘单价(元/公斤)")
-    private BigDecimal pickUnitPrice;
 
     /** 主图 ossId（IMG-LIB-001 L1）。 */
     private String imageOssId;

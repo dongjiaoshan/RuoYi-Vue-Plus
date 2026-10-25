@@ -269,7 +269,7 @@ public class VegetableHandleServiceImpl
      *
      * <p>用户传了就用用户传的，但必须真属于该作物的产品配置 —— 否则一次改前端 payload 就能把重量记到
      * 别的作物的产品上，库存跟着串。传空（作物只配了一个产品，mp 只展示不回传）取配置里的第一个；
-     * 作物一个产品都没配时回落旧口径 {@code crop.related_product}，保持改造前行为。</p>
+     * 作物一个产品都没配时返回 null（采摘录入据此拒绝 &gt;0 kg 的称重）。</p>
      */
     private Long resolveRecordProductId(Long cropId, Long requested) {
         List<CropProductVo> configured = cropProductService.listByCrop(cropId);
@@ -283,35 +283,31 @@ public class VegetableHandleServiceImpl
             }
             return configured.get(0).getProductId();
         }
-        return resolveProductIdByCrop(cropId, null);
+        return null;
     }
 
     /**
-     * 按作物 {@code crop.related_product}（FK → t_warehouse_product_info.id）解析果蔬成品 product_id。
+     * 按作物主产品（产品配置首行，{@link ICropProductService#primaryProductId}）解析果蔬成品 product_id。
      *
-     * <p>甲方《果疏产品全流程处理.docx》规则：作物→产品转换走 {@code t_plant_crop_info.related_product}，
-     * 毛菜处理产出的 product_id 取自该映射（重量不变）。</p>
-     *
-     * <p><b>优雅降级</b>：客户未在 admin 作物录入页填 related_product 时（现网全 NULL），返回
-     * {@code fallback} 并 {@code log.warn}，不抛、不阻塞采摘/处理流程。fallback 通常是
+     * <p>作物没配产品时返回 {@code fallback} 并 {@code log.warn}，不抛。fallback 通常是
      * {@code planting.getProductId()}（旧来源，多为 null）；写 stock_flow 的调用方对 null 结果
      * 显式失败（product_id=0 兜底已废除，防库存总览无名幽灵行）。</p>
      *
      * @param cropId   作物 id（planting_record.crop_id）
-     * @param fallback related_product 为空时的兜底 product_id（可为 null）
-     * @return 解析出的果蔬成品 product_id；无映射时返 fallback
+     * @param fallback 作物没配产品时的兜底 product_id（可为 null）
+     * @return 解析出的果蔬成品 product_id；无配置时返 fallback
      */
     private Long resolveProductIdByCrop(Long cropId, Long fallback) {
         if (cropId == null) {
             return fallback;
         }
-        CropInfo crop = cropInfoMapper.selectById(cropId);
-        if (crop == null || crop.getRelatedProduct() == null) {
+        Long productId = cropProductService.primaryProductId(cropId);
+        if (productId == null) {
             log.warn("作物未配置产品，product_id 降级为 {} — cropId={}（请在 admin 作物管理 → 编辑作物 →"
                 + "「产品配置」页签为该作物添加产出产品）", fallback, cropId);
             return fallback;
         }
-        return crop.getRelatedProduct();
+        return productId;
     }
 
     /**
@@ -473,7 +469,7 @@ public class VegetableHandleServiceImpl
         handle.setPlantingRecordId(planting.getId());
         handle.setPlotId(planting.getPlotId());
         handle.setCropId(planting.getCropId());
-        // product_id 优先按作物 related_product（作物↔果蔬成品映射）解析；未配置则降级回旧来源 planting.product_id
+        // product_id 优先取作物主产品（产品配置首行）；未配置则降级回旧来源 planting.product_id
         handle.setProductId(resolveProductIdByCrop(planting.getCropId(), planting.getProductId()));
         handle.setPickStartTime(now);
         handle.setPickedWeight(BigDecimal.ZERO);
@@ -688,11 +684,10 @@ public class VegetableHandleServiceImpl
      * 的那些篮，{@link LocationStockMapper#selectBasketsBySource} 一次取全。每篮自带 {@code product_id}，
      * 损耗按它归集，不需要反解产品。</p>
      *
-     * <p>🔴 <b>为什么不能按产品清单枚举</b>（第二轮的写法：作物产品配置 ∪ {@code crop.related_product}
-     * ∪ {@code handle.product_id}，逐个产品取篮）：那份清单与读侧范围不是同一个东西。读侧
+     * <p>🔴 <b>为什么不能按产品清单枚举</b>（作物产品配置 ∪ {@code handle.product_id}，逐个产品取篮）：那份清单与读侧范围不是同一个东西。读侧
      * （{@link LocationStockMapper#selectPlotProductStocks} / {@code PlantingRecordMapper#selectPlotDetailByCrop}）
      * 只按 {@code source_biz_id} 查，产品被移出作物配置后照样看得见它的存量；而清单里它已经没了
-     * —— {@code handle.product_id} 也兜不住，那是建汇总行时写死的单值（{@code = crop.related_product}），
+     * —— {@code handle.product_id} 也兜不住，那是建汇总行时写死的单值（= 当时的作物主产品），
      * 不是实际采收过的产品集合。于是「读得到、结不掉」：收口后 {@code picked ≠ handled + loss}，
      * 那批货扣不掉又出不去（记录已 done，处理录入直接被拒），在 mp 地块卡上永久显示成僵尸剩余。
      * 实测：作物配 P1/P2 各采 30/20kg，删掉 P2 的作物产品配置后收口 → loss 只有 P1 的 30，
@@ -1355,10 +1350,10 @@ public class VegetableHandleServiceImpl
     }
 
     /**
-     * 采摘活动各去向的产品口径：<b>工人选了哪个就是哪个</b>，没选才按作物的 {@code related_product} 兜底。
+     * 采摘活动各去向的产品口径：<b>工人选了哪个就是哪个</b>，没选才按作物主产品兜底。
      *
-     * <p>原来写的是 {@code resolveProductIdByCrop(cropId, bo.getProductId())} —— 那个方法把入参当
-     * 「兜底值」，只要作物配了 {@code related_product} 就直接返回它、把工人选的产品丢掉。</p>
+     * <p>不能写成 {@code resolveProductIdByCrop(cropId, bo.getProductId())}：那个方法把入参当
+     * 「兜底值」，只要作物配了产品就直接返回主产品、把工人选的产品丢掉。</p>
      *
      * <p>⚠️ <b>这一支目前是「备而未用」</b>：唯一调用链 {@code submitPickActivity} 在构造 BO 时就写死了
      * {@code destBo.setProductId(resolveProductIdByCrop(cropId, null))}，而 {@code PickActivitySubmitBo}
@@ -1374,8 +1369,7 @@ public class VegetableHandleServiceImpl
      * {@code handle_record} 就是果蔬月台卡的数据源，而收货侧对不属于该作物配置的产品是硬拒的 ——
      * 上游不把门就会造出一张点进去收不了的卡，货永久卡在月台。
      * 现在<b>没有</b>加这道门是有意的：{@code bo.getProductId()} 眼下并非客户端输入、而是调用方自己
-     * 预解析出来的作物默认产品，对它做「必须在配置里」的校验防不到任何真实入口，只会在
-     * {@code related_product} 与产品配置不一致时制造误拒（该不变量无 DB 约束、纯靠数据凑巧成立）。</p>
+     * 预解析出来的作物主产品（本就取自产品配置），对它做「必须在配置里」的校验防不到任何真实入口。</p>
      */
     private Long pickProductId(PickDestSubmitBo bo) {
         return bo.getProductId() != null ? bo.getProductId() : resolveProductIdByCrop(bo.getCropId(), null);
@@ -1390,8 +1384,8 @@ public class VegetableHandleServiceImpl
      *
      * <p><b>row54</b>：{@code productId} 用调用方传进来的 {@code selectedProductId}
      * （= 工人在处理录入里选的那个处理产品，已过 {@link #resolveRecordProductId} 的作物-产品配置校验），
-     * <b>不再</b>在这里用 {@code resolveProductIdByCrop} 按作物二次反解 —— 那个方法只要作物配了
-     * {@code related_product} 就一律返回它、无视传入值，于是红薯杆的饲喂会被记成红薯。
+     * <b>不</b>在这里用 {@code resolveProductIdByCrop} 按作物二次反解 —— 那个方法一律返回作物主产品、
+     * 无视传入值，于是红薯杆的饲喂会被记成红薯。
      * 一个作物可以有多个产品（红薯 / 红薯杆），有机饲喂记录新增的「产品名称」列正是要区分它们，
      * 反解会让整列退化成作物名、等于没加。入库那一路（{@code insertVegStockInFlow}）本来就传的是它。</p>
      */

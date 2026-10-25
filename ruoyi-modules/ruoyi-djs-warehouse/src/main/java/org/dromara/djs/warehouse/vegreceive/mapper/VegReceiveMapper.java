@@ -41,12 +41,11 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
      * <p>{@code vegetable_handle.send_platform_weight} 是 (地块, 作物) 一行的汇总列，**没有产品维度**，
      * 拆不开。带产品的明细在 {@code t_warehouse_handle_record}（{@code record_type=2 处理} +
      * {@code handle_target=2 月台}），且实测两者恒等（handle 的汇总列 = 其明细行之和），故改以明细为源。
-     * 历史 {@code product_id} 为空的明细 COALESCE 回落 {@code crop.related_product}（多产品之前的单映射），
-     * 保证老数据不凭空消失。</p>
+     * 两侧明细的 {@code product_id} 恒非空（写入方按作物产品配置定产品）。</p>
      *
      * <p>待入库 = 该 (作物,产品) 月台量 − 已入库 self 量 − 已标记入库完成行的 loss（row21：地块标记入库完成后
      * 剩余量结算为损耗、不再正数挂着，故扣掉损耗自然归 0——扣减用<b>全历史</b> loss，不受当天口径影响）。
-     * 收货侧同样按产品分组，{@code veg_receive.product_id} 为空的历史行也回落 {@code crop.related_product}。</p>
+     * 收货侧同样按 {@code veg_receive.product_id} 分组。</p>
      *
      * <p>展示列 {@code actualWeight}（row203）= 该 (作物,产品)<b>详情页当前展示地块</b>的已入库量合计，
      * 与详情页 {@link #selectInboundPlots} 用同一套地块可见性谓词（{@code platform>0} 且
@@ -64,20 +63,19 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
         WITH plat AS (
             SELECT hr.crop_id,
                    hr.plot_id,
-                   COALESCE(hr.product_id, cr0.related_product) AS product_id,
+                   hr.product_id AS product_id,
                    SUM(hr.record_weight) AS platform
               FROM t_warehouse_handle_record hr
-              LEFT JOIN t_plant_crop_info cr0 ON cr0.id = hr.crop_id
              WHERE hr.del_flag = '0'
                AND hr.tenant_id = '1001'
                AND hr.record_type = 2
                AND hr.handle_target = 2
-             GROUP BY hr.crop_id, hr.plot_id, COALESCE(hr.product_id, cr0.related_product)
+             GROUP BY hr.crop_id, hr.plot_id, hr.product_id
         ),
         recv AS (
             SELECT vr.crop_id,
                    vr.plot_id,
-                   COALESCE(vr.product_id, cr1.related_product) AS product_id,
+                   vr.product_id AS product_id,
                    SUM(vr.weight) AS actual,
                    SUM(CASE WHEN vr.is_finish = 1 THEN vr.loss_weight ELSE 0 END) AS loss_all,
                    SUM(CASE WHEN vr.is_finish = 1 AND DATE(vr.receive_time) = CURDATE()
@@ -85,11 +83,10 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                    SUM(CASE WHEN vr.is_finish = 1 AND DATE(vr.receive_time) = CURDATE()
                             THEN 1 ELSE 0 END) AS finished_today
               FROM t_warehouse_veg_receive vr
-              LEFT JOIN t_plant_crop_info cr1 ON cr1.id = vr.crop_id
              WHERE vr.del_flag = '0'
                AND vr.tenant_id = '1001'
                AND vr.receive_type = 1
-             GROUP BY vr.crop_id, vr.plot_id, COALESCE(vr.product_id, cr1.related_product)
+             GROUP BY vr.crop_id, vr.plot_id, vr.product_id
         ),
         plat_sum AS (
             SELECT crop_id, product_id, SUM(platform) AS platform
@@ -224,14 +221,13 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
             SELECT hr.plot_id,
                    SUM(hr.record_weight) AS platform
               FROM t_warehouse_handle_record hr
-              LEFT JOIN t_plant_crop_info cr0 ON cr0.id = hr.crop_id
              WHERE hr.del_flag = '0'
                AND hr.tenant_id = '1001'
                AND hr.record_type = 2
                AND hr.handle_target = 2
                AND hr.crop_id = #{cropId}
                <if test="productId != null">
-                 AND COALESCE(hr.product_id, cr0.related_product) = #{productId}
+                 AND hr.product_id = #{productId}
                </if>
              GROUP BY hr.plot_id
         ),
@@ -244,13 +240,12 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                    SUM(CASE WHEN vr.is_finish = 1 AND DATE(vr.receive_time) = CURDATE()
                             THEN 1 ELSE 0 END) AS finished_today
               FROM t_warehouse_veg_receive vr
-              LEFT JOIN t_plant_crop_info cr1 ON cr1.id = vr.crop_id
              WHERE vr.del_flag = '0'
                AND vr.tenant_id = '1001'
                AND vr.receive_type = 1
                AND vr.crop_id = #{cropId}
                <if test="productId != null">
-                 AND COALESCE(vr.product_id, cr1.related_product) = #{productId}
+                 AND vr.product_id = #{productId}
                </if>
              GROUP BY vr.plot_id
         )
@@ -296,8 +291,7 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
      * 新送达的量不被前趟损耗吃掉，可继续入库。返回 ≥ 0；无月台量返 0。</p>
      *
      * <p>row55：三段全部按产品收窄——月台量改从 {@code handle_record}（带产品维度）取，收货 / 损耗按
-     * {@code veg_receive.product_id} 过滤。否则红薯的入库会去吃红薯杆的额度、封顶校验形同虚设。
-     * 历史空 {@code product_id} 两侧同样回落 {@code crop.related_product}，与列表口径一致。</p>
+     * {@code veg_receive.product_id} 过滤。否则红薯的入库会去吃红薯杆的额度、封顶校验形同虚设。</p>
      */
     // 同上：三段派生表别名 p/r/l 同样会被租户拦截器盯上，各段 WHERE 已显式带 tenant_id。
     @InterceptorIgnore(tenantLine = "true")
@@ -307,7 +301,6 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
           FROM (
             SELECT COALESCE(SUM(hr.record_weight), 0) AS platform
               FROM t_warehouse_handle_record hr
-              LEFT JOIN t_plant_crop_info cr0 ON cr0.id = hr.crop_id
              WHERE hr.del_flag = '0'
                AND hr.tenant_id = '1001'
                AND hr.record_type = 2
@@ -315,26 +308,24 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                AND hr.crop_id = #{cropId}
                AND hr.plot_id = #{plotId}
                <if test="productId != null">
-                 AND COALESCE(hr.product_id, cr0.related_product) = #{productId}
+                 AND hr.product_id = #{productId}
                </if>
           ) p,
           (
             SELECT COALESCE(SUM(vr.weight), 0) AS actual
               FROM t_warehouse_veg_receive vr
-              LEFT JOIN t_plant_crop_info cr1 ON cr1.id = vr.crop_id
              WHERE vr.receive_type = 1
                AND vr.crop_id = #{cropId}
                AND vr.plot_id = #{plotId}
                AND vr.del_flag = '0'
                AND vr.tenant_id = '1001'
                <if test="productId != null">
-                 AND COALESCE(vr.product_id, cr1.related_product) = #{productId}
+                 AND vr.product_id = #{productId}
                </if>
           ) r,
           (
             SELECT COALESCE(SUM(vrl.loss_weight), 0) AS loss
               FROM t_warehouse_veg_receive vrl
-              LEFT JOIN t_plant_crop_info cr2 ON cr2.id = vrl.crop_id
              WHERE vrl.receive_type = 1
                AND vrl.crop_id = #{cropId}
                AND vrl.plot_id = #{plotId}
@@ -342,7 +333,7 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                AND vrl.del_flag = '0'
                AND vrl.tenant_id = '1001'
                <if test="productId != null">
-                 AND COALESCE(vrl.product_id, cr2.related_product) = #{productId}
+                 AND vrl.product_id = #{productId}
                </if>
           ) l
         </script>

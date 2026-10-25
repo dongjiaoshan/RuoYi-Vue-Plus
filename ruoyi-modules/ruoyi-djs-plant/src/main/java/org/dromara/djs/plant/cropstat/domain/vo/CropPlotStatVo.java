@@ -14,10 +14,10 @@ import java.math.BigDecimal;
  * （明细 {@code plant_status != 'pending'}）。每个地块只取「当前轮」一条明细
  * （按实际种植日期 + id 倒序取最新），避免历史轮次重复计数。</p>
  *
- * <p><b>与产品的关联</b>：作物挂产品是<b>反向</b>的——{@code t_plant_crop_info.related_product}
- * 指向基础果蔬产品 {@code t_warehouse_product_info.id}。前端果蔬产品行匹配本行的规则为
- * {@code relatedProduct == (product.productMaterial ?? product.id)}（加工成品走 productMaterial
- * 回落到基础菜，基础果蔬自身即原材料），与 {@code VegDisplayNameMapper} 的展示名解析链完全一致。</p>
+ * <p><b>与产品的关联</b>：取作物主产品（产品配置 {@code t_plant_crop_product} 首行、产品未删）。
+ * 前端果蔬产品行匹配本行的规则为 {@code primaryProductId == (product.productMaterial ?? product.id)}
+ * （加工成品走 productMaterial 回落到基础菜，基础果蔬自身即原材料），与 {@code VegDisplayNameMapper}
+ * 的展示名解析链完全一致。</p>
  *
  * @author djs
  */
@@ -34,10 +34,9 @@ public class CropPlotStatVo implements Serializable {
     private String cropName;
 
     /**
-     * 作物关联的基础果蔬产品 ID（{@code t_plant_crop_info.related_product}）。
-     * 前端按 {@code product.productMaterial ?? product.id} 与之匹配。
+     * 作物主产品 ID（产品配置首行）。前端按 {@code product.productMaterial ?? product.id} 与之匹配。
      */
-    private Long relatedProduct;
+    private Long primaryProductId;
 
     /** 剩余地块数（在田地块块数，去重后）。 */
     private Integer remainPlotCount;

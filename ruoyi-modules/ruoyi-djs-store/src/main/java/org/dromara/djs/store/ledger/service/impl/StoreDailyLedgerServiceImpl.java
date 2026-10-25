@@ -84,7 +84,7 @@ import java.util.stream.Stream;
  * </ul>
  *
  * <h3>优雅降级</h3>
- * 现网 {@code t_plant_crop_info.related_product} 与果蔬成品 {@code product_material} 多为 NULL（客户未录），
+ * 现网果蔬成品 {@code product_material} 多为 NULL（客户未录），
  * 涉及取数处一律空回退 + {@code log.warn}，不抛异常。
  *
  * @author djs

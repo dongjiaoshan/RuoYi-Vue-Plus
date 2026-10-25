@@ -263,7 +263,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      * （V6 row102 地块收口结转损耗）。
      *
      * <p><b>为什么收口不能按产品清单逐个查</b>（{@link #selectPlotProductBaskets} 那条）：
-     * 产品清单只能从作物配置 / {@code crop.related_product} / 汇总行 {@code product_id} 拼出来，
+     * 产品清单只能从作物配置 / 汇总行 {@code product_id} 拼出来，
      * 而这三个来源都不是「这条种植记录实际采收过哪些产品」的权威 ——
      * 产品被移出作物配置之后，它名下的篮子就从清单里消失，收口枚举不到、既不结损耗也不扣库存，
      * 而读侧（{@link #selectPlotProductStocks} / {@code PlantingRecordMapper#selectPlotDetailByCrop}）
@@ -450,11 +450,11 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     List<MatIssueItemVo> selectSelfVegIssueItems(@Param("locationId") Long locationId);
 
     /**
-     * 按 {@code plot_id} 取该地块最近一条自产收货的作物 ID（步11；plot→crop→related_product 解析链）。
+     * 按 {@code plot_id} 取该地块最近一条自产收货的作物 ID（步11；plot→crop→主产品 解析链）。
      *
      * <p>自产果蔬库存行<b>不存 crop_id</b>（{@code t_warehouse_location_stock} 没有该列），领用时需
      * plot→crop 反查（取 {@code t_warehouse_veg_receive}
-     * 该地块 {@code receive_type=1} 最近一条的 crop_id），再 service 层 {@code crop.related_product} 解析
+     * 该地块 {@code receive_type=1} 最近一条的 crop_id），再 service 层解析作物主产品
      * 果蔬成品 product_id 写入 pick_out 流水。查不到返 null（service 兜底 product_id=0 + warn，不阻塞领用）。
      * 租户单租户显式 {@code tenant_id='1001'}。</p>
      *

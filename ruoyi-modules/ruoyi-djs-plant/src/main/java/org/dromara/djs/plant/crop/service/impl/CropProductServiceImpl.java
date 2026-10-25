@@ -56,6 +56,17 @@ public class CropProductServiceImpl extends DjsBaseServiceImpl<CropProductMapper
     }
 
     @Override
+    public Long primaryProductId(Long cropId) {
+        List<CropProductVo> configured = listByCrop(cropId);
+        return configured.isEmpty() ? null : configured.get(0).getProductId();
+    }
+
+    @Override
+    public Long cropIdByPrimaryProduct(Long productId) {
+        return productId == null ? null : baseMapper.selectCropIdByPrimaryProduct(productId);
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public int insertByBo(CropProductBo bo) {
         assertProductExists(bo.getProductId());

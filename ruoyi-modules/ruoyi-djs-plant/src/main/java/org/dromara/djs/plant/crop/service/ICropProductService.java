@@ -24,6 +24,20 @@ public interface ICropProductService {
      */
     Map<Long, List<CropProductVo>> mapByCropIds(Collection<Long> cropIds);
 
+    /**
+     * 作物的主产品 = 产品配置首行（id 升序，产品已删的行不算）；没配返回 null。
+     *
+     * <p>作物→产品「取一个」的唯一口径（采摘默认产品、月台默认库位、领用原料、采摘活动等）。</p>
+     */
+    Long primaryProductId(Long cropId);
+
+    /**
+     * 反查：主产品是该产品的在用作物；没有返回 null。
+     *
+     * <p>一个产品可以出现在多个作物的配置里，但只会是至多一个作物的主产品，所以按主产品反查不会一对多。</p>
+     */
+    Long cropIdByPrimaryProduct(Long productId);
+
     int insertByBo(CropProductBo bo);
 
     int updateByBo(CropProductBo bo);

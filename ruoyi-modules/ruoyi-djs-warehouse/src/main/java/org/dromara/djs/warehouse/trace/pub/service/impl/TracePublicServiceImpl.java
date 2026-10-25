@@ -1178,7 +1178,7 @@ public class TracePublicServiceImpl
         List<PublicTraceVo.OrganicCertRow> certs = new ArrayList<>();
         Set<Long> seenCertIds = new HashSet<>();
         // 作物有机证书（row149）：追溯码 crop_cert_id 在「一证多作物」重构后废弃恒 NULL，改按
-        // 产品 → 作物（related_product）→ 关联表 t_plant_crop_organic_rel 解析当前有效证书（可多张）。
+        // 产品 → 作物（主产品）→ 关联表 t_plant_crop_organic_rel 解析当前有效证书（可多张）。
         if (code.getProductId() != null) {
             for (Long certId : vegDisplayNameMapper.selectVegOrganicCertIds(code.getProductId())) {
                 CropOrganic c = certId == null ? null : cropOrganicMapper.selectById(certId);

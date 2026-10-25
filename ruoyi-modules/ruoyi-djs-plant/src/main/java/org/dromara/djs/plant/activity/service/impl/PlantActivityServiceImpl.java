@@ -10,8 +10,6 @@ import org.dromara.djs.plant.activity.domain.PlantActivity;
 import org.dromara.djs.plant.activity.domain.bo.PickActivityRecordBo;
 import org.dromara.djs.plant.activity.mapper.PlantActivityMapper;
 import org.dromara.djs.plant.activity.service.IPlantActivityService;
-import org.dromara.djs.plant.crop.domain.CropInfo;
-import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
@@ -53,18 +51,18 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
     /** 育苗（保育）地块类型（{@code djs_plot_type='nursery'}）：须先移栽才进采摘，不进结算批次。 */
     private static final String PLOT_TYPE_NURSERY = "nursery";
 
-    private final CropInfoMapper cropInfoMapper;
+    private final org.dromara.djs.plant.crop.service.ICropProductService cropProductService;
     private final PlantDetailsMapper plantDetailsMapper;
     private final PlotInfoMapper plotInfoMapper;
     private final org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
 
     public PlantActivityServiceImpl(PlantActivityMapper baseMapper,
-                                    CropInfoMapper cropInfoMapper,
+                                    org.dromara.djs.plant.crop.service.ICropProductService cropProductService,
                                     PlantDetailsMapper plantDetailsMapper,
                                     PlotInfoMapper plotInfoMapper,
                                     org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService) {
         super(baseMapper);
-        this.cropInfoMapper = cropInfoMapper;
+        this.cropProductService = cropProductService;
         this.plantDetailsMapper = plantDetailsMapper;
         this.plotInfoMapper = plotInfoMapper;
         this.teamLinkService = teamLinkService;
@@ -325,18 +323,17 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
     }
 
     /**
-     * 按作物 {@code crop.related_product} 解析果蔬成品 product_id（未配置返 null，不阻断录入）。
+     * 按作物主产品（产品配置首行）解析果蔬成品 product_id（未配置返 null，不阻断录入）。
      */
     private Long resolveProductIdByCrop(Long cropId) {
         if (cropId == null) {
             return null;
         }
-        CropInfo crop = cropInfoMapper.selectById(cropId);
-        if (crop == null || crop.getRelatedProduct() == null) {
-            log.warn("作物 related_product 未配置，product_id 留空 — cropId={}", cropId);
-            return null;
+        Long productId = cropProductService.primaryProductId(cropId);
+        if (productId == null) {
+            log.warn("作物未配置产出产品，product_id 留空 — cropId={}", cropId);
         }
-        return crop.getRelatedProduct();
+        return productId;
     }
 
     @Override

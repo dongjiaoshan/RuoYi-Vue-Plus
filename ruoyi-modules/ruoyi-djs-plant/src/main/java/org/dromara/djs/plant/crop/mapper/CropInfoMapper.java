@@ -58,27 +58,6 @@ public interface CropInfoMapper extends BaseMapperPlus<CropInfo, CropInfoVo> {
     List<CropPlantingStatVo> selectPlantingStats(@Param("cropIds") Collection<Long> cropIds);
 
     /**
-     * 按 relatedProduct id 批量查关联产品名称（避免 N+1）。
-     *
-     * <p>逻辑关联 {@code t_warehouse_product_info.id → product_name}；显式手写
-     * {@code tenant_id='1001' AND del_flag='0'}（V1 未启全局多租户拦截器）。</p>
-     *
-     * @param productIds 关联产品 id 集合（已 dedupe，非空）
-     * @return 产品行（id + productName），service 收 Map 回填 relatedProductName
-     */
-    @Select("""
-        <script>
-        SELECT id, product_name AS productName
-          FROM t_warehouse_product_info
-         WHERE tenant_id = '1001'
-           AND del_flag = '0'
-           AND id IN
-           <foreach collection='productIds' item='pid' open='(' separator=',' close=')'>#{pid}</foreach>
-        </script>
-        """)
-    List<java.util.Map<String, Object>> selectProductNames(@Param("productIds") Collection<Long> productIds);
-
-    /**
      * 按 cropId 查种植记录子表（作物详情 9 列）。
      *
      * <p>JOIN 地块名 + 种植班组(plant_by) / 采摘班组(harvest_by)。

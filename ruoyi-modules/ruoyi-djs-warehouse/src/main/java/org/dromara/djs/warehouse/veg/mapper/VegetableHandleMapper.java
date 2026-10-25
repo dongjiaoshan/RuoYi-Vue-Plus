@@ -46,7 +46,7 @@ public interface VegetableHandleMapper extends BaseMapperPlus<VegetableHandle, V
      * 重量 SUM 含已 done 批次（口径不变，累计展示）。</p>
      *
      * <p>菜名取 {@code t_warehouse_planting_record.crop_name} 冗余快照（与 selectPendingList /
-     * fillPlantingNames 同源）；缩略图取「产品配置中原材料的图」——按 {@code crop.related_product}
+     * fillPlantingNames 同源）；缩略图取「产品配置中原材料的图」——按 作物主产品
      * 关联 {@code t_warehouse_product_info(attr=2 果蔬原料)} 取其 {@code image_oss_id}，作物自身图作兜底
      * （{@code COALESCE(prod.image_oss_id, c.image_oss_id)}）；都取不到走前端默认图兜底。
      * 按最近 {@code data_date} 倒序，让"刚采摘完"的菜品排前面。</p>
@@ -84,8 +84,10 @@ public interface VegetableHandleMapper extends BaseMapperPlus<VegetableHandle, V
         + "               FROM t_warehouse_vegetable_handle WHERE del_flag='0'"
         + "               GROUP BY planting_record_id) h ON h.planting_record_id=p.id"
         + "  LEFT JOIN t_plant_crop_info c ON c.id=p.crop_id AND c.del_flag='0'"
-        // 图取「产品配置中原材料」：作物 related_product → 果蔬原料 product(attr=2) 的 image_oss_id（row18 口径）
-        + "  LEFT JOIN t_warehouse_product_info prod ON prod.id=c.related_product"
+        // 图取「产品配置中原材料」：作物主产品（产品配置首行、产品未删）→ 果蔬原料 product(attr=2) 的 image_oss_id（row18 口径）
+        + "  LEFT JOIN t_warehouse_product_info prod ON prod.id=(SELECT cp.product_id FROM t_plant_crop_product cp"
+        + "                JOIN t_warehouse_product_info cpp ON cpp.id=cp.product_id AND cpp.del_flag='0' AND cpp.tenant_id='1001'"
+        + "               WHERE cp.crop_id=c.id AND cp.del_flag='0' AND cp.tenant_id='1001' ORDER BY cp.id LIMIT 1)"
         + "                AND prod.del_flag='0' AND prod.product_attr=2"
         + "  LEFT JOIN t_plant_plot_info pl ON pl.id=p.plot_id AND pl.del_flag='0'"
         // 灾害损失：灾害农事记录(farm_type='disaster') 按 crop_id 预聚合 SUM(loss_yield)，先聚合再左联避免扇出

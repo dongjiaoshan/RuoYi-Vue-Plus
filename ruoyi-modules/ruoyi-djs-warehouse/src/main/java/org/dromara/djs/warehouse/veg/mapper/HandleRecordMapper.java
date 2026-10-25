@@ -212,7 +212,7 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
      *       {@link #PICK_DETAIL_SQL} 同一条取数路径 —— 这是录入人当场选定的处理产品，逐行准确。</li>
      *   <li>结算损耗支：<b>恒 NULL</b>。{@code loss_weight = picked − stockIn − sendPlatform − feed}
      *       是<b>地块级</b>一次性结算，跨该地块所有产品，库里不存在按产品的拆分；汇总行上的
-     *       {@code h.product_id} 是建行时按遗留字段 {@code crop.related_product} 解析的单产品，
+     *       {@code h.product_id} 是建行时按作物主产品解析的单产品，
      *       V6 row16 起产品配置已迁到 {@code t_plant_crop_product}（一作物多产品），拿它填这一列
      *       对多产品作物就是编一个名字出来。宁可空着。</li>
      *   <li>采摘活动支：<b>恒 NULL</b>。{@code t_plant_plant_activity} 没有产品维度，

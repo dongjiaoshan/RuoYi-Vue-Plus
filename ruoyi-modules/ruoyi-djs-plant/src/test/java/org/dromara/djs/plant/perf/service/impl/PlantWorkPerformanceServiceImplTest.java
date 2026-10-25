@@ -228,7 +228,7 @@ class PlantWorkPerformanceServiceImplTest {
             Map.of("cropId", 10L, "productId", 102L, "perfPrice", new BigDecimal("0.60"))
         ));
         when(baseMapper.selectCropUnitPrices(anyCollection())).thenReturn(List.of(
-            Map.of("cropId", 10L, "pickUnitPrice", new BigDecimal("99.00"))
+            Map.of("cropId", 10L, "primaryPerfPrice", new BigDecimal("99.00"))
         ));
         when(baseMapper.update(eq(null), any())).thenReturn(0);
         when(baseMapper.insert(any(PlantWorkPerformance.class))).thenReturn(1);
@@ -241,7 +241,7 @@ class PlantWorkPerformanceServiceImplTest {
             .filter(r -> Long.valueOf(101L).equals(r.getProductId())).findFirst().orElseThrow();
         PlantWorkPerformance p102 = captor.getAllValues().stream()
             .filter(r -> Long.valueOf(102L).equals(r.getProductId())).findFirst().orElseThrow();
-        // 单价必须是「产品配置的绩效金额」，不是作物级 pick_unit_price（99.00 那个是陷阱值）
+        // 单价必须是「产品配置的绩效金额」，不是作物级兜底单价（99.00 那个是陷阱值）
         assertThat(p101.getUnitPriceSnapshot()).isEqualByComparingTo("2.50");
         assertThat(p101.getPerformanceAmount()).isEqualByComparingTo("75.00");
         assertThat(p102.getUnitPriceSnapshot()).isEqualByComparingTo("0.60");
@@ -280,8 +280,8 @@ class PlantWorkPerformanceServiceImplTest {
         ));
         // 作物单价快照：作物10 = 1.20 元/公斤；作物20 = 2.00 元/公斤
         when(baseMapper.selectCropUnitPrices(anyCollection())).thenReturn(List.of(
-            Map.of("cropId", 10L, "pickUnitPrice", new BigDecimal("1.20")),
-            Map.of("cropId", 20L, "pickUnitPrice", new BigDecimal("2.00"))
+            Map.of("cropId", 10L, "primaryPerfPrice", new BigDecimal("1.20")),
+            Map.of("cropId", 20L, "primaryPerfPrice", new BigDecimal("2.00"))
         ));
         when(baseMapper.update(eq(null), any())).thenReturn(0);
         when(baseMapper.insert(any(PlantWorkPerformance.class))).thenReturn(1);
@@ -334,7 +334,7 @@ class PlantWorkPerformanceServiceImplTest {
         d2.setTeamId(2L);
         when(baseMapper.selectActivityDirectTeamsByMonth(month)).thenReturn(List.of(d1, d2));
         when(baseMapper.selectCropUnitPrices(anyCollection())).thenReturn(List.of(
-            Map.of("cropId", 10L, "pickUnitPrice", new BigDecimal("1.00"))
+            Map.of("cropId", 10L, "primaryPerfPrice", new BigDecimal("1.00"))
         ));
         when(baseMapper.update(eq(null), any())).thenReturn(0);
         when(baseMapper.insert(any(PlantWorkPerformance.class))).thenReturn(1);
@@ -374,7 +374,7 @@ class PlantWorkPerformanceServiceImplTest {
         t2.setTeamId(2L);
         when(baseMapper.selectHarvestTeamsByPlots(anyCollection())).thenReturn(List.of(t1, t2));
         when(baseMapper.selectCropUnitPrices(anyCollection())).thenReturn(List.of(
-            Map.of("cropId", 10L, "pickUnitPrice", new BigDecimal("1.00"))
+            Map.of("cropId", 10L, "primaryPerfPrice", new BigDecimal("1.00"))
         ));
         when(baseMapper.update(eq(null), any())).thenReturn(0);
         when(baseMapper.insert(any(PlantWorkPerformance.class))).thenReturn(1);
@@ -402,7 +402,7 @@ class PlantWorkPerformanceServiceImplTest {
     void testGenerate_CropWithoutPrice() {
         String month = "2026-05";
         when(baseMapper.aggregateByMonth(month)).thenReturn(List.of(agg(1L, 10L, "30.000")));
-        // 作物 10 无单价行返回（pick_unit_price 为 null 时该 crop 不在结果或值为 null）
+        // 作物 10 无单价行返回（主产品绩效金额为 null 时该 crop 不在结果或值为 null）
         when(baseMapper.selectCropUnitPrices(anyCollection())).thenReturn(List.of());
         when(baseMapper.insert(any(PlantWorkPerformance.class))).thenReturn(1);
 

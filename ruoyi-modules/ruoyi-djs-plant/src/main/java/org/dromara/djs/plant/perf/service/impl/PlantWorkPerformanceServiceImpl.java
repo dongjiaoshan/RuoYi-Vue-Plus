@@ -56,7 +56,7 @@ import java.util.stream.Stream;
  * 班组绩效结算 Service 实现（PLT-PERF-001）。
  *
  * <p>核心 {@code generate(statMonth)}：幂等软删该月旧行 → 聚合 details.actual_yield（公斤）→
- * 读 crop.pick_unit_price（元/公斤）作单价快照，金额 = 采摘量(公斤) × 绩效百分比 × 单价(元/公斤)
+ * 读作物产品配置的绩效金额（元/公斤）作单价快照，金额 = 采摘量(公斤) × 绩效百分比 × 单价(元/公斤)
  * → 批量 INSERT。单价取快照（不实时 JOIN），后续改价不污染历史月。</p>
  *
  * <p>V6 row107：绩效百分比来自采摘录入（{@code handle_record.perf_percent}），且是分组维度 ——
@@ -172,7 +172,7 @@ public class PlantWorkPerformanceServiceImpl
         }
 
         // 3. 批量取单价快照（一次查询）：V6 row20 起单价来自「作物 × 产品」的绩效金额，
-        //    作物没配产品 / 该产品没填金额时回落作物级 pick_unit_price，历史月口径不变。
+        //    该产品不在作物配置里 / 没填金额时回落作物主产品（配置首行）的绩效金额。
         Map<Long, BigDecimal> cropPriceMap = loadCropPrices(cropIds);
         Map<String, BigDecimal> productPriceMap = loadCropProductPrices(cropIds);
 
@@ -363,7 +363,7 @@ public class PlantWorkPerformanceServiceImpl
     }
 
     /**
-     * 批量取作物单价快照映射。
+     * 批量取作物级兜底单价（主产品绩效金额）快照映射。
      */
     private Map<Long, BigDecimal> loadCropPrices(Set<Long> cropIds) {
         Map<Long, BigDecimal> map = new HashMap<>();
@@ -373,7 +373,7 @@ public class PlantWorkPerformanceServiceImpl
         List<Map<String, Object>> priceRows = baseMapper.selectCropUnitPrices(cropIds);
         for (Map<String, Object> r : priceRows) {
             Object idObj = r.get("cropId");
-            Object priceObj = r.get("pickUnitPrice");
+            Object priceObj = r.get("primaryPerfPrice");
             if (idObj instanceof Number nid && priceObj instanceof BigDecimal price) {
                 map.put(nid.longValue(), price);
             } else if (idObj instanceof Number nid && priceObj != null) {

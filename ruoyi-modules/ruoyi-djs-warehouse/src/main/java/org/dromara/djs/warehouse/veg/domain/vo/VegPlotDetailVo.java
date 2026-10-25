@@ -82,7 +82,7 @@ public class VegPlotDetailVo implements Serializable {
 
     /**
      * 该作物能否解析出产出产品：1=能 / 0=不能（作物产品配置 t_plant_crop_product 有存活产品，
-     * 或旧单列 related_product 非空 —— 与采摘录入的产品解析同口径）。
+     * 与采摘录入的产品解析同口径）。
      * 0 时 mp 打开录入即提示，且 &gt;0 kg 的采摘提交前后端都会拒绝（甲方 2026-10-24）。
      */
     private Integer hasRelatedProduct;

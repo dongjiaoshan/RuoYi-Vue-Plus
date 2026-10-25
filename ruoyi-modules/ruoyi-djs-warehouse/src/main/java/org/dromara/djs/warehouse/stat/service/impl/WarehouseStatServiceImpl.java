@@ -49,7 +49,7 @@ import java.util.TreeSet;
  *   <li>月台接收只算自产 receive_type=1</li>
  *   <li>作物日表维度 = crop_id</li>
  *   <li>分割率 = 分割产品总重/分割白条总重（B1：分母 = 分割白条总重 cut_record.pickup_weight，Kevin 确认）</li>
- *   <li>作物净菜损耗（row17）生产/录入损耗按 product_id→crop(related_product) 归集（B5：plot 桥接漏 product 维损耗）</li>
+ *   <li>作物净菜损耗（row17）生产/录入损耗按 product_id→crop(主产品) 归集（B5：plot 桥接漏 product 维损耗）</li>
  *   <li>作物饲喂量（row17）取权威台账 feed_log（毛菜间 + 仓库领用两路径），不取 handle_record handle_target=3</li>
  * </ol>
  *

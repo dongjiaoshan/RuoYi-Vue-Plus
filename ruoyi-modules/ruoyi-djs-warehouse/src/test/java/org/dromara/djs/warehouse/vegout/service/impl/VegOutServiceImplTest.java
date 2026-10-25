@@ -97,6 +97,8 @@ class VegOutServiceImplTest {
     @Mock
     private CropInfoMapper cropInfoMapper;
     @Mock
+    private org.dromara.djs.plant.crop.service.ICropProductService cropProductService;
+    @Mock
     private VegetableHandleMapper vegetableHandleMapper;
     @Mock
     private FeedLogMapper feedLogMapper;
@@ -126,7 +128,7 @@ class VegOutServiceImplTest {
     void setup() {
         service = new VegOutServiceImpl(vegOutMapper, locationStockMapper, locationInfoMapper, productInfoMapper,
             stockFlowMapper, cropInfoMapper, vegetableHandleMapper, feedLogMapper, handleRecordMapper,
-            locationStockService, bizCodeGenerator, userService);
+            locationStockService, bizCodeGenerator, userService, cropProductService);
         LocationInfo loc = new LocationInfo();
         loc.setId(FRESH_VEG_LOC);
         loc.setLocationCode("L0006");
@@ -188,7 +190,7 @@ class VegOutServiceImplTest {
         CropInfo crop = new CropInfo();
         crop.setId(cropId);
         crop.setCropName("上海青");
-        when(cropInfoMapper.selectOne(any())).thenReturn(crop);
+        when(cropProductService.cropIdByPrimaryProduct(any())).thenReturn(crop.getId());
         when(cropInfoMapper.selectById(any())).thenReturn(crop);
         VegetableHandle h = new VegetableHandle();
         h.setId(77L);
@@ -253,7 +255,7 @@ class VegOutServiceImplTest {
         CropInfo crop = new CropInfo();
         crop.setId(30L);
         crop.setCropName("上海青");
-        when(cropInfoMapper.selectOne(any())).thenReturn(crop);
+        when(cropProductService.cropIdByPrimaryProduct(any())).thenReturn(crop.getId());
         when(cropInfoMapper.selectById(any())).thenReturn(crop);
         // 查不到既有 handle 行 → 走补建；补建后 insert 会回填 id
         when(vegetableHandleMapper.selectOne(any())).thenReturn(null);
@@ -302,7 +304,7 @@ class VegOutServiceImplTest {
     void vegDock_noCropMapping_mustBlock() {
         when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
         when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
-        when(cropInfoMapper.selectOne(any())).thenReturn(null);   // 反查不到作物
+        when(cropProductService.cropIdByPrimaryProduct(any())).thenReturn(null);   // 反查不到作物
 
         assertThatThrownBy(() -> service.submit(mkBo("veg_dock", 1L, "12.000"), true))
             .isInstanceOf(ServiceException.class)
@@ -378,7 +380,7 @@ class VegOutServiceImplTest {
         CropInfo crop = new CropInfo();
         crop.setId(30L);
         crop.setCropName("上海青");
-        when(cropInfoMapper.selectOne(any())).thenReturn(crop);
+        when(cropProductService.cropIdByPrimaryProduct(any())).thenReturn(crop.getId());
         when(cropInfoMapper.selectById(any())).thenReturn(crop);
         stubHandleBySource(70001L, 77L);   // 既有行 handled_weight=15.000 —— 有得可加，才验得出「就是不加」
 
@@ -420,7 +422,7 @@ class VegOutServiceImplTest {
         ProductInfo dryGood = mkVegProduct(10L);
         dryGood.setBelongType("dry_good");
         when(productInfoMapper.selectById(10L)).thenReturn(dryGood);
-        when(cropInfoMapper.selectOne(any())).thenReturn(null);   // 产品反查不到作物 → 归属定不了
+        when(cropProductService.cropIdByPrimaryProduct(any())).thenReturn(null);   // 产品反查不到作物 → 归属定不了
 
         service.submit(mkBo("feed", 1L, "8.000"), false);
 
@@ -457,7 +459,7 @@ class VegOutServiceImplTest {
         CropInfo crop = new CropInfo();
         crop.setId(30L);
         crop.setCropName("上海青");
-        when(cropInfoMapper.selectOne(any())).thenReturn(crop);
+        when(cropProductService.cropIdByPrimaryProduct(any())).thenReturn(crop.getId());
         when(cropInfoMapper.selectById(any())).thenReturn(crop);
         when(vegetableHandleMapper.selectOne(any())).thenReturn(null);   // 没有既有行 → 补建
         when(vegetableHandleMapper.insert(any(VegetableHandle.class))).thenAnswer(inv -> {
@@ -498,7 +500,7 @@ class VegOutServiceImplTest {
         CropInfo crop = new CropInfo();
         crop.setId(30L);
         crop.setCropName("上海青");
-        when(cropInfoMapper.selectOne(any())).thenReturn(crop);
+        when(cropProductService.cropIdByPrimaryProduct(any())).thenReturn(crop.getId());
         when(cropInfoMapper.selectById(any())).thenReturn(crop);
         stubHandleBySource(70001L, 77L);
 
@@ -542,7 +544,7 @@ class VegOutServiceImplTest {
     void feed_missingCropOrPlot_stillLogs() {
         when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, null));
         when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
-        when(cropInfoMapper.selectOne(any())).thenReturn(null);
+        when(cropProductService.cropIdByPrimaryProduct(any())).thenReturn(null);
 
         service.submit(mkBo("feed", 1L, "8.000"), false);
 
@@ -1088,7 +1090,7 @@ class VegOutServiceImplTest {
     void workbench_feedFromShelfWritesFlowAndFeedLog() {
         shelfStock(1L);
         when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
-        when(cropInfoMapper.selectOne(any())).thenReturn(null);
+        when(cropProductService.cropIdByPrimaryProduct(any())).thenReturn(null);
 
         service.submitVegetableOut(mkBo("feed", 1L, "2.500"));
 

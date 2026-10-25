@@ -92,7 +92,12 @@ public interface CropPlotStatMapper {
         )
         SELECT c.id                                        AS cropId,
                c.crop_name                                 AS cropName,
-               c.related_product                           AS relatedProduct,
+               (SELECT cp.product_id
+                  FROM t_plant_crop_product cp
+                  JOIN t_warehouse_product_info p
+                         ON p.id = cp.product_id AND p.tenant_id = '1001' AND p.del_flag = '0'
+                 WHERE cp.crop_id = c.id AND cp.tenant_id = '1001' AND cp.del_flag = '0'
+                 ORDER BY cp.id LIMIT 1)                   AS primaryProductId,
                COUNT(DISTINCT cur.plot_id)                 AS remainPlotCount,
                SUM(cur.expected_yield)                     AS expectYield,
                DATE_FORMAT(MIN(cur.pick_start), '%Y-%m-%d') AS earliestPickDate,
@@ -103,7 +108,7 @@ public interface CropPlotStatMapper {
                AND c.del_flag = '0'
                AND c.tenant_id = '1001'
          WHERE cur.rn = 1
-         GROUP BY c.id, c.crop_name, c.related_product
+         GROUP BY c.id, c.crop_name
          ORDER BY remainPlotCount DESC, c.id
         """)
     List<CropPlotStatVo> selectPlotStat();
