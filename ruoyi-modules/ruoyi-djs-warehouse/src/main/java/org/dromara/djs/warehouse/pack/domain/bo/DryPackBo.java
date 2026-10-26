@@ -103,4 +103,10 @@ public class DryPackBo {
     @Size(max = 500, message = "{pack.remark.size}")
     private String remark;
 
+    /**
+     * 来源白条 {@code t_warehouse_bar_info.id}：仅白条分割出库管理「门店需求」（cutStore）由工作台服务端回填，
+     * 落产出记录 {@code white_bar_id}；其他打包入口不读。
+     */
+    private Long whiteBarId;
+
 }

@@ -226,7 +226,7 @@ public class InoutWorkbenchService {
             pack.setSourceInhouseId(materialSourceId); pack.setProductId(bo.getProductionProductId());
             pack.setStoreId(bo.getStoreId()); pack.setProductWeight(bo.getWeight());
             pack.setProductUnit(demand.getProductUnit()); pack.setAllowOverMeasure(bo.getAllowOverMeasure());
-            pack.setDeliverDest("platform");
+            pack.setDeliverDest("platform"); pack.setWhiteBarId(barId);
             productionService.submitCutStorePack(pack);
         }
         receipt = flowMapper.selectById(produced.getFirst().flowId());
