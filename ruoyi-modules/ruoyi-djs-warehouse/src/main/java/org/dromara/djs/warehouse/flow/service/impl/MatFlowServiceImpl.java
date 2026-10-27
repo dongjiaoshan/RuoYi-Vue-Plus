@@ -23,6 +23,7 @@ import org.dromara.djs.warehouse.flow.domain.vo.MatWhiteBarBatchVo;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.flow.service.IMatFlowService;
 import org.dromara.djs.warehouse.loss.service.ILossFlowService;
+import org.dromara.djs.warehouse.veg.domain.FeedAnimal;
 import org.dromara.djs.warehouse.veg.domain.FeedLog;
 import org.dromara.djs.warehouse.veg.mapper.FeedLogMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
@@ -1654,6 +1655,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         FeedLog feedLog = new FeedLog();
         feedLog.setFeedDate(new Date());
         feedLog.setFeedType(FEED_TYPE_WAREHOUSE);
+        // 物资领用饲喂是养殖场喂猪，没有家禽入口，一律猪只饲料
+        feedLog.setFeedAnimal(FeedAnimal.PIG);
         feedLog.setProductId(bo.getProductId());
         feedLog.setLocationId(bo.getLocationId());
         feedLog.setOperatorId(userId);
@@ -1753,6 +1756,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         FeedLog feedLog = new FeedLog();
         feedLog.setFeedDate(new Date());
         feedLog.setFeedType(FEED_TYPE_WAREHOUSE);
+        // 物资领用饲喂是养殖场喂猪，没有家禽入口，一律猪只饲料
+        feedLog.setFeedAnimal(FeedAnimal.PIG);
         feedLog.setProductId(productId);
         feedLog.setLocationId(locId);
         feedLog.setOperatorId(userId);
@@ -1821,6 +1826,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         FeedLog feedLog = new FeedLog();
         feedLog.setFeedDate(new Date());
         feedLog.setFeedType(FEED_TYPE_WAREHOUSE);
+        // 物资领用饲喂是养殖场喂猪，没有家禽入口，一律猪只饲料
+        feedLog.setFeedAnimal(FeedAnimal.PIG);
         feedLog.setProductId(productId);
         feedLog.setLocationId(firstLocId);
         feedLog.setOperatorId(userId);

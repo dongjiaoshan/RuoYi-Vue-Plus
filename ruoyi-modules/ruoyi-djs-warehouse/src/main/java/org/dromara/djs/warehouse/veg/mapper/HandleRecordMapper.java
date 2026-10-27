@@ -49,7 +49,7 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
         SELECT t.pickDate, t.cropName, t.productName, t.plotCode, t.statSource, t.pickWeight,
                t.perfPercent, t.remark, t.teamId, t.teamName
           FROM (
-        SELECT DATE(r.handle_time) AS pickDate,
+        SELECT DATE_FORMAT(r.handle_time, '%Y-%m-%d %H:%i:%s') AS pickDate,
                pr.crop_name        AS cropName,
                pi.product_name     AS productName,
                p.plot_code         AS plotCode,
@@ -103,7 +103,7 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
                OR r.team_id = #{q.teamId})
            </if>
         UNION ALL
-        SELECT a.activity_date    AS pickDate,
+        SELECT DATE_FORMAT(a.activity_date, '%Y-%m-%d') AS pickDate,
                ci.crop_name       AS cropName,
                NULL               AS productName,
                p2.plot_code       AS plotCode,

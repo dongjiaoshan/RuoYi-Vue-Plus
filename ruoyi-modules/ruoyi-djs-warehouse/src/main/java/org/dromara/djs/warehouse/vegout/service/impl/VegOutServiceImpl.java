@@ -26,6 +26,7 @@ import org.dromara.djs.warehouse.stock.domain.PlotLabel;
 import org.dromara.djs.warehouse.stock.domain.bo.StockOutBo;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.stock.service.ILocationStockService;
+import org.dromara.djs.warehouse.veg.domain.FeedAnimal;
 import org.dromara.djs.warehouse.veg.domain.FeedLog;
 import org.dromara.djs.warehouse.veg.domain.VegetableHandle;
 import org.dromara.djs.warehouse.veg.domain.HandleRecord;
@@ -164,9 +165,6 @@ public class VegOutServiceImpl implements IVegOutService {
     /** 出库去向：果蔬月台（本次迁移新增字典值）。 */
     private static final String DEST_VEG_DOCK = "veg_dock";
 
-    /** 出库去向：猪只饲料（前端「饲料饲喂」，字典既有值）。 */
-    private static final String DEST_FEED = "feed";
-
     /** 饲喂来源：毛菜间（字典 djs_feed_type，有机饲喂记录里的「位置」）。 */
     private static final String FEED_TYPE_VEG_HANDLE = "veg_handle";
 
@@ -274,6 +272,9 @@ public class VegOutServiceImpl implements IVegOutService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public String submit(VegOutSubmitBo bo, boolean asBatch) {
+        if (!asBatch && !DEST_VEG_DOCK.equals(bo.getOutDest()) && FeedAnimal.ofOutDest(bo.getOutDest()) == null) {
+            throw new ServiceException("产品内部处理出库去向只能为果蔬月台、猪只饲料或家禽饲料");
+        }
         // 可出库库位的 id（按 location_code 解析；缺哪个就少哪个，不阻断整单）
         java.util.Set<Long> allowedLocationIds = resolveAllowedLocationIds();
         // 先把本单涉及的库存行取齐：产品数要在扣任何库存之前数得出来
@@ -343,7 +344,7 @@ public class VegOutServiceImpl implements IVegOutService {
                 // 而那条明细必须挂在 vegetable_handle 上，那张表是果蔬（毛菜处理）专属、
                 // 干货/蛋类根本定位不到 (作物,地块) 也就建不出归集行。放行的话库存扣了、流水写了，
                 // 月台侧却永远收不到这批货 = 凭空蒸发。故在此 fail-fast，不做「跳过」的静默放行。
-                // （「猪只饲料」去向不受此限：饲喂台账 t_warehouse_feed_log 三类都能记，见下方分流。）
+                // （「猪只饲料 / 家禽饲料」去向不受此限：饲喂台账 t_warehouse_feed_log 三类都能记，见下方分流。）
                 if (DEST_VEG_DOCK.equals(bo.getOutDest())
                     && !BELONG_TYPE_VEGETABLE.equals(product.getBelongType())) {
                     throw new ServiceException("只有果蔬产品可以出库到果蔬月台：" + product.getProductName()
@@ -401,7 +402,8 @@ public class VegOutServiceImpl implements IVegOutService {
                 // 去向额外下游（业态范围 Kevin 2026-08-03 拍板 D3：**三类业态都写**有机饲喂台账
                 // ——干货/蛋类也可能真拿去喂猪，这笔账要记）：
                 //   · 果蔬月台 → handle_record(handle_target=2)：月台待入库量与日统计都读它；
-                //   · 猪只饲料 → feed_log：有机饲喂的权威台账。
+                //   · 猪只饲料 / 家禽饲料 → feed_log：有机饲喂的权威台账，feed_animal 按去向记 pig / poultry
+                //     （V7 行13 / 行19：两种饲料出库逻辑一致，只差饲喂动物）。
                 //
                 // ⚠️ 两条去向都**只写流水台账，不碰 send_platform_weight / feed_weight 两个汇总列**
                 // （见类头注）——那两列的读取方读的正是这里写的 handle_record / feed_log 明细，
@@ -409,9 +411,12 @@ public class VegOutServiceImpl implements IVegOutService {
                 if (toDock) {
                     insertPlatformHandleRecord(handleId, stock, cropId,
                         take, userId, resolveFlowDate(bo.getOutDate()));
-                } else if (DEST_FEED.equals(bo.getOutDest())) {
-                    insertFeedLog(product, cropId, take, stock.getLocationId(),
-                        userId, bo.getOutDate());
+                } else {
+                    String feedAnimal = FeedAnimal.ofOutDest(bo.getOutDest());
+                    if (feedAnimal != null) {
+                        insertFeedLog(product, cropId, take, stock.getLocationId(),
+                            userId, bo.getOutDate(), feedAnimal);
+                    }
                 }
             }
         }
@@ -658,14 +663,17 @@ public class VegOutServiceImpl implements IVegOutService {
      *
      * <p>{@code cropId} 由调用方传入（与 handle 解析共用同一次反查，不重复查库）；
      * 干货 / 蛋类反查不到作物 → 传 null，作物名回落成产品名。</p>
+     *
+     * @param feedAnimal 饲喂动物（{@link FeedAnimal#ofOutDest} 由出库去向得出：猪只饲料 pig / 家禽饲料 poultry）
      */
     private void insertFeedLog(ProductInfo product, Long cropId, BigDecimal weight,
-                               Long locationId, Long userId, Date outDate) {
+                               Long locationId, Long userId, Date outDate, String feedAnimal) {
         FeedLog feedLog = new FeedLog();
         feedLog.setFeedDate(outDate);
         feedLog.setCropId(cropId);
         feedLog.setCropName(cropId != null ? cropNameOf(cropId) : product.getProductName());
         feedLog.setFeedType(isFreshVegLocation(locationId) ? FEED_TYPE_VEG_HANDLE : FEED_TYPE_WAREHOUSE);
+        feedLog.setFeedAnimal(feedAnimal);
         feedLog.setProductId(product.getId());
         feedLog.setLocationId(locationId);
         feedLog.setOperatorId(userId);

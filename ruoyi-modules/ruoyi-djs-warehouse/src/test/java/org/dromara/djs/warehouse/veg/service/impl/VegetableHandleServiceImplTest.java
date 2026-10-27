@@ -805,6 +805,8 @@ class VegetableHandleServiceImplTest {
         verify(feedLogMapper, times(1)).insert(cap.capture());
         // 回归防线：改回 resolveProductIdByCrop 就会变成 88001，有机饲喂记录的「产品名称」列随之退化成作物名
         assertThat(cap.getValue().getProductId()).isEqualTo(77001L);
+        // 毛菜处理没有家禽入口，饲料一律记猪只饲料（V7 行13）
+        assertThat(cap.getValue().getFeedAnimal()).isEqualTo("pig");
         // 出库流水同样记在工人选的产品头上
         ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
         verify(stockFlowMapper, times(1)).insert(flowCap.capture());
@@ -1194,7 +1196,7 @@ class VegetableHandleServiceImplTest {
     @DisplayName("采摘明细 happy：分页查询透传 mapper 固定行，query 原样下传")
     void testQueryPickDetailPage_HappyPath() {
         PickDetailVo row = new PickDetailVo();
-        row.setPickDate(LocalDate.of(2026, 7, 21));
+        row.setPickDate("2026-07-21 09:30:00");
         row.setCropName("小白菜");
         row.setPlotCode("A-01");
         row.setPickWeight(new BigDecimal("12.345"));

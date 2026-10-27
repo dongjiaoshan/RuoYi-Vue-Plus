@@ -69,4 +69,7 @@ public class BarPendingVo implements Serializable {
     /** 已入库产品累计重量（入库流水口径），未录入时为 0。 */
     private BigDecimal inboundedWeight;
 
+    /** 出栏当时日龄（出栏记录冻结值，ADR-0017）；外购 / 无出栏记录时为 null。 */
+    private Integer ageDays;
+
 }

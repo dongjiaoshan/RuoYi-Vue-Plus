@@ -159,13 +159,12 @@ class CutOutDailyServiceImplTest {
     }
 
     @Test
-    @DisplayName("queryDetail: 门店明细单位恒 kg、空耳号兜 -、量 3 位小数")
+    @DisplayName("queryDetail: 门店明细单位恒 kg、量 3 位小数")
     void testQueryDetail_Store() {
         CutOutDailyDetailVo row = new CutOutDailyDetailVo();
         row.setProductCode("Y0322");
         row.setProductName("通排");
         row.setQuantity(new BigDecimal("2.3"));
-        row.setEarNo(null);
         row.setOutTime(new Date());
         when(cutOutDailyMapper.selectStoreDetail(eq("1001"), any())).thenReturn(List.of(row));
 
@@ -177,7 +176,6 @@ class CutOutDailyServiceImplTest {
 
         assertThat(list).hasSize(1);
         assertThat(list.get(0).getUnit()).isEqualTo("kg");
-        assertThat(list.get(0).getEarNo()).isEqualTo("-");
         assertThat(list.get(0).getQuantity().toPlainString()).isEqualTo("2.300");
         verify(cutOutDailyMapper, never()).selectWarehouseDetail(anyString(), any());
     }

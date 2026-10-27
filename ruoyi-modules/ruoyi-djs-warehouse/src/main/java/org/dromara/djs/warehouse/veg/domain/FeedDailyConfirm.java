@@ -12,7 +12,7 @@ import java.time.LocalDate;
 import java.util.Date;
 
 /**
- * 有机饲喂日确认实体（框数 + 确认人，一天一条）。
+ * 有机饲喂日确认实体（框数 + 确认人，每日每饲喂动物一条）。
  *
  * <p>对应表 {@code t_warehouse_feed_daily_confirm}。与明细表 {@link FeedLog} 按 {@code feed_date} 左联：
  * feed_log 一天可有多条（毛菜间送的 + 仓库领用的），而框数是仓库对当日送达总量的**一次**人工确认，
@@ -35,6 +35,11 @@ public class FeedDailyConfirm extends TenantEntity {
      * 饲喂日期（日维度，唯一键的一部分）。
      */
     private LocalDate feedDate;
+
+    /**
+     * 饲喂动物（{@link FeedAnimal}；唯一键的一部分 —— 猪只饲料与家禽饲料各自确认框数）。
+     */
+    private String feedAnimal;
 
     /**
      * 仓库确认框数（可小数）。

@@ -4,14 +4,12 @@ import cn.idev.excel.annotation.ExcelIgnore;
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import org.dromara.djs.common.excel.DictOrRawConvert;
-import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
 
 import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
-import java.time.LocalDate;
 
 /**
  * 采摘明细行 VO（admin 只读列表 + 导出，FIX-ADMIN-0721）。
@@ -30,10 +28,12 @@ public class PickDetailVo implements Serializable {
     @Serial
     private static final long serialVersionUID = 1L;
 
-    /** 采摘日期 = DATE(handle_time)。 */
-    @JsonFormat(pattern = "yyyy-MM-dd")
+    /**
+     * 采摘日期（V7 row7 显示到时分秒）：过磅支 = handle_time「yyyy-MM-dd HH:mm:ss」；
+     * 采摘活动支只有活动日期、没有时刻，保持「yyyy-MM-dd」，不编造时间。
+     */
     @ExcelProperty(value = "采摘日期")
-    private LocalDate pickDate;
+    private String pickDate;
 
     @ExcelProperty(value = "作物名称")
     private String cropName;

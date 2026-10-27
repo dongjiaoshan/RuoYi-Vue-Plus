@@ -33,6 +33,7 @@ import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.domain.vo.PlotProductStockRow;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
+import org.dromara.djs.warehouse.veg.domain.FeedAnimal;
 import org.dromara.djs.warehouse.veg.domain.FeedLog;
 import org.dromara.djs.warehouse.veg.domain.HandleRecord;
 import org.dromara.djs.warehouse.veg.domain.HandleRecordTeam;
@@ -1343,6 +1344,8 @@ public class VegetableHandleServiceImpl
         feedLog.setCropId(bo.getCropId());
         feedLog.setCropName(bo.getCropName());
         feedLog.setFeedType("veg_handle");
+        // 毛菜处理 / 采摘去向的饲料没有家禽入口，一律猪只饲料
+        feedLog.setFeedAnimal(FeedAnimal.PIG);
         feedLog.setProductId(pickProductId(bo));
         feedLog.setOperatorId(userId);
         feedLog.setFeedWeight(weight);
@@ -1396,6 +1399,8 @@ public class VegetableHandleServiceImpl
         feedLog.setCropId(planting.getCropId());
         feedLog.setCropName(planting.getCropName());
         feedLog.setFeedType("veg_handle");
+        // 毛菜处理 / 采摘去向的饲料没有家禽入口，一律猪只饲料
+        feedLog.setFeedAnimal(FeedAnimal.PIG);
         feedLog.setProductId(selectedProductId);
         feedLog.setOperatorId(operatorId);
         feedLog.setFeedWeight(weight);

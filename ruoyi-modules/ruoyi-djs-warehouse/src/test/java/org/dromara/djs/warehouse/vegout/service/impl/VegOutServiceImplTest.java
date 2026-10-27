@@ -50,6 +50,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -112,6 +113,16 @@ class VegOutServiceImplTest {
     private UserService userService;
 
     private VegOutServiceImpl service;
+
+    @Test
+    @DisplayName("内部处理拒绝非法去向，扣库存和写流水之前失败")
+    void internalHandleRejectsInvalidDestinationBeforeWriting() {
+        for (String dest : List.of("goat", "kitchen", "POULTRY_FEED", "poultry_feed ")) {
+            assertThatThrownBy(() -> service.submit(mkBo(dest, 1L, "1.000"), false))
+                .isInstanceOf(ServiceException.class).hasMessageContaining("出库去向只能");
+        }
+        verifyNoInteractions(locationStockService, stockFlowMapper, feedLogMapper, bizCodeGenerator);
+    }
 
     /** MP 单测 entity cache 预热（见 skill coder-mp-entity-cache-test）。 */
     @BeforeAll
@@ -324,11 +335,34 @@ class VegOutServiceImplTest {
         ArgumentCaptor<FeedLog> fc = ArgumentCaptor.forClass(FeedLog.class);
         verify(feedLogMapper).insert(fc.capture());
         assertThat(fc.getValue().getFeedType()).isEqualTo("veg_handle");
+        assertThat(fc.getValue().getFeedAnimal()).isEqualTo("pig");
         assertThat(fc.getValue().getFeedWeight()).isEqualByComparingTo("8.000");
         assertThat(fc.getValue().getLocationId()).isEqualTo(FRESH_VEG_LOC);
 
         // 饲料去向不进「发往月台」日统计
         verify(handleRecordMapper, never()).insert(any(org.dromara.djs.warehouse.veg.domain.HandleRecord.class));
+    }
+
+    @Test
+    @DisplayName("V7 行13/19 家禽饲料：与猪只饲料同口径写出库流水 + 有机饲喂记录，只是 feed_animal=poultry")
+    void poultryFeed_writesFeedLogAsPoultry() {
+        when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+        stubHandleFound(30L, 20L);
+
+        service.submit(mkBo("poultry_feed", 1L, "6.000"), false);
+
+        ArgumentCaptor<org.dromara.djs.warehouse.stock.domain.bo.StockOutBo> oc =
+            ArgumentCaptor.forClass(org.dromara.djs.warehouse.stock.domain.bo.StockOutBo.class);
+        verify(locationStockService).productOut(oc.capture());
+        assertThat(oc.getValue().getStockOutDest()).isEqualTo("poultry_feed");
+        ArgumentCaptor<FeedLog> fc = ArgumentCaptor.forClass(FeedLog.class);
+        verify(feedLogMapper).insert(fc.capture());
+        assertThat(fc.getValue().getFeedAnimal()).isEqualTo("poultry");
+        assertThat(fc.getValue().getFeedType()).isEqualTo("veg_handle");
+        assertThat(fc.getValue().getFeedWeight()).isEqualByComparingTo("6.000");
+        verify(handleRecordMapper, never()).insert(any(org.dromara.djs.warehouse.veg.domain.HandleRecord.class));
+        assertNoHandleWeightColumnWritten();
     }
 
     @Test
@@ -1141,7 +1175,7 @@ class VegOutServiceImplTest {
         shelfStock(1L);
         when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
 
-        assertThatThrownBy(() -> service.submit(mkBo("kitchen", 1L, "1.000"), false))
+        assertThatThrownBy(() -> service.submit(mkBo("feed", 1L, "1.000"), false))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("毛菜鲜品库");
         verify(locationStockService, never()).productOut(any());

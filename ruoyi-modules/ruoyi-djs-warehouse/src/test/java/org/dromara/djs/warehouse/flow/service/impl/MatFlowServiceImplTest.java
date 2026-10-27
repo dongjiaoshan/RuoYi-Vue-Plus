@@ -1134,6 +1134,8 @@ class MatFlowServiceImplTest {
         verify(feedLogMapper, times(1)).insert(logCap.capture());
         FeedLog log = logCap.getValue();
         assertThat(log.getFeedType()).isEqualTo("warehouse");
+        // 物资领用饲喂没有家禽入口，一律猪只饲料（V7 行13）
+        assertThat(log.getFeedAnimal()).isEqualTo("pig");
         assertThat(log.getProductId()).isEqualTo(PRODUCT_ID);
         assertThat(log.getLocationId()).isEqualTo(LOCATION_ID);
         assertThat(log.getFeedWeight()).isEqualByComparingTo("20");

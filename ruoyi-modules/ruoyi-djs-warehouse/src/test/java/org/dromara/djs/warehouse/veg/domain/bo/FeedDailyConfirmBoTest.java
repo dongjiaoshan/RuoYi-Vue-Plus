@@ -98,4 +98,18 @@ class FeedDailyConfirmBoTest {
     void testNullRejected() {
         assertThat(violations(null)).isNotEmpty();
     }
+
+    @Test
+    @DisplayName("V7 行17：饲喂类型只收 pig / poultry，不传也合法（= 猪只饲料）")
+    void testFeedAnimalPattern() {
+        FeedDailyConfirmBo ok = bo("1");
+        assertThat(validator.validate(ok)).isEmpty();
+        ok.setFeedAnimal("poultry");
+        assertThat(validator.validate(ok)).isEmpty();
+        ok.setFeedAnimal("duck");
+        assertThat(validator.validate(ok))
+            .extracting(ConstraintViolation::getPropertyPath)
+            .extracting(Object::toString)
+            .containsExactly("feedAnimal");
+    }
 }

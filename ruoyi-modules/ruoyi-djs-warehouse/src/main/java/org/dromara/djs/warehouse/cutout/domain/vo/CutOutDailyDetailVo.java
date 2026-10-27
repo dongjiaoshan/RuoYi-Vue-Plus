@@ -15,7 +15,7 @@ import java.util.Date;
 /**
  * 猪肉日分割出库统计「查看」明细行（V7-R6）。
  *
- * <p>列序 = 甲方原文序：产品编码 / 产品名称 / 出库量 / 单位 / 猪只耳号 / 出库时间。
+ * <p>列序：产品编码 / 产品名称 / 出库量 / 单位 / 出库时间（同一产品一行，不按耳号拆，V7 row15）。
  * FastExcel 按字段声明序出列，导出与抽屉表格逐列一致，挪字段顺序会让两边错位。</p>
  *
  * @author djs
@@ -45,11 +45,7 @@ public class CutOutDailyDetailVo implements Serializable {
     @ExcelProperty(value = "单位")
     private String unit;
 
-    /** 猪只耳号（无耳号兜 "-"）。 */
-    @ExcelProperty(value = "猪只耳号")
-    private String earNo;
-
-    /** 出库时间（出库操作时刻）。 */
+    /** 出库时间（当天该产品最后一次出库时刻）。 */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     @DateTimeFormat("yyyy-MM-dd HH:mm:ss")
     @ExcelProperty(value = "出库时间")

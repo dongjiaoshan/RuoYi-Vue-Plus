@@ -5,6 +5,7 @@ import cn.idev.excel.annotation.ExcelProperty;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.warehouse.veg.domain.FeedAnimal;
 import org.dromara.djs.common.excel.DictOrRawConvert;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
@@ -43,6 +44,13 @@ public class FeedRecordVo implements Serializable {
     @ExcelProperty(value = "日期")
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private Date feedDate;
+
+    /**
+     * 饲喂类型原始值（字典 djs_feed_animal：pig 猪只饲料 / poultry 家禽饲料）。
+     */
+    @ExcelProperty(value = "饲喂类型", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = FeedAnimal.DICT_TYPE)
+    private String feedAnimal;
 
     /**
      * 作物 ID（仓库来源行恒空）。

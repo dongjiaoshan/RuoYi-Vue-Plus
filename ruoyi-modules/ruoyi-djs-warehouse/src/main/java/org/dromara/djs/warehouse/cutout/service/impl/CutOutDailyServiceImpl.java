@@ -99,9 +99,6 @@ public class CutOutDailyServiceImpl implements ICutOutDailyService {
             if (isBlank(vo.getProductName())) {
                 vo.setProductName(EMPTY_TEXT);
             }
-            if (isBlank(vo.getEarNo())) {
-                vo.setEarNo(EMPTY_TEXT);
-            }
         }
         return list;
     }

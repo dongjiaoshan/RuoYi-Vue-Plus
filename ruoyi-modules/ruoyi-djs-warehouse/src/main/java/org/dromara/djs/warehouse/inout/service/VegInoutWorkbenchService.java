@@ -20,6 +20,7 @@ import org.dromara.djs.warehouse.inout.domain.vo.VegTeamOptionVo;
 import org.dromara.djs.warehouse.inout.mapper.VegInoutWorkbenchMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.veg.domain.FeedAnimal;
 import org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegCropVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegPlotDetailVo;
@@ -50,7 +51,7 @@ import java.util.Set;
  *       （handle_record + 毛菜保鲜库地块篮 + veg_stock_in 流水，毛菜保鲜库入库的唯一写入口）；
  *       「处理完成」= 同一入口按 0 kg + 地块称重完成收口，判定全部由该入口执行。</li>
  *   <li>出库 = 毛菜间出库的记账：{@link IVegOutService#submitVegetableOut}
- *       （先进先出扣篮 + backstage_out 流水；去向「猪只饲料」同时写有机饲喂记录 feed_log）。</li>
+ *       （先进先出扣篮 + backstage_out 流水；去向「猪只饲料 / 家禽饲料」同时写有机饲喂记录 feed_log）。</li>
  * </ul>
  */
 @Service
@@ -62,7 +63,9 @@ public class VegInoutWorkbenchService {
     /** 去向：仓库出库。 */
     static final String DEST_WAREHOUSE = "warehouse";
     /** 去向：猪养殖饲料 = 出库去向字典的「猪只饲料」。 */
-    static final String DEST_FEED = "feed";
+    static final String DEST_FEED = FeedAnimal.OUT_DEST_PIG;
+    /** 去向：家禽饲料 = 出库去向字典的「家禽饲料」（V7 行13，逻辑同猪养殖饲料，只差饲喂动物）。 */
+    static final String DEST_POULTRY_FEED = FeedAnimal.OUT_DEST_POULTRY;
     static final String OUT_DEST_DICT = "djs_stock_out_dest";
 
     private final IVegetableHandleService vegHandleService;
@@ -198,7 +201,7 @@ public class VegInoutWorkbenchService {
     }
 
     /**
-     * 确认出库：仓库出库按所选出库去向；猪养殖饲料按有机饲喂（去向「猪只饲料」）出库。
+     * 确认出库：仓库出库按所选出库去向；猪养殖饲料 / 家禽饲料按有机饲喂（去向「猪只饲料」/「家禽饲料」）出库。
      *
      * <p>先按库存现状重算这张卡：篮必须仍是该产品的果蔬库存、属于同一库存组且总量够，
      * 再按先进先出序交给毛菜间出库记账（它在扣减时还会逐篮原子校验一次）。</p>
@@ -248,11 +251,11 @@ public class VegInoutWorkbenchService {
     }
 
     private String resolveOutDest(String destination, String outDest) {
-        if (DEST_FEED.equals(destination)) {
+        if (DEST_FEED.equals(destination) || DEST_POULTRY_FEED.equals(destination)) {
             if (outDest != null && !outDest.isBlank()) {
-                throw new ServiceException("猪养殖饲料去向不接受仓库出库去向参数");
+                throw new ServiceException("饲料去向不接受仓库出库去向参数");
             }
-            return DEST_FEED;
+            return destination;
         }
         if (!DEST_WAREHOUSE.equals(destination)) {
             throw new ServiceException("无效的去向");

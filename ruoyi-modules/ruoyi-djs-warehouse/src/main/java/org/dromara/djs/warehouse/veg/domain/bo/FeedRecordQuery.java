@@ -29,6 +29,12 @@ public class FeedRecordQuery implements Serializable {
     private String feedType;
 
     /**
+     * 饲喂类型（字典 djs_feed_animal：pig 猪只饲料 / poultry 家禽饲料，精确；空 = 不限）。
+     * 明细列表与按日汇总都生效；mp 有机饲喂记录固定传 pig（V7 行18）。
+     */
+    private String feedAnimal;
+
+    /**
      * 起始日期（含，可空；yyyy-MM-dd）。
      */
     private Date dateFrom;

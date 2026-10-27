@@ -4,6 +4,9 @@ import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
+import org.dromara.djs.warehouse.veg.domain.FeedAnimal;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
 
@@ -16,8 +19,8 @@ import java.util.Date;
 /**
  * 有机饲喂**按日汇总**行 VO（admin 行199 列表 / mp 行268 卡片共用）。
  *
- * <p>一天一行：当日所有送往有机饲喂的记录（毛菜间 + 仓库两种来源）合并成一条，
- * 明细留给「查看详情」用 {@code FeedRecordVo} 单独拉。</p>
+ * <p>一行 = 一天 × 一种饲喂动物（猪只饲料 / 家禽饲料分开统计，V7 行17）：该日该类型送往有机饲喂的
+ * 记录（毛菜间 + 仓库两种来源）合并成一条，明细留给「查看详情」用 {@code FeedRecordVo} 单独拉。</p>
  *
  * @author djs
  */
@@ -34,6 +37,13 @@ public class FeedDailyVo implements Serializable {
     @ExcelProperty(value = "日期")
     @JsonFormat(pattern = "yyyy-MM-dd")
     private LocalDate feedDate;
+
+    /**
+     * 饲喂类型（字典 djs_feed_animal：pig 猪只饲料 / poultry 家禽饲料）。框数确认按 (日期, 本字段) 各一条。
+     */
+    @ExcelProperty(value = "饲喂类型", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = FeedAnimal.DICT_TYPE)
+    private String feedAnimal;
 
     /**
      * 当日总重量(kg)，保留三位小数。当日所有来源求和。

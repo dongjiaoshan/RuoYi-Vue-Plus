@@ -157,7 +157,9 @@ public interface CutOutDailyMapper {
         + "</script>";
 
     /**
-     * 仓库出库明细：某天某个出库去向的逐条出库流水（与 {@link #DAILY_SQL} 仓库分支同一份 WHERE）。
+     * 仓库出库明细：某天某个出库去向按产品合并的出库量（与 {@link #DAILY_SQL} 仓库分支同一份 WHERE）。
+     *
+     * <p>甲方 V7 row15：不按耳号拆开，同一产品一行；出库时间取当天该产品最后一次出库。</p>
      *
      * <p>日期用半开区间 {@code [statDate, statDate + 1 天)}，与聚合的 {@code DATE(flow_date)} 同集合；
      * 出库去向 {@code COALESCE(...) = COALESCE(#{...}, '')} 双向兜空，「未指定」那一桶传 null / 空串都能对上。
@@ -165,11 +167,10 @@ public interface CutOutDailyMapper {
      */
     String WAREHOUSE_DETAIL_SQL = "<script>"
         + """
-        SELECT pi.product_id      AS productCode,
-               pi.product_name    AS productName,
-               f.change_quantity  AS quantity,
-               f.ear_no           AS earNo,
-               f.flow_date        AS outTime
+        SELECT pi.product_id          AS productCode,
+               pi.product_name        AS productName,
+               SUM(f.change_quantity) AS quantity,
+               MAX(f.flow_date)       AS outTime
         FROM t_warehouse_stock_flow f
         LEFT JOIN t_warehouse_product_info pi ON pi.id = f.product_id
         """
@@ -178,22 +179,23 @@ public interface CutOutDailyMapper {
           AND f.flow_date &gt;= #{query.statDate}
           AND f.flow_date &lt; DATE_ADD(#{query.statDate}, INTERVAL 1 DAY)
           AND COALESCE(f.stock_out_dest, '') = COALESCE(#{query.outDest}, '')
-        ORDER BY f.flow_date DESC, f.id DESC
+        GROUP BY f.product_id, pi.product_id, pi.product_name
+        ORDER BY outTime DESC, productName
         """
         + "</script>";
 
     /**
-     * 门店需求明细：某天送往某门店的逐条产出记录（与 {@link #DAILY_SQL} 门店分支同一份 WHERE）。
+     * 门店需求明细：某天送往某门店按产品合并的出库量（与 {@link #DAILY_SQL} 门店分支同一份 WHERE）。
      *
-     * <p>产品名取产出记录自己的 {@code product_name}（即发出去的那个名字），编码联产品档案取业务码。</p>
+     * <p>产品名取产出记录自己的 {@code product_name}（即发出去的那个名字），编码联产品档案取业务码；
+     * 同一产品一行（V7 row15），出库时间取当天该产品最后一次。</p>
      */
     String STORE_DETAIL_SQL = "<script>"
         + """
-        SELECT pi.product_id     AS productCode,
-               p.product_name    AS productName,
-               p.product_weight  AS quantity,
-               p.ear_no          AS earNo,
-               p.produce_time    AS outTime
+        SELECT pi.product_id         AS productCode,
+               p.product_name        AS productName,
+               SUM(p.product_weight) AS quantity,
+               MAX(p.produce_time)   AS outTime
         FROM t_warehouse_product_production p
         LEFT JOIN t_warehouse_product_info pi ON pi.id = p.product_id
         """
@@ -202,7 +204,8 @@ public interface CutOutDailyMapper {
           AND p.produce_time &gt;= #{query.statDate}
           AND p.produce_time &lt; DATE_ADD(#{query.statDate}, INTERVAL 1 DAY)
           AND p.store_id = #{query.storeId}
-        ORDER BY p.produce_time DESC, p.id DESC
+        GROUP BY p.product_id, pi.product_id, p.product_name
+        ORDER BY outTime DESC, productName
         """
         + "</script>";
 
@@ -228,7 +231,7 @@ public interface CutOutDailyMapper {
      *
      * @param tenantId 租户
      * @param query    statDate + outDest
-     * @return 明细行（出库时间倒序）
+     * @return 按产品合并的明细行（最后出库时间倒序）
      */
     @Select(WAREHOUSE_DETAIL_SQL)
     List<CutOutDailyDetailVo> selectWarehouseDetail(@Param("tenantId") String tenantId,
@@ -239,7 +242,7 @@ public interface CutOutDailyMapper {
      *
      * @param tenantId 租户
      * @param query    statDate + storeId
-     * @return 明细行（出库时间倒序）
+     * @return 按产品合并的明细行（最后出库时间倒序）
      */
     @Select(STORE_DETAIL_SQL)
     List<CutOutDailyDetailVo> selectStoreDetail(@Param("tenantId") String tenantId,

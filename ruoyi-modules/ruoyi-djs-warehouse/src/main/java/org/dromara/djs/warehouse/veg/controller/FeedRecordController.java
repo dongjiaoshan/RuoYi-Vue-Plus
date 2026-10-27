@@ -44,7 +44,8 @@ public class FeedRecordController extends BaseController {
     /**
      * 有机饲喂记录分页列表（行21）：日期 / 作物图 / 作物名 / 饲喂量 / 提供位置 / 操作人。
      *
-     * <p>搜索：作物名称模糊（cropName）+ 提供位置 djs_feed_type（feedType）+ 可选日期范围。</p>
+     * <p>搜索：作物名称模糊（cropName）+ 提供位置 djs_feed_type（feedType）+ 饲喂类型 djs_feed_animal（feedAnimal）
+     * + 可选日期范围。</p>
      *
      * @param query     查询条件
      * @param pageQuery 分页参数
@@ -71,11 +72,12 @@ public class FeedRecordController extends BaseController {
 
     /**
      * 有机饲喂**按日汇总**分页（admin 行199 主列表 / mp 行268 卡片）：
-     * 日期 / 总重量 / 仓库确认框数 / 仓库确认人。
+     * 日期 / 饲喂类型 / 总重量 / 仓库确认框数 / 仓库确认人。一行 = 一天 × 一种饲喂动物（V7 行17）。
      *
-     * <p>只吃日期范围；作物名与提供位置是明细维度，点「查看详情」走 {@link #list} 拉当日明细。</p>
+     * <p>只吃日期范围 + 饲喂类型（feedAnimal，空 = 猪 / 家禽都出；mp 固定传 pig，V7 行18）；
+     * 作物名与提供位置是明细维度，点「查看详情」走 {@link #list} 拉当日该类型明细。</p>
      *
-     * @param query     查询条件（仅 dateFrom / dateTo 生效）
+     * @param query     查询条件（仅 feedAnimal / dateFrom / dateTo 生效）
      * @param pageQuery 分页参数
      */
     @SaCheckPermission("djs:warehouse:feed:record:list")
@@ -85,16 +87,16 @@ public class FeedRecordController extends BaseController {
     }
 
     /**
-     * 录入某日的仓库确认框数（mp【框数录入】）。
+     * 录入某日某饲喂类型的仓库确认框数（mp【框数录入】）。
      *
-     * <p>按日期 upsert：撞已存在的日期就刷框数 / 确认人 / 确认时间成最后一次操作者。</p>
+     * <p>按 (日期, 饲喂类型) upsert（feedAnimal 不传 = pig）：撞已存在的就刷框数 / 确认人 / 确认时间成最后一次操作者。</p>
      *
      * <p><b>入口只此一个，且 mp 只对「未录入」的日期放出</b>——甲方要求录完即锁死、避免随意修改，
      * 所以 mp 卡片上已录入的框数是纯展示、无点击入口，admin 该页也是只读列表。
      * upsert 语义保留是为了并发首次录入兜底，<b>不是</b>给「录错重录」用的通道。
      * 录错的纠正路径当前只能走后台改库——这是已知缺口，改动前先与甲方确认。</p>
      *
-     * @param bo 日期 / 框数 / 确认人
+     * @param bo 日期 / 饲喂类型 / 框数 / 确认人
      */
     @SaCheckPermission("djs:warehouse:feed:record:list")
     @Log(title = "有机饲喂日确认", businessType = BusinessType.UPDATE)
