@@ -162,9 +162,9 @@ public interface StockOverviewMapper {
                    COALESCE(SUM(CASE WHEN DATE(f.flow_date) = #{date} AND f.inout_type = 'IN' THEN f.change_quantity ELSE 0 END), 0) AS inboundQty,
                    COALESCE(SUM(CASE WHEN DATE(f.flow_date) = #{date} AND f.inout_type = 'OT' AND f.flow_type IN ('loss', 'settle_loss') THEN f.change_quantity ELSE 0 END), 0) AS lossQty,
                    COALESCE(SUM(CASE WHEN DATE(f.flow_date) = #{date} AND f.inout_type = 'OT' AND f.flow_type NOT IN ('loss', 'settle_loss')
-                                          AND (f.flow_type = 'feed_out' OR f.stock_out_dest IN ('feed', 'poultry_feed')) THEN f.change_quantity ELSE 0 END), 0) AS feedQty,
+                                          AND (f.flow_type = 'feed_out' OR COALESCE(f.stock_out_dest, '') IN ('feed', 'poultry_feed')) THEN f.change_quantity ELSE 0 END), 0) AS feedQty,
                    COALESCE(SUM(CASE WHEN DATE(f.flow_date) = #{date} AND f.inout_type = 'OT' AND f.flow_type NOT IN ('loss', 'settle_loss')
-                                          AND NOT (f.flow_type = 'feed_out' OR f.stock_out_dest IN ('feed', 'poultry_feed')) THEN f.change_quantity ELSE 0 END), 0) AS outboundQty
+                                          AND NOT (f.flow_type = 'feed_out' OR COALESCE(f.stock_out_dest, '') IN ('feed', 'poultry_feed')) THEN f.change_quantity ELSE 0 END), 0) AS outboundQty
             FROM t_warehouse_stock_flow f
             WHERE f.del_flag = '0' AND f.tenant_id = #{tenantId}
               AND f.product_id IS NOT NULL AND f.product_id &lt;&gt; 0
@@ -313,9 +313,9 @@ public interface StockOverviewMapper {
                    COALESCE(SUM(CASE WHEN f.flow_date &gt;= #{monthStart} AND f.inout_type = 'IN' THEN f.change_quantity ELSE 0 END), 0) AS inboundQty,
                    COALESCE(SUM(CASE WHEN f.flow_date &gt;= #{monthStart} AND f.inout_type = 'OT' AND f.flow_type IN ('loss', 'settle_loss') THEN f.change_quantity ELSE 0 END), 0) AS lossQty,
                    COALESCE(SUM(CASE WHEN f.flow_date &gt;= #{monthStart} AND f.inout_type = 'OT' AND f.flow_type NOT IN ('loss', 'settle_loss')
-                                          AND (f.flow_type = 'feed_out' OR f.stock_out_dest IN ('feed', 'poultry_feed')) THEN f.change_quantity ELSE 0 END), 0) AS feedQty,
+                                          AND (f.flow_type = 'feed_out' OR COALESCE(f.stock_out_dest, '') IN ('feed', 'poultry_feed')) THEN f.change_quantity ELSE 0 END), 0) AS feedQty,
                    COALESCE(SUM(CASE WHEN f.flow_date &gt;= #{monthStart} AND f.inout_type = 'OT' AND f.flow_type NOT IN ('loss', 'settle_loss')
-                                          AND NOT (f.flow_type = 'feed_out' OR f.stock_out_dest IN ('feed', 'poultry_feed')) THEN f.change_quantity ELSE 0 END), 0) AS outboundQty
+                                          AND NOT (f.flow_type = 'feed_out' OR COALESCE(f.stock_out_dest, '') IN ('feed', 'poultry_feed')) THEN f.change_quantity ELSE 0 END), 0) AS outboundQty
             FROM t_warehouse_stock_flow f
             WHERE f.del_flag = '0' AND f.tenant_id = #{tenantId}
               AND f.product_id IS NOT NULL AND f.product_id &lt;&gt; 0

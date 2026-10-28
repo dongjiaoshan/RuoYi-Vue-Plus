@@ -112,9 +112,11 @@ class StockOverviewMapperSqlContractTest {
                 normalizedSql("selectMonthlyDetail", String.class, java.util.Date.class, String.class, Long.class))) {
             assertThat(sql)
                 .contains("f.flow_type in ('loss', 'settle_loss') then f.change_quantity else 0 end), 0) as lossqty")
-                .contains("(f.flow_type = 'feed_out' or f.stock_out_dest in ('feed', 'poultry_feed')) then f.change_quantity else 0 end), 0) as feedqty")
-                .contains("and not (f.flow_type = 'feed_out' or f.stock_out_dest in ('feed', 'poultry_feed')) then f.change_quantity else 0 end), 0) as outboundqty")
-                .contains("(g.beginstock + g.inboundqty - g.outboundqty - g.lossqty - g.feedqty) as endstock");
+                .contains("(f.flow_type = 'feed_out' or coalesce(f.stock_out_dest, '') in ('feed', 'poultry_feed')) then f.change_quantity else 0 end), 0) as feedqty")
+                .contains("and not (f.flow_type = 'feed_out' or coalesce(f.stock_out_dest, '') in ('feed', 'poultry_feed')) then f.change_quantity else 0 end), 0) as outboundqty")
+                .contains("(g.beginstock + g.inboundqty - g.outboundqty - g.lossqty - g.feedqty) as endstock")
+                // stock_out_dest 为 NULL 时 `x in (...)` 是 NULL，不包 COALESCE 的话 NOT(...) 也是 NULL → 这行出库三列都不进
+                .doesNotContain("or f.stock_out_dest in (");
         }
     }
 }
