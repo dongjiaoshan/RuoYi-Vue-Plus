@@ -242,13 +242,13 @@ public interface WarehouseStatAggregateMapper {
     @Select("""
         SELECT COALESCE(SUM(CASE WHEN sf.flow_type = 'prod_pick_out'  THEN sf.change_quantity ELSE 0 END), 0) AS pickOut,
                COALESCE(SUM(CASE WHEN sf.flow_type = 'prod_return_in' THEN sf.change_quantity ELSE 0 END), 0) AS returnIn,
-               COALESCE(SUM(CASE WHEN sf.flow_type = 'feed_out'       THEN sf.change_quantity ELSE 0 END), 0) AS feedOut
+               COALESCE(SUM(CASE WHEN sf.flow_type IN ('feed_out', 'pick_feed') THEN sf.change_quantity ELSE 0 END), 0) AS feedOut
         FROM t_warehouse_stock_flow sf
         JOIN t_warehouse_product_info p ON p.id = sf.product_id
         WHERE sf.del_flag = '0' AND sf.tenant_id = #{tenantId}
           AND DATE(sf.flow_date) = #{statDate}
           AND p.belong_type = 'vegetable'
-          AND sf.flow_type IN ('prod_pick_out', 'prod_return_in', 'feed_out')
+          AND sf.flow_type IN ('prod_pick_out', 'prod_return_in', 'feed_out', 'pick_feed')
         """)
     Map<String, Object> selectVegProdFlow(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 

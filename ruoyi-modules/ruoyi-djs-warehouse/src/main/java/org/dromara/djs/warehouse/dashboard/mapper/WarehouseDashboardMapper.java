@@ -221,7 +221,7 @@ public interface WarehouseDashboardMapper {
     Integer countTodayFlowByDirection(@Param("tenantId") String tenantId, @Param("inoutType") String inoutType);
 
     /**
-     * 今日损耗量（flow_type='loss' SUM change_quantity 绝对值）。
+     * 今日损耗量（损耗类 flow_type：loss / pick_loss / settle_loss，SUM change_quantity 绝对值）。
      *
      * @param tenantId 租户
      * @return SUM(change_quantity)，无记录返 0
@@ -229,7 +229,7 @@ public interface WarehouseDashboardMapper {
     @Select("SELECT COALESCE(SUM(change_quantity), 0) "
         + "  FROM t_warehouse_stock_flow "
         + " WHERE tenant_id = #{tenantId} "
-        + "   AND flow_type = 'loss' "
+        + "   AND flow_type IN ('loss','pick_loss','settle_loss') "
         + "   AND DATE(flow_date) = CURDATE() "
         + "   AND del_flag = '0'")
     BigDecimal sumTodayLoss(@Param("tenantId") String tenantId);

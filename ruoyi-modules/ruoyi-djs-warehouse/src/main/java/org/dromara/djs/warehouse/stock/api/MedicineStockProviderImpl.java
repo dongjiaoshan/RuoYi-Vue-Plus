@@ -72,7 +72,8 @@ public class MedicineStockProviderImpl implements MedicineStockProvider {
      * 损耗出库 flow_type（{@code djs_flow_type} 损耗）：养殖端药品损耗经 {@link #deductLoss}
      * 出库，并双写统一损耗台账（对齐 {@code MatFlowServiceImpl} 物资损耗的 loss + manual_loss 范式）。
      */
-    private static final String FLOW_LOSS = "loss";
+    /** 药品损耗 = 领用后损耗：领用（deduct）时已扣过库存，损耗不动库存篮（见 StockFlowTypes）。 */
+    private static final String FLOW_LOSS = org.dromara.djs.warehouse.flow.constant.StockFlowTypes.PICK_LOSS;
 
     /**
      * 采购入库 flow_type（{@code djs_flow_type}）：养殖端药品批次入库（= 采购入库）经

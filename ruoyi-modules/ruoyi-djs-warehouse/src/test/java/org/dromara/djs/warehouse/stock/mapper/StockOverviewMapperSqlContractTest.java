@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
+import java.util.List;
 import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -86,16 +87,34 @@ class StockOverviewMapperSqlContractTest {
         assertThat(detail).contains("group by f.product_id, f.warehouse_id");
         // 两边都排除「期初=入库=出库=0」的噪声行
         assertThat(list).contains("having not (");
-        assertThat(detail).contains("where not (g.beginstock = 0 and g.inboundqty = 0 and g.outboundqty = 0)");
+        assertThat(detail).contains("where not (g.beginstock = 0 and g.inboundqty = 0 and g.outboundqty = 0 and g.lossqty = 0 and g.feedqty = 0)");
     }
 
     @Test
-    @DisplayName("日/月汇总都排除 ship_out 与 product_id=0（row42 生产产品不入库）")
+    @DisplayName("日/月汇总都排除 ship_out、领用后损耗/饲喂与 product_id=0（只回放动过库存篮的流水）")
     void bothExcludeShipOutAndOrphanProduct() throws Exception {
         String daily = normalizedSql("selectDailyOverview", String.class, java.util.Date.class, java.util.Date.class);
         String monthly = normalizedSql("selectMonthlyOverview", String.class, java.util.Date.class, java.util.Date.class);
+        String dailyDetail = normalizedSql("selectDailyDetail", String.class, String.class, String.class, Long.class);
+        String monthlyDetail = normalizedSql("selectMonthlyDetail", String.class, java.util.Date.class, String.class, Long.class);
 
-        assertThat(daily).contains("s.flow_type <> 'ship_out'").contains("s.product_id <> 0");
-        assertThat(monthly).contains("f.flow_type <> 'ship_out'").contains("f.product_id <> 0");
+        assertThat(daily).contains("s.flow_type not in ('ship_out', 'pick_loss', 'pick_feed')").contains("s.product_id <> 0");
+        assertThat(monthly).contains("f.flow_type not in ('ship_out', 'pick_loss', 'pick_feed')").contains("f.product_id <> 0");
+        assertThat(dailyDetail).contains("f.flow_type not in ('ship_out', 'pick_loss', 'pick_feed')");
+        assertThat(monthlyDetail).contains("f.flow_type not in ('ship_out', 'pick_loss', 'pick_feed')");
+    }
+
+    @Test
+    @DisplayName("日/月明细出库拆三列（出库/损耗/饲喂），期末 = 期初 + 入库 − 出库 − 损耗 − 饲喂")
+    void detailSplitsOutboundIntoLossAndFeed() throws Exception {
+        for (String sql : List.of(
+                normalizedSql("selectDailyDetail", String.class, String.class, String.class, Long.class),
+                normalizedSql("selectMonthlyDetail", String.class, java.util.Date.class, String.class, Long.class))) {
+            assertThat(sql)
+                .contains("f.flow_type in ('loss', 'settle_loss') then f.change_quantity else 0 end), 0) as lossqty")
+                .contains("(f.flow_type = 'feed_out' or f.stock_out_dest in ('feed', 'poultry_feed')) then f.change_quantity else 0 end), 0) as feedqty")
+                .contains("and not (f.flow_type = 'feed_out' or f.stock_out_dest in ('feed', 'poultry_feed')) then f.change_quantity else 0 end), 0) as outboundqty")
+                .contains("(g.beginstock + g.inboundqty - g.outboundqty - g.lossqty - g.feedqty) as endstock");
+        }
     }
 }

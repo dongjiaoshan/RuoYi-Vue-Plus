@@ -41,35 +41,6 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
     StockFlow selectRequestReceipt(@Param("key") String key);
 
     /**
-     * 按当前用户 + 产品 + 流水类型 + 今日（{@code DATE(flow_date)=CURDATE()}）SUM change_quantity。
-     *
-     * <p>给"今日已领 / 已退 / 已损"做基础聚合：</p>
-     * <pre>
-     *   SELECT COALESCE(SUM(change_quantity), 0) FROM t_warehouse_stock_flow
-     *    WHERE operator_id = #{userId} AND product_id = #{productId}
-     *      AND flow_type = #{flowType} AND DATE(flow_date) = CURDATE()
-     *      AND del_flag = '0'
-     * </pre>
-     *
-     * <p>tenant_id 由 MP 拦截器在 final SQL 阶段注入，应用层不显式 WHERE。</p>
-     *
-     * @param userId    当前操作人 user_id
-     * @param productId 产品 ID
-     * @param flowType  流水类型（pick_out / return_in / loss）
-     * @return 当日该类型该产品 change_quantity 总和（无记录返 0）
-     */
-    @Select("SELECT COALESCE(SUM(change_quantity), 0) "
-        + "  FROM t_warehouse_stock_flow "
-        + " WHERE operator_id = #{userId} "
-        + "   AND product_id  = #{productId} "
-        + "   AND flow_type   = #{flowType} "
-        + "   AND DATE(flow_date) = CURDATE() "
-        + "   AND del_flag    = '0'")
-    BigDecimal sumTodayByUserProductType(@Param("userId") Long userId,
-                                         @Param("productId") Long productId,
-                                         @Param("flowType") String flowType);
-
-    /**
      * 【三期】总入库 / 总出库合计（V6 row92；按 {@code third_phase=1} + 出入方向聚合 {@code change_num}）。
      *
      * <p>甲方口径：「通过三期标识可以统计三期的总入库和总出库」——判据就是流水行上的
@@ -80,7 +51,7 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
      * 合计要的是量而不是方向，方向已经由 {@code inout_type} 参数限定死了。</p>
      *
      * <p><b>租户隔离靠 MP 拦截器</b>在 final SQL 阶段注入 {@code tenant_id}，应用层不显式 WHERE ——
-     * 与同族的「按方向 / 按人聚合」兄弟（{@link #sumTodayByUserProductType} /
+     * 与同族的「按方向 / 按人聚合」兄弟（{@link #sumTodayByUserProductTypes} /
      * {@link #sumTodayByInoutBelongType}）同一口径，不是这条漏写。</p>
      *
      * <p>本文件确实还有另一半查询显式写死 {@code tenant_id = '1001'}（如
@@ -129,7 +100,7 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
 
     /**
      * 按<b>篮子维度</b>（product + location + ear_no + white_bar_no + plot_id，NULL-safe 匹配）算今日「领用剩余」净额：
-     * {@code 领用(pick_out) − 退回(return_in) − 损耗(loss) − 饲喂(feed_out)}。
+     * {@code 领用(pick_out) − 退回(return_in) − 损耗(loss/pick_loss) − 饲喂(feed_out/pick_feed)}。
      *
      * <p>row38：退回入库 / 当日损耗按篮子校验用——只能退/损该篮子今日实际领用剩余的量，防止退回到「没领用过的
      * 篮子/库位」（如领用耳号 A 却退到库位 B）。返 ≤ 0 = 该篮今日无可退/可损量，调用方拦截。</p>
@@ -138,7 +109,7 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
      */
     @Select("SELECT COALESCE(SUM(CASE "
         + "   WHEN flow_type IN ('prod_pick_out','dept_pick_out','pick_out') THEN change_quantity "
-        + "   WHEN flow_type IN ('prod_return_in','pick_return_in','store_return_in','loss','feed_out') THEN -change_quantity "
+        + "   WHEN flow_type IN ('prod_return_in','pick_return_in','store_return_in','loss','pick_loss','feed_out','pick_feed') THEN -change_quantity "
         + "   ELSE 0 END), 0) "
         + "  FROM t_warehouse_stock_flow "
         + " WHERE product_id   = #{productId} "
@@ -156,7 +127,7 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
 
     /**
      * 按「产品 null-ear 组」维度（product + {@code ear_no IS NULL}，跨库位 / 跨白条号）算今日「领用剩余」净额：
-     * {@code 领用(pick_out 三键) − 退回(return_in 三键) − 损耗(loss) − 饲喂(feed_out)}。
+     * {@code 领用(pick_out 三键) − 退回(return_in 三键) − 损耗(loss/pick_loss) − 饲喂(feed_out/pick_feed)}。
      *
      * <p>admin 猪肉聚合行（{@code selectAdminMatPorkProducts} GROUP BY ear_no，NULL 归一组跨库位 SUM）与 mp
      * 猪肉「退货卡」的 {@code batchId} 语义 = 「该产品 null-ear 组」而非单篮：组级 FIFO 领用写的流水按首篮标签
@@ -169,7 +140,7 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
      */
     @Select("SELECT COALESCE(SUM(CASE "
         + "   WHEN flow_type IN ('prod_pick_out','dept_pick_out','pick_out') THEN change_quantity "
-        + "   WHEN flow_type IN ('prod_return_in','pick_return_in','store_return_in','loss','feed_out') THEN -change_quantity "
+        + "   WHEN flow_type IN ('prod_return_in','pick_return_in','store_return_in','loss','pick_loss','feed_out','pick_feed') THEN -change_quantity "
         + "   ELSE 0 END), 0) "
         + "  FROM t_warehouse_stock_flow "
         + " WHERE product_id = #{productId} "
@@ -177,39 +148,6 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
         + "   AND DATE(flow_date) = CURDATE() "
         + "   AND del_flag = '0' AND tenant_id = '1001'")
     BigDecimal sumTodayNetPickedByNullEarGroup(@Param("productId") Long productId);
-
-    /**
-     * 按当前用户 + 流水类型 + 今日 + 可选物资类型 SUM（前端"今日数据"卡片用，不限定 productId）。
-     *
-     * <p>matType 可选：若非空则 JOIN product_info 按 belong_type 过滤。MyBatis {@code <if>} 用注解
-     * SQL 不便表达，service 层拼接两条独立 SQL，故此处只提供"全部产品"汇总。matType 维度走
-     * {@link #sumTodayByUserMatType} 接力。</p>
-     */
-    @Select("SELECT COALESCE(SUM(change_quantity), 0) "
-        + "  FROM t_warehouse_stock_flow "
-        + " WHERE operator_id = #{userId} "
-        + "   AND flow_type   = #{flowType} "
-        + "   AND DATE(flow_date) = CURDATE() "
-        + "   AND del_flag    = '0'")
-    BigDecimal sumTodayByUserType(@Param("userId") Long userId,
-                                  @Param("flowType") String flowType);
-
-    /**
-     * 按当前用户 + 流水类型 + 今日 + 物资 belongType（JOIN product_info）SUM。
-     *
-     * <p>给"今日数据卡片"按 matType 维度聚合用。</p>
-     */
-    @Select("SELECT COALESCE(SUM(f.change_quantity), 0) "
-        + "  FROM t_warehouse_stock_flow f "
-        + "  JOIN t_warehouse_product_info p ON p.id = f.product_id AND p.del_flag = '0' "
-        + " WHERE f.operator_id = #{userId} "
-        + "   AND f.flow_type   = #{flowType} "
-        + "   AND DATE(f.flow_date) = CURDATE() "
-        + "   AND p.belong_type = #{belongType} "
-        + "   AND f.del_flag    = '0'")
-    BigDecimal sumTodayByUserMatType(@Param("userId") Long userId,
-                                     @Param("flowType") String flowType,
-                                     @Param("belongType") String belongType);
 
     /**
      * 按 {@code inout_type} + 今日 + 物资 {@code belongType}（JOIN product_info）SUM change_quantity。
@@ -387,7 +325,7 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
      * 按当前用户 + 产品 + 今日 + 流水类型集合（IN）SUM change_quantity（FIX-WMS-FLOWDICT-003）。
      *
      * <p>领用 / 退回 flow_type 按来源拆分（prod_pick_out / dept_pick_out / prod_return_in / pick_return_in）后，
-     * 今日额度统计「已领 / 已退」须跨多键聚合，单键版 {@link #sumTodayByUserProductType} 会漏算。
+     * 今日额度统计「已领 / 已退」须跨多键聚合。
      * flowTypes 空集合不会出现（service 端常量非空），mapper 不做空集兜底。</p>
      *
      * @param userId    当前操作人 user_id
@@ -424,13 +362,6 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
         + "</script>")
     BigDecimal sumTodayByProductTypes(@Param("productId") Long productId,
                                       @Param("flowTypes") java.util.Collection<String> flowTypes);
-
-    /** 全部人版单键：某产品今日某 flow_type SUM（不按 operator 过滤，row44/Q3）。 */
-    @Select("SELECT COALESCE(SUM(change_quantity), 0) FROM t_warehouse_stock_flow "
-        + " WHERE product_id = #{productId} AND DATE(flow_date) = CURDATE() AND del_flag = '0' "
-        + "   AND flow_type = #{flowType}")
-    BigDecimal sumTodayByProductType(@Param("productId") Long productId,
-                                     @Param("flowType") String flowType);
 
     /**
      * 按当前用户 + 今日 + 流水类型集合（IN）SUM（不限定 productId；全产品「今日数据」卡片用）。

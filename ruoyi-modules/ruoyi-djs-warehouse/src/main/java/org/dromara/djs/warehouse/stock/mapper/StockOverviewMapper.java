@@ -20,9 +20,12 @@ import java.util.List;
  * <p><b>口径</b>：</p>
  * <ul>
  *   <li>列表：按自然日，当日库存非 0 的产品/商品 distinct 数（基于当日及之前流水累计余额 ≠ 0）。</li>
- *   <li>明细：按 (产品, 库位) 一行，回放流水算期初/入库/出库；期末 = 期初 + 入 − 出；
- *       损耗（loss_flow）/ 饲喂（feed_log）按产品归集为信息列（产品维度去重后只挂在该产品某一行，
- *       避免多库位重复计数）。</li>
+ *   <li>明细：按 (产品, 库位) 一行，回放流水算期初 / 入库 / 出库 / 损耗 / 饲喂；
+ *       期末 = 期初 + 入库 − 出库 − 损耗 − 饲喂，恒等于该库位库存篮余额。</li>
+ *   <li>回放范围：只回放动过库存篮的流水 —— 排除成品发货 {@code ship_out}（成品只出不入）与领用后损耗 / 饲喂
+ *       {@code pick_loss / pick_feed}（领用出库时已扣过一次，见 {@code StockFlowTypes}）。</li>
+ *   <li>出库拆三列：损耗量 = {@code loss / settle_loss}；饲料饲喂量 = 去向猪只 / 家禽饲料（{@code stock_out_dest
+ *       feed / poultry_feed}）或历史 {@code feed_out}；其余出库计出库量。</li>
  * </ul>
  *
  * @author djs
@@ -65,7 +68,7 @@ public interface StockOverviewMapper {
                        FROM t_warehouse_stock_flow s
                        WHERE s.del_flag = '0' AND s.tenant_id = #{tenantId}
                          AND s.product_id IS NOT NULL AND s.product_id &lt;&gt; 0
-                         AND s.flow_type &lt;&gt; 'ship_out'
+                         AND s.flow_type NOT IN ('ship_out', 'pick_loss', 'pick_feed')
                          AND s.flow_date &lt; DATE_ADD(d.statDate, INTERVAL 1 DAY)
                        GROUP BY s.product_id
                        HAVING SUM(CASE WHEN s.inout_type = 'IN' THEN s.change_quantity
@@ -115,17 +118,15 @@ public interface StockOverviewMapper {
      *       即 IN 计 +change_quantity、OT 计 −change_quantity。
      *       <b>不</b>用 change_num 带符号求和（部分写入方 ship_out 写成了正号，会导致期初 ≠ 昨日期末）。</li>
      *   <li>inboundQty = Σ change_quantity WHERE inout_type='IN' AND DATE(flow_date)=当日；</li>
-     *   <li>outboundQty = Σ change_quantity WHERE inout_type='OT' AND DATE(flow_date)=当日；</li>
-     *   <li>endStock = beginStock + inboundQty − outboundQty；故昨日 endStock 恒等于今日 beginStock。</li>
+     *   <li>当日出库（inout_type='OT'）拆三列：lossQty = 损耗类（{@code loss / settle_loss}）；
+     *       feedQty = 去向猪只 / 家禽饲料或历史 {@code feed_out}；outboundQty = 其余出库；</li>
+     *   <li>endStock = beginStock + inboundQty − outboundQty − lossQty − feedQty；故昨日 endStock 恒等于今日 beginStock。</li>
      *   <li>row42「生产产品不入库」口径：{@code flow_type='ship_out'} 成品发货流水<b>整体排除</b>
      *       （成品只有出库无入库，计入会得恒负期末；ship-only 生产产品不出现在明细里）；</li>
+     *   <li>领用后损耗 / 饲喂（{@code pick_loss / pick_feed}）排除：领用出库时已扣过库存篮、已记过出库；</li>
      *   <li>{@code product_id=0} 历史孤儿流水排除（0 不是 NULL，防无名幽灵行）；</li>
-     *   <li>仅保留「期初或入库或出库任一 ≠ 0」即当日相关的行（剔除当日及历史均为 0 的噪声）。</li>
+     *   <li>仅保留「期初或当日任一列 ≠ 0」即当日相关的行（剔除当日及历史均为 0 的噪声）。</li>
      * </ul>
-     *
-     * <p>损耗 / 饲喂为产品维度信息列：本 @Select 不在此 JOIN（避免与库位维度笛卡尔重复计数），
-     * 由 service 用 {@link #selectDailyLossByProduct} / {@link #selectDailyFeedByProduct} 单独取，
-     * 按产品归集后只挂到该产品的某一行。</p>
      *
      * <p>搜索：产品名称模糊（product_info.product_name）/ 库位精确（locationId）。
      * id CAST AS CHAR 返前端。</p>
@@ -149,7 +150,9 @@ public interface StockOverviewMapper {
                g.beginStock AS beginStock,
                g.inboundQty AS inboundQty,
                g.outboundQty AS outboundQty,
-               (g.beginStock + g.inboundQty - g.outboundQty) AS endStock
+               g.lossQty AS lossQty,
+               g.feedQty AS feedQty,
+               (g.beginStock + g.inboundQty - g.outboundQty - g.lossQty - g.feedQty) AS endStock
         FROM (
             SELECT f.product_id,
                    f.warehouse_id,
@@ -157,17 +160,21 @@ public interface StockOverviewMapper {
                                      WHEN f.flow_date &lt; #{date} AND f.inout_type = 'OT' THEN -f.change_quantity
                                      ELSE 0 END), 0) AS beginStock,
                    COALESCE(SUM(CASE WHEN DATE(f.flow_date) = #{date} AND f.inout_type = 'IN' THEN f.change_quantity ELSE 0 END), 0) AS inboundQty,
-                   COALESCE(SUM(CASE WHEN DATE(f.flow_date) = #{date} AND f.inout_type = 'OT' THEN f.change_quantity ELSE 0 END), 0) AS outboundQty
+                   COALESCE(SUM(CASE WHEN DATE(f.flow_date) = #{date} AND f.inout_type = 'OT' AND f.flow_type IN ('loss', 'settle_loss') THEN f.change_quantity ELSE 0 END), 0) AS lossQty,
+                   COALESCE(SUM(CASE WHEN DATE(f.flow_date) = #{date} AND f.inout_type = 'OT' AND f.flow_type NOT IN ('loss', 'settle_loss')
+                                          AND (f.flow_type = 'feed_out' OR f.stock_out_dest IN ('feed', 'poultry_feed')) THEN f.change_quantity ELSE 0 END), 0) AS feedQty,
+                   COALESCE(SUM(CASE WHEN DATE(f.flow_date) = #{date} AND f.inout_type = 'OT' AND f.flow_type NOT IN ('loss', 'settle_loss')
+                                          AND NOT (f.flow_type = 'feed_out' OR f.stock_out_dest IN ('feed', 'poultry_feed')) THEN f.change_quantity ELSE 0 END), 0) AS outboundQty
             FROM t_warehouse_stock_flow f
             WHERE f.del_flag = '0' AND f.tenant_id = #{tenantId}
               AND f.product_id IS NOT NULL AND f.product_id &lt;&gt; 0
-              AND f.flow_type &lt;&gt; 'ship_out'
+              AND f.flow_type NOT IN ('ship_out', 'pick_loss', 'pick_feed')
               AND f.flow_date &lt; DATE_ADD(#{date}, INTERVAL 1 DAY)
             GROUP BY f.product_id, f.warehouse_id
         ) g
         LEFT JOIN t_warehouse_product_info pi ON pi.id = g.product_id AND pi.del_flag = '0'
         LEFT JOIN t_warehouse_location_info li ON li.id = g.warehouse_id AND li.del_flag = '0'
-        WHERE NOT (g.beginStock = 0 AND g.inboundQty = 0 AND g.outboundQty = 0)
+        WHERE NOT (g.beginStock = 0 AND g.inboundQty = 0 AND g.outboundQty = 0 AND g.lossQty = 0 AND g.feedQty = 0)
         <if test="productName != null and productName != ''">
             AND pi.product_name LIKE CONCAT('%', #{productName}, '%')
         </if>
@@ -181,49 +188,6 @@ public interface StockOverviewMapper {
                                                   @Param("date") String date,
                                                   @Param("productName") String productName,
                                                   @Param("locationId") Long locationId);
-
-    /**
-     * 当日各产品损耗量（产品维度信息列）：Σ loss_weight GROUP BY product_id WHERE DATE(loss_date)=当日。
-     *
-     * <p>返回 productId(String) + lossQty，service 按产品归集挂到明细行。</p>
-     *
-     * @param tenantId 租户（V1 固定 '1001'）
-     * @param date     统计自然日（yyyy-MM-dd）
-     * @return 当日各产品损耗量
-     */
-    @Select("""
-        SELECT CAST(product_id AS CHAR) AS productId,
-               COALESCE(SUM(loss_weight), 0) AS lossQty
-        FROM t_warehouse_loss_flow
-        WHERE del_flag = '0' AND tenant_id = #{tenantId}
-          AND product_id IS NOT NULL AND product_id != 0
-          AND DATE(loss_date) = #{date}
-        GROUP BY product_id
-        """)
-    List<StockOverviewDetailVo> selectDailyLossByProduct(@Param("tenantId") String tenantId,
-                                                         @Param("date") String date);
-
-    /**
-     * 当日各产品饲喂量（产品维度信息列）：Σ feed_weight GROUP BY product_id WHERE DATE(feed_date)=当日。
-     *
-     * <p>仅果蔬原材料 feed_log 有 product_id；返回 productId(String) + feedQty，service 按产品归集。</p>
-     *
-     * @param tenantId 租户（V1 固定 '1001'）
-     * @param date     统计自然日（yyyy-MM-dd）
-     * @return 当日各产品饲喂量
-     */
-    @Select("""
-        SELECT CAST(product_id AS CHAR) AS productId,
-               COALESCE(SUM(feed_weight), 0) AS feedQty
-        FROM t_warehouse_feed_log
-        WHERE del_flag = '0' AND tenant_id = #{tenantId}
-          AND product_id IS NOT NULL AND product_id != 0
-          AND DATE(feed_date) = #{date}
-        GROUP BY product_id
-        """)
-    List<StockOverviewDetailVo> selectDailyFeedByProduct(@Param("tenantId") String tenantId,
-                                                         @Param("date") String date);
-
 
     // ==================== 库存月汇总（admin row190，compute-on-read 同构日汇总）====================
 
@@ -268,7 +232,7 @@ public interface StockOverviewMapper {
                         FROM t_warehouse_stock_flow f0
                         WHERE f0.del_flag = '0' AND f0.tenant_id = #{tenantId}
                           AND f0.product_id IS NOT NULL AND f0.product_id &lt;&gt; 0
-                          AND f0.flow_type &lt;&gt; 'ship_out'
+                          AND f0.flow_type NOT IN ('ship_out', 'pick_loss', 'pick_feed')
                     ) r
                     JOIN (
                         SELECT u.N + v.N * 10 + w.N * 100 AS n
@@ -287,7 +251,7 @@ public interface StockOverviewMapper {
             JOIN t_warehouse_stock_flow f
               ON f.del_flag = '0' AND f.tenant_id = #{tenantId}
              AND f.product_id IS NOT NULL AND f.product_id &lt;&gt; 0
-             AND f.flow_type &lt;&gt; 'ship_out'
+             AND f.flow_type NOT IN ('ship_out', 'pick_loss', 'pick_feed')
              AND f.flow_date &lt; DATE_ADD(mm.mStart, INTERVAL 1 MONTH)
             GROUP BY mm.statMonth, mm.mStart, f.product_id, f.warehouse_id
             HAVING NOT (
@@ -313,9 +277,9 @@ public interface StockOverviewMapper {
      * <ul>
      *   <li>beginStock = 当月首日之前的带符号流水累计 —— 对「当月第一天就有的产品」即当月首日期初；
      *       对「当月新采购的产品」自然为 0，无需特判；</li>
-     *   <li>inboundQty / outboundQty = 当月区间内各自求和；</li>
-     *   <li>endStock = beginStock + inboundQty − outboundQty，即当月最后一天的期末；</li>
-     *   <li>与日汇总同样排除 {@code flow_type='ship_out'} 与 {@code product_id=0}。</li>
+     *   <li>inboundQty / outboundQty / lossQty / feedQty = 当月区间内各自求和（出库拆三列同日汇总）；</li>
+     *   <li>endStock = beginStock + inboundQty − outboundQty − lossQty − feedQty，即当月最后一天的期末；</li>
+     *   <li>与日汇总同样排除 {@code ship_out / pick_loss / pick_feed} 与 {@code product_id=0}。</li>
      * </ul>
      *
      * @param tenantId    租户
@@ -337,7 +301,9 @@ public interface StockOverviewMapper {
                g.beginStock AS beginStock,
                g.inboundQty AS inboundQty,
                g.outboundQty AS outboundQty,
-               (g.beginStock + g.inboundQty - g.outboundQty) AS endStock
+               g.lossQty AS lossQty,
+               g.feedQty AS feedQty,
+               (g.beginStock + g.inboundQty - g.outboundQty - g.lossQty - g.feedQty) AS endStock
         FROM (
             SELECT f.product_id,
                    f.warehouse_id,
@@ -345,17 +311,21 @@ public interface StockOverviewMapper {
                                      WHEN f.flow_date &lt; #{monthStart} AND f.inout_type = 'OT' THEN -f.change_quantity
                                      ELSE 0 END), 0) AS beginStock,
                    COALESCE(SUM(CASE WHEN f.flow_date &gt;= #{monthStart} AND f.inout_type = 'IN' THEN f.change_quantity ELSE 0 END), 0) AS inboundQty,
-                   COALESCE(SUM(CASE WHEN f.flow_date &gt;= #{monthStart} AND f.inout_type = 'OT' THEN f.change_quantity ELSE 0 END), 0) AS outboundQty
+                   COALESCE(SUM(CASE WHEN f.flow_date &gt;= #{monthStart} AND f.inout_type = 'OT' AND f.flow_type IN ('loss', 'settle_loss') THEN f.change_quantity ELSE 0 END), 0) AS lossQty,
+                   COALESCE(SUM(CASE WHEN f.flow_date &gt;= #{monthStart} AND f.inout_type = 'OT' AND f.flow_type NOT IN ('loss', 'settle_loss')
+                                          AND (f.flow_type = 'feed_out' OR f.stock_out_dest IN ('feed', 'poultry_feed')) THEN f.change_quantity ELSE 0 END), 0) AS feedQty,
+                   COALESCE(SUM(CASE WHEN f.flow_date &gt;= #{monthStart} AND f.inout_type = 'OT' AND f.flow_type NOT IN ('loss', 'settle_loss')
+                                          AND NOT (f.flow_type = 'feed_out' OR f.stock_out_dest IN ('feed', 'poultry_feed')) THEN f.change_quantity ELSE 0 END), 0) AS outboundQty
             FROM t_warehouse_stock_flow f
             WHERE f.del_flag = '0' AND f.tenant_id = #{tenantId}
               AND f.product_id IS NOT NULL AND f.product_id &lt;&gt; 0
-              AND f.flow_type &lt;&gt; 'ship_out'
+              AND f.flow_type NOT IN ('ship_out', 'pick_loss', 'pick_feed')
               AND f.flow_date &lt; DATE_ADD(#{monthStart}, INTERVAL 1 MONTH)
             GROUP BY f.product_id, f.warehouse_id
         ) g
         LEFT JOIN t_warehouse_product_info pi ON pi.id = g.product_id AND pi.del_flag = '0'
         LEFT JOIN t_warehouse_location_info li ON li.id = g.warehouse_id AND li.del_flag = '0'
-        WHERE NOT (g.beginStock = 0 AND g.inboundQty = 0 AND g.outboundQty = 0)
+        WHERE NOT (g.beginStock = 0 AND g.inboundQty = 0 AND g.outboundQty = 0 AND g.lossQty = 0 AND g.feedQty = 0)
         <if test="productName != null and productName != ''">
             AND pi.product_name LIKE CONCAT('%', #{productName}, '%')
         </if>

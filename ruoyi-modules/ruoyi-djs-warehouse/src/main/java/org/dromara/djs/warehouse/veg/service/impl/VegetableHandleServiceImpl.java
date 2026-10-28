@@ -22,6 +22,7 @@ import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.crop.service.ICropProductService;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
+import org.dromara.djs.warehouse.flow.constant.StockFlowTypes;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
@@ -699,8 +700,9 @@ public class VegetableHandleServiceImpl
      * 一并扣光并全部记成 A 的损耗（实测 A 采摘 40kg 却结出 55kg，{@code loss > picked}）。
      * 收窄到本条记录之后，结转量在数学上不可能超过本记录的 {@code picked}。</p>
      *
-     * <p><b>扣库存与写损耗必须成对</b>：只写 loss_flow 不扣篮，库存会永远挂着已经算作损耗的量，
-     * 之后毛菜间出库还能把它出出去 = 凭空多出一批货。</p>
+     * <p><b>扣库存、写流水、写损耗三者成对</b>：只写 loss_flow 不扣篮，库存会永远挂着已经算作损耗的量，
+     * 之后毛菜间出库还能把它出出去 = 凭空多出一批货；扣了篮不写 {@code settle_loss} 流水，
+     * 按库位回放流水的库存日 / 月汇总就会比库存篮多出这批货（期末虚高）。</p>
      *
      * <p>损耗明细字段与既有毛菜处理损耗完全一致（{@code loss_type=veg_handle_loss} /
      * {@code source_biz_type=veg_handle} / plotId / productId / belongType / operatorId），
@@ -715,6 +717,8 @@ public class VegetableHandleServiceImpl
         Map<Long, BigDecimal> settledByProduct = new LinkedHashMap<>();
         // 产品 → 地块（取自篮子本身；planting.plotId 作兜底，正常两者相同）
         Map<Long, Long> plotByProduct = new HashMap<>();
+        // 产品 → 三期标识（随篮带上流水）
+        Map<Long, Integer> thirdPhaseByProduct = new HashMap<>();
         for (LocationStock basket : locationStockMapper.selectBasketsBySource(locationId, planting.getId())) {
             BigDecimal qty = nullSafe(basket.getProductStock());
             if (qty.signum() <= 0 || basket.getProductId() == null) {
@@ -726,10 +730,32 @@ public class VegetableHandleServiceImpl
             settledByProduct.merge(basket.getProductId(), qty, BigDecimal::add);
             plotByProduct.putIfAbsent(basket.getProductId(),
                 basket.getPlotId() != null ? basket.getPlotId() : planting.getPlotId());
+            thirdPhaseByProduct.putIfAbsent(basket.getProductId(), LocationStock.thirdPhaseOf(basket));
         }
         BigDecimal total = BigDecimal.ZERO;
+        Date now = new Date();
         for (Map.Entry<Long, BigDecimal> e : settledByProduct.entrySet()) {
+            StockFlow flow = new StockFlow();
+            Map<String, Object> ctx = new HashMap<>(2);
+            ctx.put("ioCode", INOUT_OUT);
+            flow.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
+            flow.setFlowDate(now);
+            flow.setProductId(e.getKey());
+            flow.setWarehouseId(locationId);
+            flow.setInoutType(INOUT_OUT);
+            flow.setFlowType(StockFlowTypes.SETTLE_LOSS);
+            flow.setChangeNum(e.getValue().negate());
+            flow.setChangeQuantity(e.getValue());
+            flow.setPlotId(plotByProduct.get(e.getKey()));
+            flow.setThirdPhase(thirdPhaseByProduct.get(e.getKey()));
+            flow.setOperatorId(userId);
+            flow.setRemark("地块处理完成：剩余库存结转损耗 plantingRecordId=" + planting.getId());
+            stockFlowMapper.insert(flow);
+
             LossFlow lossFlow = new LossFlow();
+            lossFlow.setLossDate(now);
+            lossFlow.setLocationId(locationId);
+            lossFlow.setSourceFlowId(flow.getId());
             lossFlow.setLossType(LOSS_TYPE_VEG_HANDLE);
             lossFlow.setLossWeight(e.getValue());
             lossFlow.setProductId(e.getKey());

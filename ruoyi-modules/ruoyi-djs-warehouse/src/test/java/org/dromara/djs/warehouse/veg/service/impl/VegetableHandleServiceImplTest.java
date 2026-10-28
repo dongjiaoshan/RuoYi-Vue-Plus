@@ -333,8 +333,23 @@ class VegetableHandleServiceImplTest {
         p2.setProductId(77001L);
         when(locationStockMapper.selectBasketsBySource(FRESH_LOC_ID, 60001L)).thenReturn(List.of(p1, p2));
         when(locationStockMapper.deductStockById(anyLong(), any(BigDecimal.class), anyLong())).thenReturn(1);
+        java.util.concurrent.atomic.AtomicLong flowIds = new java.util.concurrent.atomic.AtomicLong(800L);
+        org.mockito.Mockito.doAnswer(inv -> { inv.getArgument(0, StockFlow.class).setId(flowIds.incrementAndGet()); return 1; })
+            .when(stockFlowMapper).insert(any(StockFlow.class));
 
         service.submitProcess(processBo(null, "0", 1));
+
+        // 扣篮的同时每个产品写一条 settle_loss 出库流水（库存日汇总按库位回放，不写就会虚高），损耗台账关联它
+        ArgumentCaptor<StockFlow> settleCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(2)).insert(settleCap.capture());
+        assertThat(settleCap.getAllValues()).allSatisfy(f -> {
+            assertThat(f.getFlowType()).isEqualTo("settle_loss");
+            assertThat(f.getInoutType()).isEqualTo("OT");
+            assertThat(f.getWarehouseId()).isEqualTo(FRESH_LOC_ID);
+        });
+        assertThat(settleCap.getAllValues()).extracting(StockFlow::getProductId).containsExactly(PRODUCT_ID, 77001L);
+        assertThat(settleCap.getAllValues()).extracting(f -> f.getChangeQuantity().toPlainString())
+            .containsExactly("30.000", "20.000");
 
         // 两篮都扣到 0
         ArgumentCaptor<Long> idCap = ArgumentCaptor.forClass(Long.class);
@@ -349,6 +364,8 @@ class VegetableHandleServiceImplTest {
                 org.dromara.djs.warehouse.loss.domain.LossFlow::getProductId)
             .containsExactly(PRODUCT_ID, 77001L);
         assertThat(lossCap.getAllValues().get(1).getLossWeight()).isEqualByComparingTo("20.000");
+        assertThat(lossCap.getAllValues()).extracting(org.dromara.djs.warehouse.loss.domain.LossFlow::getSourceFlowId)
+            .containsExactly(801L, 802L);
 
         // picked(50) = handled(0) + loss(50)，账自洽
         ArgumentCaptor<VegetableHandle> updCap = ArgumentCaptor.forClass(VegetableHandle.class);
