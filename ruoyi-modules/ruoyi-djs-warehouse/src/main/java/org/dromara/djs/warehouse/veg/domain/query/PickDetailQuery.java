@@ -16,10 +16,10 @@ import java.time.LocalDate;
 @Data
 public class PickDetailQuery {
 
-    /** 采摘日期下界（含，按 DATE(handle_time)）。 */
+    /** 实际采摘日期下界（含，按 harvest_date / activity_date）。 */
     private LocalDate pickDateBegin;
 
-    /** 采摘日期上界（含，按 DATE(handle_time)）。 */
+    /** 实际采摘日期上界（含，按 harvest_date / activity_date）。 */
     private LocalDate pickDateEnd;
 
     /** 作物名称模糊匹配（planting_record 冗余 crop_name）。 */

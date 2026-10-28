@@ -1196,7 +1196,8 @@ class VegetableHandleServiceImplTest {
     @DisplayName("采摘明细 happy：分页查询透传 mapper 固定行，query 原样下传")
     void testQueryPickDetailPage_HappyPath() {
         PickDetailVo row = new PickDetailVo();
-        row.setPickDate("2026-07-21 09:30:00");
+        row.setRecordTime("2026-07-21 09:30:00");
+        row.setPickDate("2026-07-20");
         row.setCropName("小白菜");
         row.setPlotCode("A-01");
         row.setPickWeight(new BigDecimal("12.345"));
@@ -1214,6 +1215,8 @@ class VegetableHandleServiceImplTest {
 
         assertThat(result.getTotal()).isEqualTo(1);
         assertThat(result.getRows()).hasSize(1);
+        assertThat(result.getRows().get(0).getRecordTime()).isEqualTo("2026-07-21 09:30:00");
+        assertThat(result.getRows().get(0).getPickDate()).isEqualTo("2026-07-20");
         assertThat(result.getRows().get(0).getCropName()).isEqualTo("小白菜");
         assertThat(result.getRows().get(0).getPlotCode()).isEqualTo("A-01");
         assertThat(result.getRows().get(0).getPickWeight()).isEqualByComparingTo("12.345");

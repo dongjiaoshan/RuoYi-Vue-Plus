@@ -28,10 +28,11 @@ public class PickDetailVo implements Serializable {
     @Serial
     private static final long serialVersionUID = 1L;
 
-    /**
-     * 采摘日期（V7 row7 显示到时分秒）：过磅支 = handle_time「yyyy-MM-dd HH:mm:ss」；
-     * 采摘活动支只有活动日期、没有时刻，保持「yyyy-MM-dd」，不编造时间。
-     */
+    /** 记录时间：采收过磅的操作时间 / 采摘活动的记录创建时间。 */
+    @ExcelProperty(value = "记录时间")
+    private String recordTime;
+
+    /** 实际录入的采摘日期：种植记录 harvest_date / 采摘活动 activity_date。 */
     @ExcelProperty(value = "采摘日期")
     private String pickDate;
 

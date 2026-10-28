@@ -14,10 +14,9 @@ import java.util.List;
 /**
  * 需求单打印 Mapper（V7-R8，admin 仓库 › 需求管理 › 需求单打印）。
  *
- * <p><b>哪些需求行算数</b>：与需求管理汇总列表 {@link DemandManageMapper#selectDemandGroupList} 同口径——
- * 门店需求（{@code store_id} 非空）且挂了产品（{@code product_id} 非空），排除已取消 / 已删除，
- * 待确认（SUBMITTED）也计入。打印单是给仓库按需求单备货、线下勾「是否已备完货」用的，
- * 打出来的内容必须就是需求管理页上看得到的那批需求，不能另立一套口径。</p>
+ * <p><b>哪些需求行算数</b>：需求管理中的已确认行——
+     * 门店需求（{@code store_id} 非空）且挂了产品（{@code product_id} 非空），仅已确认（CONFIRMED）且未删除。
+     * 打印单用于仓库按已确认需求备货，线下勾「是否已备完货」（D-0151）。</p>
  *
  * <p><b>列表与明细共用 {@link #EFFECTIVE_DEMAND_WHERE}</b>：列表的「需求品类数」= 明细行数，
  * 两处 WHERE 只要漂一边，弹框里写 21 个品类、打出来却是 20 行。</p>
@@ -30,11 +29,11 @@ import java.util.List;
 @Mapper
 public interface DemandPrintMapper {
 
-    /** 有效需求行谓词（锚主表别名 {@code dm}；列表与明细共用，口径同需求管理汇总列表）。 */
+    /** 已确认需求谓词（锚主表别名 {@code dm}；列表、明细及备注读取共用）。 */
     String EFFECTIVE_DEMAND_WHERE = """
           dm.product_id IS NOT NULL
           AND dm.store_id IS NOT NULL
-          AND dm.demand_status NOT IN ('CANCELLED','DELETED')
+          AND dm.demand_status = 'CONFIRMED'
           AND dm.del_flag = '0'
           AND dm.tenant_id = '1001'
         """;
@@ -42,7 +41,7 @@ public interface DemandPrintMapper {
     /**
      * 订货单列表：按（需求日期 × 门店）聚合，需求品类数 = 去重产品数。
      *
-     * <p>排序：需求日期升序（今日在前、明日在后，按备货先后），同日按门店名升序。</p>
+     * <p>排序：需求日期降序，同日按门店名、门店 ID 升序。</p>
      *
      * @param page      分页（MP 对 GROUP BY 查询自动包 COUNT 子查询求总数）
      * @param beginDate 需求日期起（含，null 不过滤）
@@ -71,7 +70,7 @@ public interface DemandPrintMapper {
             <foreach collection="storeIds" item="sid" open="(" separator="," close=")">#{sid}</foreach>
           </if>
         GROUP BY dm.demand_date, dm.store_id
-        ORDER BY dm.demand_date ASC, MAX(s.store_name) ASC, dm.store_id ASC
+        ORDER BY dm.demand_date DESC, MAX(s.store_name) ASC, dm.store_id ASC
         </script>
         """)
     Page<DemandPrintSheetVo> selectSheetPage(IPage<DemandPrintSheetVo> page,

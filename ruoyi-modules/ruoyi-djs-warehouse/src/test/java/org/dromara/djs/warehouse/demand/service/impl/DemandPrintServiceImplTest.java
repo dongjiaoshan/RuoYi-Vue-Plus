@@ -142,8 +142,8 @@ class DemandPrintServiceImplTest {
     }
 
     @Test
-    @DisplayName("列表与明细共用同一有效需求谓词，且与需求管理汇总列表同口径（排除已取消 / 已删除）")
-    void listAndDetailShareDemandManagePredicate() throws Exception {
+    @DisplayName("打印列表、明细与备注仅含已确认需求，普通需求列表不受影响")
+    void listAndDetailShareConfirmedPredicate() throws Exception {
         String list = sqlOf(DemandPrintMapper.class, "selectSheetPage",
             com.baomidou.mybatisplus.core.metadata.IPage.class, LocalDate.class, LocalDate.class, List.class);
         String detail = sqlOf(DemandPrintMapper.class, "selectSheetItems", LocalDate.class, Long.class);
@@ -153,7 +153,8 @@ class DemandPrintServiceImplTest {
         assertThat(list).contains(predicate);
         assertThat(detail).contains(predicate);
         assertThat(remarks).contains(predicate).contains("order by dm.id asc").doesNotContain("group_concat");
-        assertThat(predicate).contains("dm.demand_status not in ('cancelled','deleted')");
+        assertThat(predicate).contains("dm.demand_status = 'confirmed'", "dm.del_flag = '0'", "dm.tenant_id = '1001'");
+        assertThat(list).contains("order by dm.demand_date desc");
 
         // 需求管理汇总列表也是这四个条件：store 非空 + product 非空 + 排除 CANCELLED / DELETED
         String groupList = sqlOf(DemandManageMapper.class, "selectDemandGroupList",
@@ -162,7 +163,8 @@ class DemandPrintServiceImplTest {
             .contains("dm.product_id is not null")
             .contains("dm.store_id is not null")
             .contains("dm.demand_status <> 'cancelled'")
-            .contains("dm.demand_status <> 'deleted'");
+            .contains("dm.demand_status <> 'deleted'")
+            .doesNotContain("dm.demand_status = 'confirmed'");
     }
 
     @Test
