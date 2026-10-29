@@ -277,42 +277,27 @@ public interface WarehouseDashboardMapper {
     BigDecimal sumTodayMarketingWeight(@Param("tenantId") String tenantId);
 
     /**
-     * 今日毛菜处理果蔬品种数（毛菜处理流水 record_type=1 已称重记录涉及的不重复作物数）。
-     *
-     * <p>{@code record_weight > 0}：V6 row28 起允许提交 0 kg 采摘记录来给「已称完但没点完成」的地块收口，
-     * 这类记录同样带 {@code is_weighed=1}。不排掉它会让看板显示「今日处理 2 个品种 / 50 kg」——
-     * 多出来的那个品种一克都没处理。与同页总重口径成对，两条 SQL 必须一起改。</p>
-     *
-     * @param tenantId 租户
-     * @return COUNT(DISTINCT crop_id) WHERE record_type=1 AND is_weighed=1 AND record_weight>0，无记录返 0
+     * 当日「毛菜间入库」（veg_stock_in）流水集合，两项接收指标共用，按入库操作日统计。
+     * 门店退回、采购等落到毛菜保鲜室的其他入库方式不算毛菜处理间接收。
      */
-    @Select("SELECT COUNT(DISTINCT crop_id) "
-        + "  FROM t_warehouse_handle_record "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND record_type = 1 "
-        + "   AND is_weighed = 1 "
-        + "   AND record_weight > 0 "
-        + "   AND DATE(handle_time) = CURDATE() "
-        + "   AND del_flag = '0'")
+    String TODAY_FRESH_VEG_RECEIPTS = """
+          FROM t_warehouse_stock_flow f
+          JOIN t_warehouse_product_info p
+            ON p.id = f.product_id AND p.tenant_id = f.tenant_id AND p.del_flag = '0'
+         WHERE f.tenant_id = #{tenantId}
+           AND f.del_flag = '0'
+           AND f.inout_type = 'IN'
+           AND f.flow_type = 'veg_stock_in'
+           AND f.change_quantity > 0
+           AND DATE(f.flow_date) = CURDATE()
+        """;
+
+    /** 今日毛菜间果蔬接收品种数，同产品不同地块或多次入库只算一种。 */
+    @Select("SELECT COUNT(DISTINCT f.product_id) " + TODAY_FRESH_VEG_RECEIPTS)
     Integer countTodayVegHandleKinds(@Param("tenantId") String tenantId);
 
-    /**
-     * 今日毛菜处理果蔬总重量（毛菜处理流水 record_type=1 已称重 record_weight 合计 kg）。
-     *
-     * <p>{@code record_weight > 0} 与上面的品种数同一行集（0 kg 收口记录对合计本就贡献 0，
-     * 加这条不改变数值，只是让两条 SQL 的口径逐字一致、日后不会一边改一边忘）。</p>
-     *
-     * @param tenantId 租户
-     * @return SUM(record_weight) WHERE record_type=1 AND is_weighed=1 AND record_weight>0，无记录返 0
-     */
-    @Select("SELECT COALESCE(SUM(record_weight), 0) "
-        + "  FROM t_warehouse_handle_record "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND record_type = 1 "
-        + "   AND is_weighed = 1 "
-        + "   AND record_weight > 0 "
-        + "   AND DATE(handle_time) = CURDATE() "
-        + "   AND del_flag = '0'")
+    /** 今日毛菜间果蔬接收总重量（kg），按实际入库流水合计。 */
+    @Select("SELECT COALESCE(SUM(f.change_quantity), 0) " + TODAY_FRESH_VEG_RECEIPTS)
     BigDecimal sumTodayVegHandleWeight(@Param("tenantId") String tenantId);
 
     /**

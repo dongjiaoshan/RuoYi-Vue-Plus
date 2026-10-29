@@ -8,6 +8,7 @@ import org.dromara.djs.warehouse.flow.domain.vo.InoutStatInDetailVo;
 import org.dromara.djs.warehouse.flow.domain.vo.InoutStatInVo;
 import org.dromara.djs.warehouse.flow.domain.vo.InoutStatOutDetailVo;
 import org.dromara.djs.warehouse.flow.domain.vo.InoutStatOutVo;
+import org.dromara.djs.warehouse.flow.domain.vo.InoutStatSummaryVo;
 
 import java.util.List;
 
@@ -24,6 +25,10 @@ import java.util.List;
  * @since V6-R167
  */
 public interface IInoutStatService {
+
+    InoutStatSummaryVo queryInSummary(InoutStatQuery query);
+
+    InoutStatSummaryVo queryOutSummary(InoutStatQuery query);
 
     /**
      * 入库统计分页（产品 × 入库方式 × 供应商）。
@@ -43,7 +48,7 @@ public interface IInoutStatService {
     List<InoutStatInVo> queryInList(InoutStatQuery query);
 
     /**
-     * 出库统计分页（产品 × 出库去向）。
+     * 出库统计分页（产品 × 出库去向 × 门店）。
      *
      * @param query     筛选条件（可为 null）
      * @param pageQuery 分页参数

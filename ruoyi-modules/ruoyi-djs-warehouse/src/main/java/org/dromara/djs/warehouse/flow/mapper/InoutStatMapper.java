@@ -10,6 +10,7 @@ import org.dromara.djs.warehouse.flow.domain.vo.InoutStatInDetailVo;
 import org.dromara.djs.warehouse.flow.domain.vo.InoutStatInVo;
 import org.dromara.djs.warehouse.flow.domain.vo.InoutStatOutDetailVo;
 import org.dromara.djs.warehouse.flow.domain.vo.InoutStatOutVo;
+import org.dromara.djs.warehouse.flow.domain.vo.InoutStatSummaryVo;
 
 import java.util.List;
 
@@ -48,8 +49,8 @@ public interface InoutStatMapper {
     /** 入库口径的表与联表（聚合与明细共用；明细在此之后再 LEFT JOIN 记录人）。 */
     String IN_FROM = """
         FROM t_warehouse_stock_flow f
-        JOIN t_warehouse_product_info pi ON pi.id = f.product_id AND pi.del_flag = '0'
-        LEFT JOIN t_md_supplier sp ON sp.id = f.supplier_id AND sp.del_flag = '0'
+        JOIN t_warehouse_product_info pi ON pi.id = f.product_id AND pi.del_flag = '0' AND pi.tenant_id = f.tenant_id
+        LEFT JOIN t_md_supplier sp ON sp.id = f.supplier_id AND sp.del_flag = '0' AND sp.tenant_id = f.tenant_id
         """;
 
     /**
@@ -116,10 +117,12 @@ public interface InoutStatMapper {
         </if>
         """;
 
-    /** 出库口径的表与联表（聚合与明细共用；明细在此之后再 LEFT JOIN 记录人）。 */
+    /** 出库按真实需求关联门店；软删需求保留历史身份，未关联门店不作推断。 */
     String OUT_FROM = """
         FROM t_warehouse_stock_flow f
-        JOIN t_warehouse_product_info pi ON pi.id = f.product_id AND pi.del_flag = '0'
+        JOIN t_warehouse_product_info pi ON pi.id = f.product_id AND pi.del_flag = '0' AND pi.tenant_id = f.tenant_id
+        LEFT JOIN t_warehouse_demand_manage d ON d.id = f.demand_id AND d.tenant_id = f.tenant_id
+        LEFT JOIN t_md_store s ON s.id = d.store_id AND s.tenant_id = f.tenant_id AND s.del_flag = '0'
         """;
 
     /**
@@ -162,6 +165,7 @@ public interface InoutStatMapper {
     String OUT_GROUP_KEY = """
           AND pi.product_id = #{query.productCode}
           AND COALESCE(f.stock_out_dest, '') = COALESCE(#{query.outDest}, '')
+          AND COALESCE(d.store_id, 0) = COALESCE(#{query.storeId}, 0)
         <if test="query.operatorId != null">
           AND f.operator_id = #{query.operatorId}
         </if>
@@ -218,7 +222,7 @@ public interface InoutStatMapper {
         + "</script>";
 
     /**
-     * 出库统计聚合 SQL：按 <b>产品编码 × 产品名称 × 产品类型 × 规格 × 单位 × 出库去向</b> 聚合。
+     * 出库统计聚合 SQL：按 <b>产品编码 × 产品名称 × 产品类型 × 规格 × 单位 × 出库去向 × 门店ID</b> 聚合。
      *
      * <p>分组键含产品编码、子查询分页、ORDER BY 全序的理由与 {@link #IN_STAT_SQL} 完全一致。
      * 出库去向为空的流水归到 {@code COALESCE(f.stock_out_dest, '')} 同一桶
@@ -227,7 +231,7 @@ public interface InoutStatMapper {
     String OUT_STAT_SQL = "<script>"
         + """
         SELECT g.productCode, g.productName, g.productType, g.productSpec, g.productUnit,
-               g.stockOutDest, g.outboundQty
+               g.stockOutDest, g.storeId, g.storeName, g.outboundQty
         FROM (
             SELECT pi.product_id   AS productCode,
                    pi.product_name AS productName,
@@ -235,16 +239,18 @@ public interface InoutStatMapper {
                    COALESCE(pi.product_spec, '') AS productSpec,
                    COALESCE(pi.product_unit, '') AS productUnit,
                    COALESCE(f.stock_out_dest, '') AS stockOutDest,
+                   d.store_id AS storeId,
+                   COALESCE(s.store_name, '') AS storeName,
                    COALESCE(SUM(f.change_quantity), 0) AS outboundQty
         """
         + OUT_FROM
         + OUT_WHERE
         + """
             GROUP BY pi.product_id, pi.product_name, pi.product_type, COALESCE(pi.product_spec, ''),
-                     COALESCE(pi.product_unit, ''), COALESCE(f.stock_out_dest, '')
+                     COALESCE(pi.product_unit, ''), COALESCE(f.stock_out_dest, ''), d.store_id, COALESCE(s.store_name, '')
         ) g
         ORDER BY g.productName, g.productCode, g.productType, g.productSpec, g.productUnit,
-                 g.stockOutDest
+                 g.stockOutDest, g.storeId, g.storeName
         """
         + "</script>";
 
@@ -295,6 +301,7 @@ public interface InoutStatMapper {
                COALESCE(pi.product_unit, '') AS productUnit,
                f.change_quantity AS outboundQty,
                COALESCE(f.stock_out_dest, '') AS stockOutDest,
+               COALESCE(s.store_name, '') AS storeName,
                u.nick_name       AS operatorName,
                f.create_time     AS createTime
         """
@@ -306,6 +313,29 @@ public interface InoutStatMapper {
         ORDER BY f.flow_date DESC, f.id DESC
         """
         + "</script>";
+
+    String TOTAL_QUANTITIES = """
+        SELECT COUNT(DISTINCT f.product_id) AS productCount,
+               COALESCE(SUM(CASE WHEN LOWER(TRIM(pi.product_unit)) = 'kg'
+                   THEN f.change_quantity ELSE 0 END), 0) AS weightQty,
+               COALESCE(SUM(CASE WHEN LOWER(TRIM(pi.product_unit)) = 'kg'
+                   THEN 0 ELSE f.change_quantity END), 0) AS nonWeightQty,
+        """;
+
+    /** 汇总复用列表筛选，直接聚合全部流水，不按列表分组计数。 */
+    @Select("<script>" + TOTAL_QUANTITIES
+        + "COUNT(DISTINCT f.flow_type) AS flowTypeCount, COUNT(DISTINCT sp.id) AS supplierCount "
+        + IN_FROM + IN_WHERE + "</script>")
+    InoutStatSummaryVo selectInSummary(@Param("tenantId") String tenantId,
+                                     @Param("query") InoutStatQuery query,
+                                     @Param("inExcluded") List<String> inExcluded);
+
+    @Select("<script>" + TOTAL_QUANTITIES
+        + "COUNT(DISTINCT NULLIF(TRIM(f.stock_out_dest), '')) AS outDestCount "
+        + OUT_FROM + OUT_WHERE + "</script>")
+    InoutStatSummaryVo selectOutSummary(@Param("tenantId") String tenantId,
+                                      @Param("query") InoutStatQuery query,
+                                      @Param("outExcluded") List<String> outExcluded);
 
     /**
      * 入库统计分页（V6-R167 入库统计 Tab 列表）。

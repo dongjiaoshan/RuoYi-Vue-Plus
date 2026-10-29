@@ -13,6 +13,7 @@ import org.dromara.djs.warehouse.flow.domain.vo.InoutStatInDetailVo;
 import org.dromara.djs.warehouse.flow.domain.vo.InoutStatInVo;
 import org.dromara.djs.warehouse.flow.domain.vo.InoutStatOutDetailVo;
 import org.dromara.djs.warehouse.flow.domain.vo.InoutStatOutVo;
+import org.dromara.djs.warehouse.flow.domain.vo.InoutStatSummaryVo;
 import org.dromara.djs.warehouse.flow.mapper.InoutStatMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -177,7 +178,7 @@ class InoutStatServiceImplTest {
 
         ArgumentCaptor<List<String>> cap = ArgumentCaptor.forClass(List.class);
         verify(inoutStatMapper).selectOutStatPage(any(IPage.class), eq("1001"), any(InoutStatQuery.class), cap.capture());
-        assertThat(cap.getValue()).isEqualTo(FlowDisplayScope.OUT_EXCLUDED);
+        assertThat(cap.getValue()).isEqualTo(FlowDisplayScope.OUT_EXCLUDED.stream().filter(type -> !"ship_out".equals(type)).toList());
     }
 
     /** 入库明细 mapper 出参样板：无供应商 + 无规格 + 记录人档案已删（联不出名字）。 */
@@ -267,7 +268,7 @@ class InoutStatServiceImplTest {
         ArgumentCaptor<List<String>> cap = ArgumentCaptor.forClass(List.class);
         verify(inoutStatMapper).selectOutDetailPage(any(IPage.class), eq("1001"),
             any(InoutStatDetailQuery.class), cap.capture());
-        assertThat(cap.getValue()).isEqualTo(FlowDisplayScope.OUT_EXCLUDED);
+        assertThat(cap.getValue()).isEqualTo(FlowDisplayScope.OUT_EXCLUDED.stream().filter(type -> !"ship_out".equals(type)).toList());
     }
 
     @Test
@@ -307,4 +308,21 @@ class InoutStatServiceImplTest {
         assertThat(cap.getValue().getDateFrom()).isNull();
         assertThat(cap.getValue().getDateTo()).isNull();
     }
+    @Test
+    @DisplayName("V7-R25：汇总与列表共用筛选，出库局部纳入门店发货，公共展示范围保持不变")
+    void summariesUseWholeFilterAndLocalShipmentScope() {
+        InoutStatQuery query = new InoutStatQuery();
+        query.setProductName("统计夹具");
+        InoutStatSummaryVo totals = new InoutStatSummaryVo();
+        totals.setProductCount(23);
+        when(inoutStatMapper.selectInSummary(eq("1001"), eq(query), any())).thenReturn(totals);
+        when(inoutStatMapper.selectOutSummary(eq("1001"), eq(query), any())).thenReturn(totals);
+        assertThat(service.queryInSummary(query).getProductCount()).isEqualTo(23);
+        assertThat(service.queryOutSummary(query).getProductCount()).isEqualTo(23);
+        ArgumentCaptor<List<String>> excluded = ArgumentCaptor.forClass(List.class);
+        verify(inoutStatMapper).selectOutSummary(eq("1001"), eq(query), excluded.capture());
+        assertThat(excluded.getValue()).doesNotContain("ship_out").contains("loss", "pick_loss", "settle_loss", "pack_consume");
+        assertThat(FlowDisplayScope.OUT_EXCLUDED).contains("ship_out");
+    }
+
 }
