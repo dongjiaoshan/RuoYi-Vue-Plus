@@ -130,10 +130,10 @@ public class WarehouseDashboardChartsVo implements Serializable {
     /** 横条 2「今日生产」：出栏猪只总重（kg，今日 bar_info marketing_weight 合计）。 */
     private BigDecimal todayMarketingWeight;
 
-    /** 横条 2「今日生产」：毛菜处理果蔬品种数（种，今日 handle_record record_type=1 已称重去重作物数）。 */
+    /** 横条 2「今日生产」：毛菜处理间果蔬品种接收数（种，今日毛菜间入库 veg_stock_in 去重产品数）。 */
     private Integer todayVegHandleKinds;
 
-    /** 横条 2「今日生产」：毛菜处理果蔬总重量（kg，今日 handle_record record_type=1 已称重 record_weight 合计）。 */
+    /** 横条 2「今日生产」：毛菜处理间果蔬接收总重量（kg，今日毛菜间入库 veg_stock_in 合计）。 */
     private BigDecimal todayVegHandleWeight;
 
     /** 横条 2「今日生产」3：分割白条数（今日转入分割车间白条数；半只计 0.5、整只计 1，故为小数）。 */

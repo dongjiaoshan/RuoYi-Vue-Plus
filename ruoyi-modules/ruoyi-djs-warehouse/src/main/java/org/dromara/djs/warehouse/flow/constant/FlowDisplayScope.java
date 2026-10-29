@@ -28,7 +28,8 @@ public final class FlowDisplayScope {
 
     /**
      * 出库展示排除：出库口径只保留库位领用 / 后台 / 盘点类真出库；
-     * 生产发货（ship_out / pack_consume）与领用后损耗（loss）不展示。
+     * 生产发货（ship_out / pack_consume）与各类损耗（loss / pick_loss / settle_loss，见 {@link StockFlowTypes}）不展示。
      */
-    public static final List<String> OUT_EXCLUDED = List.of("loss", "ship_out", "pack_consume");
+    public static final List<String> OUT_EXCLUDED = List.of(
+        StockFlowTypes.LOSS, StockFlowTypes.PICK_LOSS, StockFlowTypes.SETTLE_LOSS, "ship_out", "pack_consume");
 }

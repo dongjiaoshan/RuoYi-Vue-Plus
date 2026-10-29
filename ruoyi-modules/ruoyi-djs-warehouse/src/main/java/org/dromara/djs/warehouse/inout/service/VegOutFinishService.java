@@ -3,7 +3,12 @@ package org.dromara.djs.warehouse.inout.service;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.djs.common.encoder.BizCodeType;
+import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
+import org.dromara.djs.warehouse.flow.constant.StockFlowTypes;
+import org.dromara.djs.warehouse.flow.domain.StockFlow;
+import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.inout.domain.bo.VegOutFinishBo;
 import org.dromara.djs.warehouse.inout.domain.vo.VegOutStockRow;
 import org.dromara.djs.warehouse.inout.mapper.VegInoutWorkbenchMapper;
@@ -26,9 +31,10 @@ import java.util.stream.Collectors;
  * 保留库存篮行；不改采摘、毛菜处理状态及其汇总字段。扣库与损耗明细同事务。
  *
  * <p>记账方式与小程序毛菜「处理完成」结转损耗（{@code VegetableHandleServiceImpl#settleRemainAsLoss}）一致：
- * 扣篮 + 写统一损耗台账 {@code loss_flow(veg_handle_loss)}，<b>不写 {@code stock_flow}</b>。
- * {@code stock_flow.flow_type='loss'} 在物资领用台账里表示「领用后损耗」，会从篮子的「今日领用剩余」里扣减；
- * 这里结转的是没被领走的在库余量，写进去会让同篮当天的退回 / 损耗登记被误拦。</p>
+ * 扣篮 + 写 {@code settle_loss} 出库流水 + 写统一损耗台账 {@code loss_flow(veg_handle_loss)}（关联该流水）。
+ * 流水类型用 {@code settle_loss} 而不是 {@code loss}：「今日领用剩余」只认 {@code loss / pick_loss}，
+ * 结转的是没被领走的在库余量，不能扣进同篮当天的领用剩余；而库存日 / 月汇总按库位回放流水，
+ * 不写这条流水期末就会比库存篮多出这批货（见 {@link StockFlowTypes}）。</p>
  */
 @Service
 @RequiredArgsConstructor
@@ -37,6 +43,8 @@ public class VegOutFinishService {
     private final LocationStockMapper stockMapper;
     private final ILossFlowService lossService;
     private final IStockCheckService checkService;
+    private final StockFlowMapper stockFlowMapper;
+    private final IBizCodeGenerator bizCodeGenerator;
 
     /**
      * @return 每个库存篮对应的损耗明细 id
@@ -74,6 +82,22 @@ public class VegOutFinishService {
             if (stockMapper.deductStockById(row.getStockId(), row.getStockWeight(), userId) != 1) {
                 throw new ServiceException("库存已变化，本次出库完成全部撤销，请刷新后重试");
             }
+            StockFlow flow = new StockFlow();
+            flow.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, java.util.Map.of("ioCode", "OT")));
+            flow.setFlowDate(now);
+            flow.setProductId(row.getProductId());
+            flow.setWarehouseId(row.getLocationId());
+            flow.setInoutType("OT");
+            flow.setFlowType(StockFlowTypes.SETTLE_LOSS);
+            flow.setChangeNum(row.getStockWeight().negate());
+            flow.setChangeQuantity(row.getStockWeight());
+            flow.setPlotId(row.getPlotId());
+            flow.setEarNo(row.getEarNo());
+            flow.setThirdPhase(row.getThirdPhase() != null && row.getThirdPhase() == 1 ? 1 : 0);
+            flow.setOperatorId(userId);
+            flow.setRemark("果蔬出库完成：剩余库存结转损耗");
+            stockFlowMapper.insert(flow);
+
             LossFlow loss = new LossFlow();
             loss.setLossDate(now);
             loss.setProductId(row.getProductId());
@@ -86,6 +110,7 @@ public class VegOutFinishService {
             loss.setSourceBizType("veg_out_finish");
             loss.setSourceBizId(row.getStockId());
             loss.setRemark("果蔬出库完成：剩余库存结转毛菜处理损耗");
+            loss.setSourceFlowId(flow.getId());
             Long lossId = lossService.record(loss);
             if (lossId == null) {
                 throw new ServiceException("损耗明细写入失败，本次出库完成全部撤销");

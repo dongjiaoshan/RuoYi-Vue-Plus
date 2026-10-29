@@ -2,6 +2,7 @@ package org.dromara.djs.warehouse.veg.domain.bo;
 
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
 import lombok.Data;
 
@@ -26,6 +27,14 @@ public class FeedDailyConfirmBo implements Serializable {
      */
     @NotNull(message = "饲喂日期不能为空")
     private LocalDate feedDate;
+
+    /**
+     * 饲喂动物（字典 djs_feed_animal：pig 猪只饲料 / poultry 家禽饲料；upsert 键之一）。
+     *
+     * <p>可空 = pig：mp 有机饲喂记录只管猪只饲料（V7 行18），尚未升级的 mp 包不传这个字段也落到猪。</p>
+     */
+    @Pattern(regexp = "pig|poultry", message = "无效的饲喂类型")
+    private String feedAnimal;
 
     /**
      * 框数（必填，正数，最多 1 位小数）。

@@ -74,19 +74,19 @@ public class StockOverviewDetailVo implements Serializable {
     @ExcelProperty(value = "入库量")
     private BigDecimal inboundQty;
 
-    /** 出库量（当日 OT 流水绝对值合计，不含 ship_out；含损耗流水）。 */
+    /** 出库量（当期 OT 流水合计，不含损耗类与饲料去向，不含 ship_out / 领用后损耗饲喂）。 */
     @ExcelProperty(value = "出库量")
     private BigDecimal outboundQty;
 
-    /** 损耗量（当日 loss_flow 合计，信息列，期末不二次扣）。 */
+    /** 损耗量（当期该库位 loss / settle_loss 流水合计，计入期末）。 */
     @ExcelProperty(value = "损耗量")
     private BigDecimal lossQty;
 
-    /** 饲料饲喂量（当日 feed_log 合计，仅果蔬原材料有值）。 */
+    /** 饲料饲喂量（当期该库位去向猪只 / 家禽饲料的出库合计，计入期末）。 */
     @ExcelProperty(value = "饲料饲喂量")
     private BigDecimal feedQty;
 
-    /** 期末库存（= 期初 + 入库 − 出库）。 */
+    /** 期末库存（= 期初 + 入库 − 出库 − 损耗 − 饲喂，等于该库位库存篮余额）。 */
     @ExcelProperty(value = "期末库存")
     private BigDecimal endStock;
 }

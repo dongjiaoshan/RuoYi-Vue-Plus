@@ -96,12 +96,13 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
      *
      * @param page     分页对象
      * @param tenantId 租户（V1 固定 '1001'）
-     * @param query    查询条件（作物名模糊 / 提供位置精确 / 日期范围）
+     * @param query    查询条件（作物名模糊 / 提供位置精确 / 饲喂类型精确 / 日期范围）
      * @return 有机饲喂记录分页（按 feed_date 倒序）
      */
     @Select("""
         <script>
         SELECT fl.feed_date AS feedDate,
+               fl.feed_animal AS feedAnimal,
                fl.crop_id AS cropId,
                COALESCE(NULLIF(fl.crop_name, ''), c.crop_name, p.product_name) AS cropName,
                p.product_name AS productName,
@@ -124,6 +125,9 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
         </if>
         <if test="query.feedType != null and query.feedType != ''">
             AND fl.feed_type = #{query.feedType}
+        </if>
+        <if test="query.feedAnimal != null and query.feedAnimal != ''">
+            AND fl.feed_animal = #{query.feedAnimal}
         </if>
         <if test="query.dateFrom != null"> AND fl.feed_date &gt;= #{query.dateFrom} </if>
         <if test="query.dateTo != null"> AND fl.feed_date &lt; DATE_ADD(#{query.dateTo}, INTERVAL 1 DAY) </if>
@@ -141,12 +145,13 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
      * {@code tenant_id}。按饲喂时间倒序。</p>
      *
      * @param tenantId 租户（V1 固定 '1001'）
-     * @param query    查询条件（作物名模糊 / 提供位置精确 / 日期范围）
+     * @param query    查询条件（作物名模糊 / 提供位置精确 / 饲喂类型精确 / 日期范围）
      * @return 有机饲喂记录全量列表（按 feed_date 倒序）
      */
     @Select("""
         <script>
         SELECT fl.feed_date AS feedDate,
+               fl.feed_animal AS feedAnimal,
                fl.crop_id AS cropId,
                COALESCE(NULLIF(fl.crop_name, ''), c.crop_name, p.product_name) AS cropName,
                p.product_name AS productName,
@@ -170,6 +175,9 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
         <if test="query.feedType != null and query.feedType != ''">
             AND fl.feed_type = #{query.feedType}
         </if>
+        <if test="query.feedAnimal != null and query.feedAnimal != ''">
+            AND fl.feed_animal = #{query.feedAnimal}
+        </if>
         <if test="query.dateFrom != null"> AND fl.feed_date &gt;= #{query.dateFrom} </if>
         <if test="query.dateTo != null"> AND fl.feed_date &lt; DATE_ADD(#{query.dateTo}, INTERVAL 1 DAY) </if>
         ORDER BY fl.feed_date DESC, fl.id DESC
@@ -181,8 +189,9 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
     /**
      * 有机饲喂**按日汇总**分页（admin 行199 列表 / mp 行268 卡片共用）。
      *
-     * <p>一天一行：{@code GROUP BY DATE(feed_date)} 把当日全部来源（毛菜间 + 仓库）的重量求和，
-     * 再 LEFT JOIN 日确认表带出框数 / 确认人 / 确认时间（mp 卡片「处理日期」）。</p>
+     * <p>一行 = 一天 × 一种饲喂动物：{@code GROUP BY DATE(feed_date), feed_animal} 把该日该类型全部来源
+     * （毛菜间 + 仓库）的重量求和，再按 (日期, 饲喂动物) LEFT JOIN 日确认表带出框数 / 确认人 / 确认时间
+     * （mp 卡片「处理日期」）。同日按值排序，pig 在 poultry 前。{@code query.feedAnimal} 非空只出该类型（mp 固定 pig）。</p>
      *
      * <p>⚠️ 日确认表按 {@code feed_date} 关联，两边都是 DATE 粒度；feed_log 的 {@code feed_date} 是
      * DATETIME，故左联条件用 {@code DATE(fl.feed_date)} 而不是裸列，否则带时分秒的行永远联不上。
@@ -190,12 +199,13 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
      *
      * @param page     分页
      * @param tenantId 租户（V1 固定 '1001'）
-     * @param query    查询条件（本汇总只用 dateFrom / dateTo，作物名与提供位置属明细维度不参与）
-     * @return 每日一行的汇总（按日期倒序）
+     * @param query    查询条件（本汇总只用 feedAnimal / dateFrom / dateTo，作物名与提供位置属明细维度不参与）
+     * @return 每日每饲喂动物一行的汇总（按日期倒序）
      */
     @Select("""
         <script>
         SELECT d.feedDate       AS feedDate,
+               d.feedAnimal     AS feedAnimal,
                d.totalWeight    AS totalWeight,
                d.detailCount    AS detailCount,
                fc.box_count     AS boxCount,
@@ -203,17 +213,20 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
                fc.confirm_time  AS confirmTime
         FROM (
             SELECT DATE(fl.feed_date)  AS feedDate,
+                   fl.feed_animal      AS feedAnimal,
                    SUM(fl.feed_weight) AS totalWeight,
                    COUNT(*)            AS detailCount
             FROM t_warehouse_feed_log fl
             WHERE fl.del_flag = '0' AND fl.tenant_id = #{tenantId}
+            <if test="query.feedAnimal != null and query.feedAnimal != ''"> AND fl.feed_animal = #{query.feedAnimal} </if>
             <if test="query.dateFrom != null"> AND fl.feed_date &gt;= #{query.dateFrom} </if>
             <if test="query.dateTo != null"> AND fl.feed_date &lt; DATE_ADD(#{query.dateTo}, INTERVAL 1 DAY) </if>
-            GROUP BY DATE(fl.feed_date)
+            GROUP BY DATE(fl.feed_date), fl.feed_animal
         ) d
         LEFT JOIN t_warehouse_feed_daily_confirm fc
-          ON fc.feed_date = d.feedDate AND fc.del_flag = '0' AND fc.tenant_id = #{tenantId}
-        ORDER BY d.feedDate DESC
+          ON fc.feed_date = d.feedDate AND fc.feed_animal = d.feedAnimal
+         AND fc.del_flag = '0' AND fc.tenant_id = #{tenantId}
+        ORDER BY d.feedDate DESC, d.feedAnimal
         </script>
         """)
     IPage<FeedDailyVo> selectDailyPage(IPage<FeedDailyVo> page,

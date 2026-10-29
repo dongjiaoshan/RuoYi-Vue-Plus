@@ -9,7 +9,7 @@ import java.io.Serializable;
 import java.math.BigDecimal;
 
 /**
- * 出库统计行（V6-R167）：按 <b>产品 × 出库去向</b> 两维聚合区间内出库量。
+ * 出库统计行（V6-R167）：按 <b>产品 × 出库去向 × 门店</b> 两维聚合区间内出库量。
  *
  * <p>列序 = 甲方 row167 第 4 点原序，导出与列表逐列一致（第 5 点）。</p>
  *
@@ -50,6 +50,10 @@ public class InoutStatOutVo implements Serializable {
     @ExcelProperty(value = "出库去向")
     private String outDestName;
 
+    /** 真实关联的出库门店；缺少历史关联时展示空占位。 */
+    @ExcelProperty(value = "出库门店")
+    private String storeName;
+
     /** 出库量（Σ change_quantity）。 */
     @ExcelProperty(value = "出库量")
     private BigDecimal outboundQty;
@@ -63,4 +67,7 @@ public class InoutStatOutVo implements Serializable {
 
     /** 出库去向原始值（mapper 出，service 翻译用，不导出）。 */
     private String stockOutDest;
+
+    /** 门店分组身份，不能使用门店名称代替。 */
+    private Long storeId;
 }

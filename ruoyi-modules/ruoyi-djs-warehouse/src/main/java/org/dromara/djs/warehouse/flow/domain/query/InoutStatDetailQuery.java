@@ -66,6 +66,9 @@ public class InoutStatDetailQuery extends InoutStatQuery {
      */
     private String outDest;
 
+    /** 出库汇总行关联门店ID，空值表示没有真实需求门店关联。 */
+    private Long storeId;
+
     /**
      * 记录人（{@code t_warehouse_stock_flow.operator_id}）。
      *

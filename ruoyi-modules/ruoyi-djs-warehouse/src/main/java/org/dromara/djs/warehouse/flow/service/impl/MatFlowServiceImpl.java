@@ -10,6 +10,7 @@ import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.cross.domain.vo.TodayBarVo;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
+import org.dromara.djs.warehouse.flow.constant.StockFlowTypes;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.domain.bo.MatFeedBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
@@ -23,6 +24,7 @@ import org.dromara.djs.warehouse.flow.domain.vo.MatWhiteBarBatchVo;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.flow.service.IMatFlowService;
 import org.dromara.djs.warehouse.loss.service.ILossFlowService;
+import org.dromara.djs.warehouse.veg.domain.FeedAnimal;
 import org.dromara.djs.warehouse.veg.domain.FeedLog;
 import org.dromara.djs.warehouse.veg.mapper.FeedLogMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
@@ -133,12 +135,12 @@ public class MatFlowServiceImpl implements IMatFlowService {
      */
     private static final String LEGACY_DEST_KITCHEN = "kitchen";
 
-    private static final String FLOW_LOSS = "loss";
-
     /**
-     * 仓库饲喂出库 flow_type（djs_flow_type 现有值 V202607240800；行64 来源②仓库领用饲喂 / 行55 果蔬饲喂操作）。
+     * 领用后损耗 / 饲喂的 flow_type：领用时库存篮已扣、出库流水已记，这两类只剥「今日领用剩余」，
+     * 不再动库存篮，也不参与库位库存回放（见 {@link StockFlowTypes}）。
      */
-    private static final String FLOW_FEED_OUT = "feed_out";
+    private static final String FLOW_LOSS = StockFlowTypes.PICK_LOSS;
+    private static final String FLOW_FEED_OUT = StockFlowTypes.PICK_FEED;
     /** 饲料出库的业务去向（djs_stock_out_dest）。 */
     private static final String STOCK_OUT_DEST_FEED = "feed";
 
@@ -1654,6 +1656,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         FeedLog feedLog = new FeedLog();
         feedLog.setFeedDate(new Date());
         feedLog.setFeedType(FEED_TYPE_WAREHOUSE);
+        // 物资领用饲喂是养殖场喂猪，没有家禽入口，一律猪只饲料
+        feedLog.setFeedAnimal(FeedAnimal.PIG);
         feedLog.setProductId(bo.getProductId());
         feedLog.setLocationId(bo.getLocationId());
         feedLog.setOperatorId(userId);
@@ -1737,22 +1741,18 @@ public class MatFlowServiceImpl implements IMatFlowService {
         stockFlowMapper.insert(flow);
 
         // 3. 饲喂扣减：可打包食品原料（领用已离货架进「待打包」inhouse）剥离今天待打包 WIP、不二次扣货架；
-        //    其余物资无 WIP → 扣选中篮（affected==0 打 warn 不抛，与现状 feed 物资分支语义一致）。
+        //    其余物资无 WIP：领用时选中篮已扣过，饲喂只记流水 + 饲喂台账，不再二次扣篮（与产品级 feed() 一致）。
         String tailBelongType = product == null ? null : product.getBelongType();
         if (isPackableFood(tailBelongType)) {
             reduceTodayInhouseForBasket(productId, basket.getEarNo(), null, bo.getQuantity());
-        } else {
-            int affected = locationStockMapper.deductStockById(basket.getId(), bo.getQuantity(), userId);
-            if (affected == 0) {
-                log.warn("按篮 feed 流水已记，但选中篮扣减失败（账面已不足）：user={}, batchId={}, qty={}",
-                    userId, basket.getId(), bo.getQuantity());
-            }
         }
 
         // 4. 写饲喂台账 feed_log（feed_type='warehouse'）：crop_id/cropName 仓库领用饲喂无作物维度，留空。
         FeedLog feedLog = new FeedLog();
         feedLog.setFeedDate(new Date());
         feedLog.setFeedType(FEED_TYPE_WAREHOUSE);
+        // 物资领用饲喂是养殖场喂猪，没有家禽入口，一律猪只饲料
+        feedLog.setFeedAnimal(FeedAnimal.PIG);
         feedLog.setProductId(productId);
         feedLog.setLocationId(locId);
         feedLog.setOperatorId(userId);
@@ -1821,6 +1821,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         FeedLog feedLog = new FeedLog();
         feedLog.setFeedDate(new Date());
         feedLog.setFeedType(FEED_TYPE_WAREHOUSE);
+        // 物资领用饲喂是养殖场喂猪，没有家禽入口，一律猪只饲料
+        feedLog.setFeedAnimal(FeedAnimal.PIG);
         feedLog.setProductId(productId);
         feedLog.setLocationId(firstLocId);
         feedLog.setOperatorId(userId);
@@ -1906,7 +1908,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         // 3. 损耗"扣减"（与 loss()/feed() 可打包食品分支同源）：可打包食品原料（vegetable/egg/dry_good/other）
         //    领用（pickByBatch）时已离 location_stock 进「待打包」product_inhouse，损耗剥离的是这部分 WIP
         //    （让 admin 打包来源「领用剩余重量」相应扣减），不再二次扣货架（否则货架双扣 + inhouse 幽灵残留）；
-        //    其余物资（包材/饲料/种子/药品）无 WIP → 扣选中篮（affected==0 打 warn 不抛，与现状 loss 语义一致）。
+        //    其余物资（包材/饲料/种子/药品）无 WIP：领用（pickByBatch）时选中篮已扣过，损耗只记流水 + 损耗台账，
+        //    不再二次扣篮（与产品级 loss() 非可打包分支一致，DENGBO-R18/R19）。
         //    pork（白条·猪头 null-ear 篮）与可打包食品同源：领用已离货架进待打包 inhouse，损耗必须剥离今日
         //    inhouse（「今日领用剩余」）而非二次扣货架（与产品级 loss() 尾分支 isPackableFood||pork 对齐）；
         //    earNo=null 时 reduceTodayInhouseForBasket 退化成 (productId) 维匹配 null-ear inhouse 行。
@@ -1914,12 +1917,6 @@ public class MatFlowServiceImpl implements IMatFlowService {
         String tailBelongType = product == null ? null : product.getBelongType();
         if (isPackableFood(tailBelongType) || "pork".equals(tailBelongType)) {
             reduceTodayInhouseForBasket(productId, basket.getEarNo(), null, bo.getQuantity());
-        } else {
-            int affected = locationStockMapper.deductStockById(basket.getId(), bo.getQuantity(), userId);
-            if (affected == 0) {
-                log.warn("按篮 loss 流水已记，但选中篮扣减失败（账面已不足）：user={}, batchId={}, qty={}",
-                    userId, basket.getId(), bo.getQuantity());
-            }
         }
 
         // 统一损耗台账双写（WMS-LOSS-001，行59 录入损耗）：productId 走篮的 product_id、locationId 走篮的库位。
@@ -2071,16 +2068,16 @@ public class MatFlowServiceImpl implements IMatFlowService {
             }
             vo.setPickedQuantity(safe(stockFlowMapper.sumTodayByUserProductTypes(userId, pid, PICK_OUT_FLOW_TYPES)));
             vo.setReturnedQuantity(safe(stockFlowMapper.sumTodayByUserProductTypes(userId, pid, RETURN_IN_FLOW_TYPES)));
-            vo.setLossQuantity(safe(stockFlowMapper.sumTodayByUserProductType(userId, pid, FLOW_LOSS)));
+            vo.setLossQuantity(safe(stockFlowMapper.sumTodayByUserProductTypes(userId, pid, StockFlowTypes.TODAY_LOSS)));
         } else if (matType == null || matType.isBlank()) {
             vo.setPickedQuantity(safe(stockFlowMapper.sumTodayByUserTypes(userId, PICK_OUT_FLOW_TYPES)));
             vo.setReturnedQuantity(safe(stockFlowMapper.sumTodayByUserTypes(userId, RETURN_IN_FLOW_TYPES)));
-            vo.setLossQuantity(safe(stockFlowMapper.sumTodayByUserType(userId, FLOW_LOSS)));
+            vo.setLossQuantity(safe(stockFlowMapper.sumTodayByUserTypes(userId, StockFlowTypes.TODAY_LOSS)));
         } else {
             // matType（djs_mat_type）与 belong_type 取值同名映射（package/feed/seed/white_bar 等同）
             vo.setPickedQuantity(safe(stockFlowMapper.sumTodayByUserMatTypes(userId, PICK_OUT_FLOW_TYPES, matType)));
             vo.setReturnedQuantity(safe(stockFlowMapper.sumTodayByUserMatTypes(userId, RETURN_IN_FLOW_TYPES, matType)));
-            vo.setLossQuantity(safe(stockFlowMapper.sumTodayByUserMatType(userId, FLOW_LOSS, matType)));
+            vo.setLossQuantity(safe(stockFlowMapper.sumTodayByUserMatTypes(userId, StockFlowTypes.TODAY_LOSS, matType)));
         }
         return vo;
     }
@@ -2444,8 +2441,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         } else {
             BigDecimal picked = safe(stockFlowMapper.sumTodayByProductTypes(productId, PICK_OUT_FLOW_TYPES));
             BigDecimal returned = safe(stockFlowMapper.sumTodayByProductTypes(productId, RETURN_IN_FLOW_TYPES));
-            BigDecimal lost = safe(stockFlowMapper.sumTodayByProductType(productId, FLOW_LOSS));
-            BigDecimal fed = safe(stockFlowMapper.sumTodayByProductType(productId, FLOW_FEED_OUT));
+            BigDecimal lost = safe(stockFlowMapper.sumTodayByProductTypes(productId, StockFlowTypes.TODAY_LOSS));
+            BigDecimal fed = safe(stockFlowMapper.sumTodayByProductTypes(productId, StockFlowTypes.TODAY_FEED));
             remaining = picked.subtract(returned).subtract(lost).subtract(fed);
         }
         if (remaining.compareTo(applying) < 0) {

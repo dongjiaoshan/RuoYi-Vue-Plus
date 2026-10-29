@@ -1,5 +1,7 @@
 package org.dromara.djs.warehouse.burn.service.impl;
 
+import org.dromara.djs.breed.core.service.IPigQueryService;
+import org.dromara.djs.warehouse.cross.service.MarketingAges;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
@@ -171,6 +173,7 @@ public class PigBurnRecordServiceImpl
     private final ImageUrlResolver imageUrlResolver;
     private final ILossFlowService lossFlowService;
     private final WeightCompletionPolicy completionPolicy;
+    private final IPigQueryService pigQueryService;
 
     public PigBurnRecordServiceImpl(PigBurnRecordMapper baseMapper,
                                     StockFlowMapper stockFlowMapper,
@@ -184,7 +187,8 @@ public class PigBurnRecordServiceImpl
                                     ITraceService traceService,
                                     ImageUrlResolver imageUrlResolver,
                                     ILossFlowService lossFlowService,
-                                    WeightCompletionPolicy completionPolicy) {
+                                    WeightCompletionPolicy completionPolicy,
+                                    IPigQueryService pigQueryService) {
         super(baseMapper);
         this.stockFlowMapper = stockFlowMapper;
         this.barInfoMapper = barInfoMapper;
@@ -198,6 +202,7 @@ public class PigBurnRecordServiceImpl
         this.imageUrlResolver = imageUrlResolver;
         this.lossFlowService = lossFlowService;
         this.completionPolicy = completionPolicy;
+        this.pigQueryService = pigQueryService;
     }
 
     @Override
@@ -373,10 +378,13 @@ public class PigBurnRecordServiceImpl
                 firstTimes.merge(inbound.getBarInfoId(), inbound.getFlowTime(), (x, y) -> x.before(y) ? x : y);
             }
         }
+        // V7 row9：卡片右上角显示出栏日龄（出栏记录冻结值，一次批量取，不 N+1）
+        MarketingAges ages = MarketingAges.load(pigQueryService, bars);
         List<BarPendingVo> list = new ArrayList<>(bars.size());
         for (BarInfo bar : bars) {
             BarPendingVo vo = new BarPendingVo();
             vo.setId(bar.getId()); vo.setBarId(bar.getBarId()); vo.setEarNo(bar.getEarNo());
+            vo.setAgeDays(ages.of(bar));
             vo.setMarketingTime(bar.getMarketingTime()); vo.setMarketingWeight(bar.getMarketingWeight());
             vo.setStatus(bar.getStatus());
             vo.setArriveWeight(weights.get(bar.getId()));

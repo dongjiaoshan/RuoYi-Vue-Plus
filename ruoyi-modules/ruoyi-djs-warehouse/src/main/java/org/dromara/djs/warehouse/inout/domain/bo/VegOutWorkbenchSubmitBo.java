@@ -24,9 +24,9 @@ public class VegOutWorkbenchSubmitBo {
     @DecimalMin(value = "0.001", message = "出库重量必须大于 0")
     @Digits(integer = 9, fraction = 3, message = "出库重量最多三位小数")
     private BigDecimal weight;
-    /** warehouse = 仓库出库；feed = 猪养殖饲料（有机饲喂）。 */
+    /** warehouse = 仓库出库；feed = 猪养殖饲料；poultry_feed = 家禽饲料（后两者都写有机饲喂记录）。 */
     @NotBlank(message = "请选择去向")
-    @Pattern(regexp = "warehouse|feed", message = "无效的去向")
+    @Pattern(regexp = "warehouse|feed|poultry_feed", message = "无效的去向")
     private String destination;
     /** 仓库出库去向（字典 djs_stock_out_dest），仅 destination=warehouse 时必填。 */
     @Size(max = 32, message = "出库去向过长")

@@ -53,6 +53,10 @@ public class InoutStatOutDetailVo implements Serializable {
     @ExcelProperty(value = "出库去向")
     private String outDestName;
 
+    /** 真实关联的出库门店；缺少历史关联时展示空占位。 */
+    @ExcelProperty(value = "出库门店")
+    private String storeName;
+
     /** 出库记录人（SQL LEFT JOIN {@code sys_user.nick_name}；查不到时 service 兜 "-"）。 */
     @ExcelProperty(value = "出库记录人")
     private String operatorName;

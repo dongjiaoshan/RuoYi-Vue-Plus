@@ -785,7 +785,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id
-                            AND f.flow_type = 'loss'
+                            AND f.flow_type IN ('loss','pick_loss')
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss
           FROM t_warehouse_product_info p
@@ -833,7 +833,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                        AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS returnQty,
           COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                      WHERE f.product_id = #{medicineId}
-                       AND f.flow_type = 'loss'
+                       AND f.flow_type IN ('loss','pick_loss')
                        AND DATE(f.flow_date) = CURDATE()
                        AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS lossQty
         """)
@@ -1229,12 +1229,12 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                             <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id
-                            AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
+                            AND f.flow_type IN ('loss','pick_loss') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'
                             <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayLoss,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id
-                            AND f.flow_type = 'feed_out' AND DATE(f.flow_date) = CURDATE()
+                            AND f.flow_type IN ('feed_out','pick_feed') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'
                             <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayFeed,
                CASE WHEN p.belong_type IN ('vegetable','egg','dry_good','other')
@@ -1254,12 +1254,12 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                                       <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0)
                        - COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                                     WHERE f.product_id = p.id
-                                      AND f.flow_type = 'loss'
+                                      AND f.flow_type IN ('loss','pick_loss')
                                       AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'
                                       <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0)
                        - COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                                     WHERE f.product_id = p.id
-                                      AND f.flow_type = 'feed_out'
+                                      AND f.flow_type IN ('feed_out','pick_feed')
                                       AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'
                                       <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0)
                     END                              AS remainReturnable,
@@ -1343,7 +1343,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.ear_no = s.ear_no AND f.product_id = s.product_id AND f.warehouse_id = s.location_id
-                            AND f.flow_type = 'loss'
+                            AND f.flow_type IN ('loss','pick_loss')
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
                s.location_id                  AS locationId
@@ -1414,12 +1414,12 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                             AND f.del_flag = '0' AND f.tenant_id = '1001'
                             <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                          WHERE f.product_id = s.product_id AND f.plot_id = s.plot_id AND f.flow_type = 'loss'
+                          WHERE f.product_id = s.product_id AND f.plot_id = s.plot_id AND f.flow_type IN ('loss','pick_loss')
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'
                             <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayLoss,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                          WHERE f.product_id = s.product_id AND f.plot_id = s.plot_id AND f.flow_type = 'feed_out'
+                          WHERE f.product_id = s.product_id AND f.plot_id = s.plot_id AND f.flow_type IN ('feed_out','pick_feed')
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'
                             <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayFeed,
@@ -1497,7 +1497,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                             <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = s.product_id AND f.plot_id IS NULL AND f.ear_no IS NULL AND f.white_bar_no IS NULL
-                            AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
+                            AND f.flow_type IN ('loss','pick_loss') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'
                             <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayLoss,
                (SELECT s3.location_id FROM t_warehouse_location_stock s3 WHERE s3.id = MIN(s.id)) AS locationId
@@ -1574,11 +1574,11 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
-                            AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
+                            AND f.flow_type IN ('loss','pick_loss') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
-                            AND f.flow_type = 'feed_out' AND DATE(f.flow_date) = CURDATE()
+                            AND f.flow_type IN ('feed_out','pick_feed') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayFeed,
                CASE WHEN p.belong_type IN ('vegetable','egg','dry_good','other')
                     THEN COALESCE((SELECT SUM(ih.product_weight) FROM t_warehouse_product_inhouse ih
@@ -1594,11 +1594,11 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                                       AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
                        - COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                                     WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
-                                      AND f.flow_type = 'loss'
+                                      AND f.flow_type IN ('loss','pick_loss')
                                       AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
                        - COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                                     WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
-                                      AND f.flow_type = 'feed_out'
+                                      AND f.flow_type IN ('feed_out','pick_feed')
                                       AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
                     END                              AS remainReturnable,
                (SELECT MAX(f.flow_date) FROM t_warehouse_stock_flow f
@@ -1711,14 +1711,14 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
                             AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
                             AND (f.plot_id = s.plot_id OR (f.plot_id IS NULL AND s.plot_id IS NULL))
-                            AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
+                            AND f.flow_type IN ('loss','pick_loss') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id AND f.warehouse_id = s.location_id
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
                             AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
                             AND (f.plot_id = s.plot_id OR (f.plot_id IS NULL AND s.plot_id IS NULL))
-                            AND f.flow_type = 'feed_out' AND DATE(f.flow_date) = CURDATE()
+                            AND f.flow_type IN ('feed_out','pick_feed') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayFeed
           FROM t_warehouse_location_stock s
           JOIN t_warehouse_product_info p
@@ -1830,12 +1830,12 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
-                            AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
+                            AND f.flow_type IN ('loss','pick_loss') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
-                            AND f.flow_type = 'feed_out' AND DATE(f.flow_date) = CURDATE()
+                            AND f.flow_type IN ('feed_out','pick_feed') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayFeed
           FROM t_warehouse_product_info p
           JOIN t_warehouse_location_stock s
@@ -1910,7 +1910,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                           WHERE f.product_id = s.product_id AND f.warehouse_id = s.location_id
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
                             AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
-                            AND f.flow_type = 'loss'
+                            AND f.flow_type IN ('loss','pick_loss')
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
                s.location_id                  AS locationId

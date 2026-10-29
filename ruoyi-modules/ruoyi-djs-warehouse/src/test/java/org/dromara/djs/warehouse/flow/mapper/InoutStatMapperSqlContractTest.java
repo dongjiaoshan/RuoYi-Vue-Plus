@@ -247,6 +247,26 @@ class InoutStatMapperSqlContractTest {
             .isEqualTo(outDetailPageSql());
     }
 
+    @Test
+    @DisplayName("V7-R25：出库按真实门店ID拆分，明细锁定同一门店")
+    void outStatsKeepStoreIdentityInGroupAndDetail() throws Exception {
+        assertThat(outPageSql()).contains("g.storeid", "g.storename", "d.store_id");
+        assertThat(outDetailPageSql()).contains("#{query.storeid}");
+    }
+
+    @Test
+    @DisplayName("V7-R25：汇总覆盖完整筛选行集，按产品主键去重及KG分流")
+    void totalsShareFiltersAndAreNotPaged() throws Exception {
+        String in = normalizedSql("selectInSummary", String.class, InoutStatQuery.class, List.class);
+        String out = normalizedSql("selectOutSummary", String.class, InoutStatQuery.class, List.class);
+        for (String sql : List.of(in, out)) {
+            assertThat(sql).contains("count(distinct f.product_id)", "lower(trim(pi.product_unit)) = 'kg'", "f.change_quantity");
+            assertThat(sql).doesNotContain("limit", "group by");
+        }
+        for (String part : normalizeLines(InoutStatMapper.IN_WHERE)) assertThat(in).contains(part);
+        for (String part : normalizeLines(InoutStatMapper.OUT_WHERE)) assertThat(out).contains(part);
+    }
+
     /**
      * 把 SQL 片段常量拆成可断言的单行（与 {@link #normalizedSql} 同一套归一：还原实体 + 压空白 + 转小写）。
      *

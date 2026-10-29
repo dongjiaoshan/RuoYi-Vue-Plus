@@ -4,6 +4,7 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.excel.utils.ExcelUtil;
+import org.dromara.common.core.domain.R;
 import org.dromara.common.log.annotation.Log;
 import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
@@ -15,6 +16,7 @@ import org.dromara.djs.warehouse.flow.domain.vo.InoutStatInDetailVo;
 import org.dromara.djs.warehouse.flow.domain.vo.InoutStatInVo;
 import org.dromara.djs.warehouse.flow.domain.vo.InoutStatOutDetailVo;
 import org.dromara.djs.warehouse.flow.domain.vo.InoutStatOutVo;
+import org.dromara.djs.warehouse.flow.domain.vo.InoutStatSummaryVo;
 import org.dromara.djs.warehouse.flow.service.IInoutStatService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -27,7 +29,7 @@ import java.util.List;
 /**
  * 出入库统计 Controller（V6-R167）。
  *
- * <p>页面是两个 Tab：入库统计（产品 × 入库方式 × 供应商）/ 出库统计（产品 × 出库去向），
+ * <p>页面是两个 Tab：入库统计（产品 × 入库方式 × 供应商）/ 出库统计（产品 × 出库去向 × 门店），
  * 各自「列表 + 导出」两个端点。compute-on-read 按日期区间 GROUP BY 既有出入库流水，
  * 无汇总表、无跑批（与兄弟页「出入库月汇总」同一套聚合口径）。</p>
  *
@@ -57,6 +59,20 @@ import java.util.List;
 public class InoutStatController extends BaseController {
 
     private final IInoutStatService inoutStatService;
+
+    /** 当前筛选下的入库汇总（全量）。 */
+    @SaCheckPermission("djs:warehouse:inoutStat:list")
+    @GetMapping("/in/summary")
+    public R<InoutStatSummaryVo> inSummary(InoutStatQuery query) {
+        return R.ok(inoutStatService.queryInSummary(query));
+    }
+
+    /** 当前筛选下的出库汇总（全量，包含门店发货）。 */
+    @SaCheckPermission("djs:warehouse:inoutStat:list")
+    @GetMapping("/out/summary")
+    public R<InoutStatSummaryVo> outSummary(InoutStatQuery query) {
+        return R.ok(inoutStatService.queryOutSummary(query));
+    }
 
     /**
      * 入库统计分页（甲方 row167 第 3 点）。

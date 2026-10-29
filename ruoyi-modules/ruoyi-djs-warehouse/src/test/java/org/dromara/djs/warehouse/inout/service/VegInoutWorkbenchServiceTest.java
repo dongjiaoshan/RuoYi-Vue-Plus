@@ -347,6 +347,16 @@ class VegInoutWorkbenchServiceTest {
     }
 
     @Test
+    void poultryFeedOutUsesThePoultryFeedDestination() {
+        when(workbenchMapper.selectVegStocks(PRODUCT)).thenReturn(List.of(basket(13L, SHELF, "蔬菜保鲜库", null, null, "4")));
+        service.submitOut(outBo("poultry_feed", null, "2.5", 13L));
+        ArgumentCaptor<VegOutSubmitBo> sent = ArgumentCaptor.forClass(VegOutSubmitBo.class);
+        verify(vegOutService).submitVegetableOut(sent.capture());
+        assertThat(sent.getValue().getOutDest()).isEqualTo("poultry_feed");
+        assertThat(sent.getValue().getItems().getFirst().getQuantity()).isEqualByComparingTo("2.5");
+    }
+
+    @Test
     void outRejectsMissingPlotNonPositiveWeightAndOverStock() {
         when(workbenchMapper.selectVegStocks(PRODUCT)).thenReturn(List.of(basket(11L, FRESH, "毛菜鲜品库", 101L, "A-001", "10")));
         VegOutWorkbenchSubmitBo noPlot = outBo("warehouse", "kitchen", "1");
@@ -367,6 +377,7 @@ class VegInoutWorkbenchServiceTest {
         assertThatThrownBy(() -> service.submitOut(outBo("warehouse", null, "1", 11L))).hasMessageContaining("仓库出库去向");
         assertThatThrownBy(() -> service.submitOut(outBo("warehouse", "unknown", "1", 11L))).hasMessageContaining("仓库出库去向");
         assertThatThrownBy(() -> service.submitOut(outBo("feed", "kitchen", "1", 11L))).hasMessageContaining("不接受");
+        assertThatThrownBy(() -> service.submitOut(outBo("poultry_feed", "kitchen", "1", 11L))).hasMessageContaining("不接受");
         verifyNoInteractions(vegOutService);
     }
 

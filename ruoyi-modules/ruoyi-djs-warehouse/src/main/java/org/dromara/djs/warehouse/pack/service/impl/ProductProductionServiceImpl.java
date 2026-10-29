@@ -558,7 +558,11 @@ public class ProductProductionServiceImpl
             // 规格恒取产品主数据，理由同 submitVegPack：打包页不该让工人手填产品属性。
             p.setProductSpec(product.getProductSpec());
             p.setEarNo(src.getEarNo());
-            if (cutStore) p.setWhiteBarNo(src.getWhiteBarNo());
+            if (cutStore) {
+                // 白条分割门店需求：整猪领用的分割单没有白条流水号，靠 white_bar_id 标记来源白条（猪肉日分割出库统计按它认行）
+                p.setWhiteBarNo(src.getWhiteBarNo());
+                p.setWhiteBarId(bo.getWhiteBarId());
+            }
             p.setProductSort(1);
             p.setProductWeight(consume);
             p.setProduceQuantity(consume); // D10 hotfix: SHIP 流水 changeNum 用
@@ -870,6 +874,8 @@ public class ProductProductionServiceImpl
         p.setProductSpec(product.getProductSpec());
         p.setEarNo(src.getEarNo());
         p.setWhiteBarNo(src.getWhiteBarNo());
+        // 外购 / 旧数据白条没有流水号，white_bar_id 仍能标记这是一条白条发门店记录
+        p.setWhiteBarId(src.getWhiteBarId());
         p.setProductSort(1);
         p.setProductWeight(bo.getProductWeight());
         p.setProduceQuantity(bo.getProductWeight()); // D10 hotfix: SHIP 流水 changeNum 用

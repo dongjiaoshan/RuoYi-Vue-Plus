@@ -51,7 +51,7 @@ public interface LocationInfoMapper extends BaseMapperPlus<LocationInfo, Locatio
      * inout_type: IN 入 / OT 出。WHERE 显式带 tenant_id（§0.5）。</p>
      *
      * <p>今日出库只统计真实出库（发货/领用/分割/发货等），<b>排除录入损耗</b>
-     * （flow_type='loss' 也记 inout_type='OT'，属库存缩减非出库，不计入今日出库）。</p>
+     * （损耗类 loss / pick_loss / settle_loss 也记 inout_type='OT'，属库存缩减非出库，不计入今日出库）。</p>
      *
      * @param tenantId 租户
      * @return 仅含 locationId / todayInQty / todayOutQty 的部分聚合行
@@ -59,7 +59,7 @@ public interface LocationInfoMapper extends BaseMapperPlus<LocationInfo, Locatio
     @Select("""
         SELECT l.id AS locationId,
                COALESCE(SUM(CASE WHEN f.inout_type = 'IN' THEN ABS(f.change_quantity) ELSE 0 END), 0) AS todayInQty,
-               COALESCE(SUM(CASE WHEN f.inout_type = 'OT' AND f.flow_type <> 'loss' THEN ABS(f.change_quantity) ELSE 0 END), 0) AS todayOutQty
+               COALESCE(SUM(CASE WHEN f.inout_type = 'OT' AND f.flow_type NOT IN ('loss','pick_loss','settle_loss') THEN ABS(f.change_quantity) ELSE 0 END), 0) AS todayOutQty
         FROM t_warehouse_stock_flow f
         JOIN t_warehouse_location_info l
           ON f.warehouse_id = l.id AND l.del_flag = '0' AND l.tenant_id = #{tenantId}
@@ -104,7 +104,7 @@ public interface LocationInfoMapper extends BaseMapperPlus<LocationInfo, Locatio
      * 只取后者又漏掉了往日囤着没动的存货。</p>
      *
      * <p>{@code stock_flow.warehouse_id} 物理列名实为 location FK（doc/11 §2.3 命名遗留）。
-     * 今日出库排除 {@code flow_type='loss'}，与库位卡片 {@link #selectTodayFlowByLocation} 同口径。
+     * 今日出库排除损耗类 flow_type，与库位卡片 {@link #selectTodayFlowByLocation} 同口径。
      * 多租户拦截器对含 JOIN 的自定义 {@code @Select} 不保证注入，WHERE 全部显式带 tenant_id（§0.5）。</p>
      *
      * @param tenantId    租户（V1 固定 '1001'）
@@ -144,7 +144,7 @@ public interface LocationInfoMapper extends BaseMapperPlus<LocationInfo, Locatio
         LEFT JOIN (
             SELECT product_id,
                    SUM(CASE WHEN inout_type = 'IN' THEN ABS(change_quantity) ELSE 0 END) AS in_qty,
-                   SUM(CASE WHEN inout_type = 'OT' AND flow_type <> 'loss' THEN ABS(change_quantity) ELSE 0 END) AS out_qty
+                   SUM(CASE WHEN inout_type = 'OT' AND flow_type NOT IN ('loss','pick_loss','settle_loss') THEN ABS(change_quantity) ELSE 0 END) AS out_qty
               FROM t_warehouse_stock_flow
              WHERE del_flag = '0' AND tenant_id = #{tenantId} AND warehouse_id = #{locationId}
                AND DATE(flow_date) = CURDATE()

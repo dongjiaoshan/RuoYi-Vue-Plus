@@ -53,6 +53,12 @@ public class FeedLog extends TenantEntity {
     private String feedType;
 
     /**
+     * 饲喂动物（字典 {@code djs_feed_animal}：pig 猪只饲料 / poultry 家禽饲料，见 {@link FeedAnimal}）。
+     * 写入端必须显式赋值；列默认 pig 只兜历史行。
+     */
+    private String feedAnimal;
+
+    /**
      * 产品 ID（FK → {@code t_warehouse_product_info.id}；按产品归集饲喂量用，
      * 毛菜间来源经 crop→主产品 反解可空）。
      */

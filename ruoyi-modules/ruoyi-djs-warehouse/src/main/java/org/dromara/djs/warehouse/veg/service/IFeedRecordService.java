@@ -39,10 +39,10 @@ public interface IFeedRecordService {
     /**
      * 有机饲喂**按日汇总**分页（admin 行199 列表 / mp 行268 卡片）。
      *
-     * <p>一天一行，当日各来源重量求和 + 左联日确认表带出框数 / 确认人。
-     * 只吃日期范围条件；作物名 / 提供位置属明细维度，汇总层不参与筛选。</p>
+     * <p>一天 × 一种饲喂动物一行，该日该类型各来源重量求和 + 按 (日期, 饲喂动物) 左联日确认表带出框数 / 确认人。
+     * 只吃日期范围 + 饲喂类型；作物名 / 提供位置属明细维度，汇总层不参与筛选。</p>
      *
-     * @param query     查询条件（仅 dateFrom / dateTo 生效）
+     * @param query     查询条件（仅 feedAnimal / dateFrom / dateTo 生效）
      * @param pageQuery 分页参数
      * @return 分页结果（按日期倒序）
      */
@@ -51,10 +51,10 @@ public interface IFeedRecordService {
     /**
      * 录入 / 修改某日的仓库确认框数（mp 行268【框数录入】）。
      *
-     * <p>按 {@code feedDate} upsert：该日无确认行则插入，有则更新（甲方允许录错后改，改则确认人 /
+     * <p>按 ({@code feedDate}, {@code feedAnimal}) upsert（feedAnimal 空 = pig）：无确认行则插入，有则更新（甲方允许录错后改，改则确认人 /
      * 确认时间一并刷成最后一次操作者）。</p>
      *
-     * @param bo 录入内容（日期 / 框数 / 确认人）
+     * @param bo 录入内容（日期 / 饲喂类型 / 框数 / 确认人）
      */
     void saveDailyConfirm(FeedDailyConfirmBo bo);
 }

@@ -14,6 +14,7 @@ import org.dromara.djs.warehouse.flow.domain.vo.InoutStatInDetailVo;
 import org.dromara.djs.warehouse.flow.domain.vo.InoutStatInVo;
 import org.dromara.djs.warehouse.flow.domain.vo.InoutStatOutDetailVo;
 import org.dromara.djs.warehouse.flow.domain.vo.InoutStatOutVo;
+import org.dromara.djs.warehouse.flow.domain.vo.InoutStatSummaryVo;
 import org.dromara.djs.warehouse.flow.mapper.InoutStatMapper;
 import org.dromara.djs.warehouse.flow.service.IInoutStatService;
 import org.springframework.stereotype.Service;
@@ -31,8 +32,8 @@ import java.util.List;
  * <p><b>字典翻译放后端</b>（不走前端 dict-tag + Excel 双通道）：「无供应商」「未指定」这类
  * 非字典兜底值只写一处，导出与列表必然逐列一致（甲方 row167 第 5 点）。</p>
  *
- * <p>展示口径排除清单与「入库记录」「出库记录」「出入库月汇总」共用 {@link FlowDisplayScope}
- * ——甲方拿本页去对明细页，两边行集必须同集合。</p>
+ * <p>入库采用公共 {@link FlowDisplayScope}；出库在本页纳入门店实际发货，
+ * 其他排除项不变。列表、汇总、详情和导出始终使用同一范围。</p>
  *
  * <p>行内「查看详情」（V6-R186）走 mapper 里与汇总共用的 FROM / WHERE，本层同样只做翻字典 /
  * 拼单位 / 兜空：明细的入出库量与汇总同一列 {@code change_quantity}，
@@ -62,8 +63,22 @@ public class InoutStatServiceImpl implements IInoutStatService {
     /** 计重单位：落在这里（或单位缺失）的量按 3 位小数 + kg 展示，其余按「数值 空格 单位」。 */
     private static final String KG_UNIT = "kg";
 
+    /** 本页包含门店实际发货；其他出库页面继续使用原有公共展示口径。 */
+    private static final List<String> OUT_EXCLUDED = FlowDisplayScope.OUT_EXCLUDED.stream()
+        .filter(type -> !"ship_out".equals(type)).toList();
+
     private final InoutStatMapper inoutStatMapper;
     private final DictService dictService;
+
+    @Override
+    public InoutStatSummaryVo queryInSummary(InoutStatQuery query) {
+        return inoutStatMapper.selectInSummary(currentTenant(), nullSafe(query), FlowDisplayScope.IN_EXCLUDED);
+    }
+
+    @Override
+    public InoutStatSummaryVo queryOutSummary(InoutStatQuery query) {
+        return inoutStatMapper.selectOutSummary(currentTenant(), nullSafe(query), OUT_EXCLUDED);
+    }
 
     @Override
     public TableDataInfo<InoutStatInVo> queryInPage(InoutStatQuery query, PageQuery pageQuery) {
@@ -84,7 +99,7 @@ public class InoutStatServiceImpl implements IInoutStatService {
     @Override
     public TableDataInfo<InoutStatOutVo> queryOutPage(InoutStatQuery query, PageQuery pageQuery) {
         IPage<InoutStatOutVo> page = inoutStatMapper.selectOutStatPage(
-            pageQuery.build(), currentTenant(), nullSafe(query), FlowDisplayScope.OUT_EXCLUDED);
+            pageQuery.build(), currentTenant(), nullSafe(query), OUT_EXCLUDED);
         decorateOut(page.getRecords());
         return TableDataInfo.build(page);
     }
@@ -92,7 +107,7 @@ public class InoutStatServiceImpl implements IInoutStatService {
     @Override
     public List<InoutStatOutVo> queryOutList(InoutStatQuery query) {
         List<InoutStatOutVo> list = inoutStatMapper.selectOutStatList(
-            currentTenant(), nullSafe(query), FlowDisplayScope.OUT_EXCLUDED);
+            currentTenant(), nullSafe(query), OUT_EXCLUDED);
         decorateOut(list);
         return list == null ? List.of() : list;
     }
@@ -116,7 +131,7 @@ public class InoutStatServiceImpl implements IInoutStatService {
     @Override
     public TableDataInfo<InoutStatOutDetailVo> queryOutDetailPage(InoutStatDetailQuery query, PageQuery pageQuery) {
         IPage<InoutStatOutDetailVo> page = inoutStatMapper.selectOutDetailPage(
-            pageQuery.build(), currentTenant(), query, FlowDisplayScope.OUT_EXCLUDED);
+            pageQuery.build(), currentTenant(), query, OUT_EXCLUDED);
         decorateOutDetail(page.getRecords());
         return TableDataInfo.build(page);
     }
@@ -124,7 +139,7 @@ public class InoutStatServiceImpl implements IInoutStatService {
     @Override
     public List<InoutStatOutDetailVo> queryOutDetailList(InoutStatDetailQuery query) {
         List<InoutStatOutDetailVo> list = inoutStatMapper.selectOutDetailList(
-            currentTenant(), query, FlowDisplayScope.OUT_EXCLUDED);
+            currentTenant(), query, OUT_EXCLUDED);
         decorateOutDetail(list);
         return list == null ? List.of() : list;
     }
@@ -167,6 +182,9 @@ public class InoutStatServiceImpl implements IInoutStatService {
         for (InoutStatOutDetailVo vo : list) {
             vo.setOutQtyLabel(qtyLabel(vo.getOutboundQty(), vo.getProductUnit()));
             vo.setOutDestName(dictLabel(DICT_STOCK_OUT_DEST, vo.getStockOutDest(), NO_OUT_DEST));
+            if (isBlank(vo.getStoreName())) {
+                vo.setStoreName(EMPTY_TEXT);
+            }
             if (isBlank(vo.getProductSpec())) {
                 vo.setProductSpec(EMPTY_TEXT);
             }
@@ -235,6 +253,9 @@ public class InoutStatServiceImpl implements IInoutStatService {
         for (InoutStatOutVo vo : list) {
             vo.setProductTypeName(productTypeName(vo.getProductType()));
             vo.setOutDestName(dictLabel(DICT_STOCK_OUT_DEST, vo.getStockOutDest(), NO_OUT_DEST));
+            if (isBlank(vo.getStoreName())) {
+                vo.setStoreName(EMPTY_TEXT);
+            }
             if (isBlank(vo.getProductSpec())) {
                 vo.setProductSpec(EMPTY_TEXT);
             }

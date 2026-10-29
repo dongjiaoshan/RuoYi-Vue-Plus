@@ -98,6 +98,7 @@ class PigBurnRecordServiceImplTest {
     private org.dromara.djs.warehouse.loss.service.ILossFlowService lossFlowService;
 
     @Mock private org.dromara.common.core.service.DictService dictService;
+    @Mock private org.dromara.djs.breed.core.service.IPigQueryService pigQueryService;
     private TestablePigBurnRecordServiceImpl service;
 
     private static final Long BAR_ID = 5001L;
@@ -130,8 +131,9 @@ class PigBurnRecordServiceImplTest {
                                          org.dromara.djs.warehouse.trace.service.ITraceService ts,
                                          org.dromara.djs.common.image.service.ImageUrlResolver ir,
                                          org.dromara.djs.warehouse.loss.service.ILossFlowService lfs,
-                                         org.dromara.djs.warehouse.inout.service.WeightCompletionPolicy policy) {
-            super(b, f, bi, ih, ls, l, pm, g, cs, ts, ir, lfs, policy);
+                                         org.dromara.djs.warehouse.inout.service.WeightCompletionPolicy policy,
+                                         org.dromara.djs.breed.core.service.IPigQueryService pq) {
+            super(b, f, bi, ih, ls, l, pm, g, cs, ts, ir, lfs, policy, pq);
         }
 
         @Override
@@ -158,7 +160,7 @@ class PigBurnRecordServiceImplTest {
         service = new TestablePigBurnRecordServiceImpl(
             burnMapper, flowMapper, barInfoMapper, productInhouseMapper, locationStockMapper,
             locationInfoMapper, productInfoMapper, bizCodeGenerator, stockCheckService, traceService, imageUrlResolver,
-            lossFlowService, new org.dromara.djs.warehouse.inout.service.WeightCompletionPolicy(dictService));
+            lossFlowService, new org.dromara.djs.warehouse.inout.service.WeightCompletionPolicy(dictService), pigQueryService);
         var threshold = new org.dromara.common.core.domain.dto.DictDataDTO();
         threshold.setDictValue("50"); threshold.setIsDefault("Y");
         when(dictService.getDictData(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(threshold));
@@ -600,6 +602,20 @@ class PigBurnRecordServiceImplTest {
         assertThat(result.getReceiveTime()).isNull();
         assertThat(result.getArriveWeight()).isNull();
         assertThat(result.getInboundedWeight()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void pendingCardShowsTheAgeFrozenAtThatMarketingNotAnEarlierPigWithTheSameTag() {
+        BarInfo bar=sampleBar("pending_singe");
+        java.time.LocalDateTime marketed=java.time.LocalDateTime.of(2026,10,25,10,21,11);
+        bar.setMarketingTime(Date.from(marketed.atZone(java.time.ZoneId.systemDefault()).toInstant()));
+        when(barInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(bar));
+        var reused=new org.dromara.djs.breed.core.domain.vo.PigMarketingAgeVo();
+        reused.setEarNo(bar.getEarNo()); reused.setMarketingDate(marketed.minusYears(1)); reused.setAgeDays(200);
+        var current=new org.dromara.djs.breed.core.domain.vo.PigMarketingAgeVo();
+        current.setEarNo(bar.getEarNo()); current.setMarketingDate(marketed); current.setAgeDays(183);
+        when(pigQueryService.listMarketingAgeByEarNos(any())).thenReturn(List.of(reused,current));
+        assertThat(service.queryPendingBars().getFirst().getAgeDays()).isEqualTo(183);
     }
 
     @Test

@@ -46,6 +46,25 @@ class WarehouseDashboardMapperSqlContractTest {
             .doesNotContain("t_warehouse_product_production");
     }
 
+    @Test
+    @DisplayName("毛菜接收指标只按当日毛菜间入库流水，按产品去重")
+    void freshVegReceiptUsesInboundStockFlow() throws Exception {
+        String count = selectSql("countTodayVegHandleKinds");
+        String weight = selectSql("sumTodayVegHandleWeight");
+        assertThat(count).contains("count(distinct f.product_id)");
+        assertThat(weight).contains("sum(f.change_quantity)");
+        for (String sql : new String[]{count, weight}) {
+            assertThat(sql).contains("from t_warehouse_stock_flow f")
+                .contains("f.inout_type = 'in'")
+                .contains("f.flow_type = 'veg_stock_in'")
+                .doesNotContain("pack_in")
+                .contains("f.change_quantity > 0")
+                .contains("date(f.flow_date) = curdate()")
+                .contains("f.tenant_id = #{tenantid}")
+                .doesNotContain("t_warehouse_handle_record");
+        }
+    }
+
     private static String selectSql(String methodName) throws Exception {
         Method method = WarehouseDashboardMapper.class.getMethod(methodName, String.class);
         Select select = method.getAnnotation(Select.class);

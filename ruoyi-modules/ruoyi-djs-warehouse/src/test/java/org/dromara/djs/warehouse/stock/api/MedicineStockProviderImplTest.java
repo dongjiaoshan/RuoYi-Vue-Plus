@@ -116,7 +116,7 @@ class MedicineStockProviderImplTest {
     }
 
     @Test
-    @DisplayName("deductLoss happy：流水 OT/loss + 双写统一损耗台账 manual_loss，且不二次扣 location_stock（领用时已扣货架，药品无 WIP 池）")
+    @DisplayName("deductLoss happy：流水 OT/pick_loss + 双写统一损耗台账 manual_loss，且不二次扣 location_stock（领用时已扣货架，药品无 WIP 池）")
     void testDeductLoss_Happy_WritesFlowAndLossFlow() {
         when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(LOCATION_ID);
 
@@ -130,7 +130,7 @@ class MedicineStockProviderImplTest {
         verify(stockFlowMapper, times(1)).insert(cap.capture());
         StockFlow f = cap.getValue();
         assertThat(f.getInoutType()).isEqualTo("OT");
-        assertThat(f.getFlowType()).isEqualTo("loss");
+        assertThat(f.getFlowType()).isEqualTo("pick_loss");
         assertThat(f.getChangeNum()).isEqualByComparingTo("-2.5");
         assertThat(f.getChangeQuantity()).isEqualByComparingTo("2.5");
         assertThat(f.getWarehouseId()).isEqualTo(LOCATION_ID);

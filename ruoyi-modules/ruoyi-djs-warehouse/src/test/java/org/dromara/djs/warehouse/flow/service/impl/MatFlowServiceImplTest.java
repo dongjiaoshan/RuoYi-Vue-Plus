@@ -513,10 +513,10 @@ class MatFlowServiceImplTest {
     @Test
     @DisplayName("return happy：今日已领 20 / 已退 5 / 已损 3 → 退 8 通过；INSERT(pick_return_in / IN / +8)")
     void testReturn_Happy() {
-        // 额度统计按来源拆分后走 IN-list 版（领用两键 + 历史 pick_out / 退回两键），loss 仍单键
+        // 额度统计按来源拆分后走 IN-list 版（领用两键 + 历史 pick_out / 退回两键 / 损耗 loss+pick_loss）
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(new BigDecimal("5"));
-        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(new BigDecimal("3"));
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_loss")))).thenReturn(new BigDecimal("3"));
         when(locationStockMapper.addByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(), eq(USER_ID))).thenReturn(1);
 
         service.returnBack(returnBo(new BigDecimal("8")));
@@ -535,7 +535,7 @@ class MatFlowServiceImplTest {
     void testReturn_OverQuota() {
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(new BigDecimal("10"));
-        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_loss")))).thenReturn(BigDecimal.ZERO);
 
         assertThatThrownBy(() -> service.returnBack(returnBo(new BigDecimal("15"))))
             .isInstanceOf(ServiceException.class)
@@ -550,7 +550,7 @@ class MatFlowServiceImplTest {
     void testLoss_Happy() {
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
-        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_loss")))).thenReturn(BigDecimal.ZERO);
 
         Long id = service.loss(lossBo(new BigDecimal("3")));
         assertThat(id).isNotNull();
@@ -558,11 +558,54 @@ class MatFlowServiceImplTest {
         ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
         verify(stockFlowMapper, times(1)).insert(cap.capture());
         StockFlow f = cap.getValue();
-        assertThat(f.getFlowType()).isEqualTo("loss");
+        assertThat(f.getFlowType()).isEqualTo("pick_loss");
         assertThat(f.getInoutType()).isEqualTo("OT");
         assertThat(f.getChangeNum()).isEqualByComparingTo("-3");
         // DENGBO-R18/R19 核心：非可打包物资（饲料/种子/包材/药品）损耗只在 stock_flow 留痕，不二次扣货架
         verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("lossByBatch 包材篮损耗：领用时选中篮已扣过 → 只记 pick_loss 流水 + 损耗台账，不再二次扣库存篮")
+    void testLossByBatch_NonFood_DoesNotDeductBasketAgain() {
+        Long batchId = 90060L;
+        Long locId = 7004L;
+        LocationStock basket = new LocationStock();
+        basket.setId(batchId);
+        basket.setLocationId(locId);
+        basket.setProductId(PRODUCT_ID);
+        basket.setProductName("包装袋");
+        basket.setProductUnit("个");
+        basket.setProductStock(new BigDecimal("100"));
+        basket.setDelFlag("0");
+        when(locationStockMapper.selectById(batchId)).thenReturn(basket);
+
+        ProductInfo product = new ProductInfo();
+        product.setId(PRODUCT_ID);
+        product.setProductName("包装袋");
+        product.setProductUnit("个");
+        product.setBelongType("package");
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product);
+
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_loss")))).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_feed")))).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayNetPickedByBasket(eq(PRODUCT_ID), eq(locId), any(), any(), any())).thenReturn(new BigDecimal("20"));
+
+        MatLossBo bo = new MatLossBo();
+        bo.setBatchId(batchId);
+        bo.setProductId(PRODUCT_ID);
+        bo.setLocationId(locId);
+        bo.setQuantity(new BigDecimal("2"));
+        service.loss(bo);
+
+        ArgumentCaptor<StockFlow> fCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(fCap.capture());
+        assertThat(fCap.getValue().getFlowType()).isEqualTo("pick_loss");
+        verify(locationStockMapper, never()).deductStockById(anyLong(), any(BigDecimal.class), any());
+        verify(lossFlowService, times(1)).record(eq("manual_loss"), eq(PRODUCT_ID), eq(new BigDecimal("2")),
+            eq(locId), any(), eq("mat"), any(), any());
     }
 
     @Test
@@ -594,8 +637,8 @@ class MatFlowServiceImplTest {
         // 额度校验（pork 非可打包 → 走 flow SUM 口径）：已领 20 / 无退无损无饲 → 余 20，损 3 通过
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
-        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
-        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "feed_out")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_loss")))).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_feed")))).thenReturn(BigDecimal.ZERO);
 
         // reduceTodayInhouseForBasket(productId, null, null, ...)：earNo=null → 退化成 productId 维匹配今日 null-ear inhouse
         ProductInhouse wip = new ProductInhouse();
@@ -619,7 +662,7 @@ class MatFlowServiceImplTest {
         ArgumentCaptor<StockFlow> fCap = ArgumentCaptor.forClass(StockFlow.class);
         verify(stockFlowMapper, times(1)).insert(fCap.capture());
         StockFlow f = fCap.getValue();
-        assertThat(f.getFlowType()).isEqualTo("loss");
+        assertThat(f.getFlowType()).isEqualTo("pick_loss");
         assertThat(f.getInoutType()).isEqualTo("OT");
         assertThat(f.getChangeQuantity()).isEqualByComparingTo("3");
         assertThat(f.getWhiteBarNo()).isEqualTo("BAR-001");
@@ -688,7 +731,7 @@ class MatFlowServiceImplTest {
         when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(defaultLoc);
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
-        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_loss")))).thenReturn(BigDecimal.ZERO);
         when(locationStockMapper.addByProductLocation(eq(defaultLoc), eq(PRODUCT_ID), any(), eq(USER_ID))).thenReturn(1);
 
         MatReturnBo bo = returnBo(new BigDecimal("3"));
@@ -1043,8 +1086,8 @@ class MatFlowServiceImplTest {
         // 产品级额度充足（已领 20），但该 null-ear 组今日净领只有 2 → 组级守卫拦截
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
-        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
-        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "feed_out")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_loss")))).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_feed")))).thenReturn(BigDecimal.ZERO);
         when(stockFlowMapper.sumTodayNetPickedByNullEarGroup(PRODUCT_ID)).thenReturn(new BigDecimal("2"));
 
         MatLossBo bo = new MatLossBo();
@@ -1111,8 +1154,8 @@ class MatFlowServiceImplTest {
         // 今日额度：已领 50 − 已退 0 − 已损 0 − 已饲喂 10 = 剩 40 ≥ 20
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("50"));
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
-        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
-        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "feed_out")).thenReturn(new BigDecimal("10"));
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_loss")))).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_feed")))).thenReturn(new BigDecimal("10"));
 
         Long flowId = service.feed(feedBo(new BigDecimal("20")));
         assertThat(flowId).isNotNull();
@@ -1121,7 +1164,7 @@ class MatFlowServiceImplTest {
         ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
         verify(stockFlowMapper, times(1)).insert(flowCap.capture());
         StockFlow f = flowCap.getValue();
-        assertThat(f.getFlowType()).isEqualTo("feed_out");
+        assertThat(f.getFlowType()).isEqualTo("pick_feed");
         assertThat(f.getStockOutDest()).isEqualTo("feed");
         assertThat(f.getInoutType()).isEqualTo("OT");
         assertThat(f.getChangeNum()).isEqualByComparingTo("-20");
@@ -1134,6 +1177,8 @@ class MatFlowServiceImplTest {
         verify(feedLogMapper, times(1)).insert(logCap.capture());
         FeedLog log = logCap.getValue();
         assertThat(log.getFeedType()).isEqualTo("warehouse");
+        // 物资领用饲喂没有家禽入口，一律猪只饲料（V7 行13）
+        assertThat(log.getFeedAnimal()).isEqualTo("pig");
         assertThat(log.getProductId()).isEqualTo(PRODUCT_ID);
         assertThat(log.getLocationId()).isEqualTo(LOCATION_ID);
         assertThat(log.getFeedWeight()).isEqualByComparingTo("20");
@@ -1148,8 +1193,8 @@ class MatFlowServiceImplTest {
         // 已领 10 − 已退 0 − 已损 0 − 已饲喂 5 = 剩 5 < 20
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("10"));
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
-        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
-        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "feed_out")).thenReturn(new BigDecimal("5"));
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_loss")))).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_feed")))).thenReturn(new BigDecimal("5"));
 
         assertThatThrownBy(() -> service.feed(feedBo(new BigDecimal("20"))))
             .isInstanceOf(ServiceException.class)

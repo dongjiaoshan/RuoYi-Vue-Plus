@@ -31,7 +31,7 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
      *
      * <p>两支 UNION ALL（各带 statSource：1=毛菜处理间 2=采摘活动，row44）：</p>
      * <ul>
-     *   <li>毛菜处理采收过磅（仓库统计权威口径同源）：record_type=1；采摘日期=DATE(handle_time)；
+     *   <li>毛菜处理采收过磅（仓库统计权威口径同源）：record_type=1；记录时间=handle_time，采摘日期=harvest_date；
      *       采摘量=record_weight(kg)；地块编号 JOIN t_plant_plot_info；
      *       班组=采收记录实际班组集合（多选中间表 t_warehouse_handle_record_team，多班组顿号拼接展示；
      *       无中间表行时兜底旧单列 r.team_id 对应班组名，row42——不再取计划班组 planting_record）。</li>
@@ -46,10 +46,11 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
      * 是录入弹窗当场填的）；采摘活动支没有这两个维度，NULL 占位、展示端显 '-'。</p>
      */
     String PICK_DETAIL_SQL = """
-        SELECT t.pickDate, t.cropName, t.productName, t.plotCode, t.statSource, t.pickWeight,
+        SELECT t.recordTime, t.pickDate, t.cropName, t.productName, t.plotCode, t.statSource, t.pickWeight,
                t.perfPercent, t.remark, t.teamId, t.teamName
           FROM (
-        SELECT DATE(r.handle_time) AS pickDate,
+        SELECT DATE_FORMAT(r.handle_time, '%Y-%m-%d %H:%i:%s') AS recordTime,
+               DATE_FORMAT(pr.harvest_date, '%Y-%m-%d') AS pickDate,
                pr.crop_name        AS cropName,
                pi.product_name     AS productName,
                p.plot_code         AS plotCode,
@@ -87,10 +88,10 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
                 同一个 UNION ALL 的采摘活动分支本来就带 a.daily_weight &gt; 0，这里补齐口径。 -->
            AND r.record_weight &gt; 0
            <if test="q.pickDateBegin != null">
-             AND DATE(r.handle_time) &gt;= #{q.pickDateBegin}
+             AND pr.harvest_date &gt;= #{q.pickDateBegin}
            </if>
            <if test="q.pickDateEnd != null">
-             AND DATE(r.handle_time) &lt;= #{q.pickDateEnd}
+             AND pr.harvest_date &lt;= #{q.pickDateEnd}
            </if>
            <if test="q.cropName != null and q.cropName != ''">
              AND pr.crop_name LIKE CONCAT('%', #{q.cropName}, '%')
@@ -103,7 +104,8 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
                OR r.team_id = #{q.teamId})
            </if>
         UNION ALL
-        SELECT a.activity_date    AS pickDate,
+        SELECT DATE_FORMAT(a.create_time, '%Y-%m-%d %H:%i:%s') AS recordTime,
+               DATE_FORMAT(a.activity_date, '%Y-%m-%d') AS pickDate,
                ci.crop_name       AS cropName,
                NULL               AS productName,
                p2.plot_code       AS plotCode,

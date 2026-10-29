@@ -333,8 +333,23 @@ class VegetableHandleServiceImplTest {
         p2.setProductId(77001L);
         when(locationStockMapper.selectBasketsBySource(FRESH_LOC_ID, 60001L)).thenReturn(List.of(p1, p2));
         when(locationStockMapper.deductStockById(anyLong(), any(BigDecimal.class), anyLong())).thenReturn(1);
+        java.util.concurrent.atomic.AtomicLong flowIds = new java.util.concurrent.atomic.AtomicLong(800L);
+        org.mockito.Mockito.doAnswer(inv -> { inv.getArgument(0, StockFlow.class).setId(flowIds.incrementAndGet()); return 1; })
+            .when(stockFlowMapper).insert(any(StockFlow.class));
 
         service.submitProcess(processBo(null, "0", 1));
+
+        // 扣篮的同时每个产品写一条 settle_loss 出库流水（库存日汇总按库位回放，不写就会虚高），损耗台账关联它
+        ArgumentCaptor<StockFlow> settleCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(2)).insert(settleCap.capture());
+        assertThat(settleCap.getAllValues()).allSatisfy(f -> {
+            assertThat(f.getFlowType()).isEqualTo("settle_loss");
+            assertThat(f.getInoutType()).isEqualTo("OT");
+            assertThat(f.getWarehouseId()).isEqualTo(FRESH_LOC_ID);
+        });
+        assertThat(settleCap.getAllValues()).extracting(StockFlow::getProductId).containsExactly(PRODUCT_ID, 77001L);
+        assertThat(settleCap.getAllValues()).extracting(f -> f.getChangeQuantity().toPlainString())
+            .containsExactly("30.000", "20.000");
 
         // 两篮都扣到 0
         ArgumentCaptor<Long> idCap = ArgumentCaptor.forClass(Long.class);
@@ -349,6 +364,8 @@ class VegetableHandleServiceImplTest {
                 org.dromara.djs.warehouse.loss.domain.LossFlow::getProductId)
             .containsExactly(PRODUCT_ID, 77001L);
         assertThat(lossCap.getAllValues().get(1).getLossWeight()).isEqualByComparingTo("20.000");
+        assertThat(lossCap.getAllValues()).extracting(org.dromara.djs.warehouse.loss.domain.LossFlow::getSourceFlowId)
+            .containsExactly(801L, 802L);
 
         // picked(50) = handled(0) + loss(50)，账自洽
         ArgumentCaptor<VegetableHandle> updCap = ArgumentCaptor.forClass(VegetableHandle.class);
@@ -805,6 +822,8 @@ class VegetableHandleServiceImplTest {
         verify(feedLogMapper, times(1)).insert(cap.capture());
         // 回归防线：改回 resolveProductIdByCrop 就会变成 88001，有机饲喂记录的「产品名称」列随之退化成作物名
         assertThat(cap.getValue().getProductId()).isEqualTo(77001L);
+        // 毛菜处理没有家禽入口，饲料一律记猪只饲料（V7 行13）
+        assertThat(cap.getValue().getFeedAnimal()).isEqualTo("pig");
         // 出库流水同样记在工人选的产品头上
         ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
         verify(stockFlowMapper, times(1)).insert(flowCap.capture());
@@ -1194,7 +1213,8 @@ class VegetableHandleServiceImplTest {
     @DisplayName("采摘明细 happy：分页查询透传 mapper 固定行，query 原样下传")
     void testQueryPickDetailPage_HappyPath() {
         PickDetailVo row = new PickDetailVo();
-        row.setPickDate(LocalDate.of(2026, 7, 21));
+        row.setRecordTime("2026-07-21 09:30:00");
+        row.setPickDate("2026-07-20");
         row.setCropName("小白菜");
         row.setPlotCode("A-01");
         row.setPickWeight(new BigDecimal("12.345"));
@@ -1212,6 +1232,8 @@ class VegetableHandleServiceImplTest {
 
         assertThat(result.getTotal()).isEqualTo(1);
         assertThat(result.getRows()).hasSize(1);
+        assertThat(result.getRows().get(0).getRecordTime()).isEqualTo("2026-07-21 09:30:00");
+        assertThat(result.getRows().get(0).getPickDate()).isEqualTo("2026-07-20");
         assertThat(result.getRows().get(0).getCropName()).isEqualTo("小白菜");
         assertThat(result.getRows().get(0).getPlotCode()).isEqualTo("A-01");
         assertThat(result.getRows().get(0).getPickWeight()).isEqualByComparingTo("12.345");

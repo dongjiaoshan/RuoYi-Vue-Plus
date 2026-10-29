@@ -63,7 +63,7 @@ public class VegOutController extends BaseController {
     }
 
     /**
-     * row185 单条内部处理：从库存查询行发起，去向限「果蔬月台 / 饲料饲喂」。
+     * row185 单条内部处理：从库存查询行发起，去向限「果蔬月台 / 猪只饲料 / 家禽饲料」。
      * 不生成出库单号（不进 row187 列表），只落出库记录与对应下游台账。
      */
     @SaCheckPermission("djs:warehouse:stock:out")
