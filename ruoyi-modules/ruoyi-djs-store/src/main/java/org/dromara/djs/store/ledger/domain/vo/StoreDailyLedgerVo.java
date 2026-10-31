@@ -14,7 +14,7 @@ import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
+import java.util.Date;
 
 /**
  * 门店经营流水盘点台账行 VO（盘点详情 / 产品盘点历史共用，STORE-LEDGER-001）。
@@ -109,5 +109,5 @@ public class StoreDailyLedgerVo implements Serializable {
     @ExcelProperty(value = "盘点时间")
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     @DateTimeFormat("yyyy-MM-dd HH:mm:ss")
-    private LocalDateTime createTime;
+    private Date createTime;
 }

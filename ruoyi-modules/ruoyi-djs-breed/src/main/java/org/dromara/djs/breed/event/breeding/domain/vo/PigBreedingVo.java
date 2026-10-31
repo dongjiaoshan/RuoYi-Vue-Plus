@@ -11,6 +11,7 @@ import org.dromara.djs.breed.event.breeding.domain.PigBreeding;
 import java.io.Serial;
 import java.io.Serializable;
 import java.time.LocalDateTime;
+import java.util.Date;
 
 /**
  * 配种记录视图（BRD-EVENT-002 BREED）。
@@ -59,5 +60,5 @@ public class PigBreedingVo implements Serializable {
     private String remark;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
-    private LocalDateTime createTime;
+    private Date createTime;
 }

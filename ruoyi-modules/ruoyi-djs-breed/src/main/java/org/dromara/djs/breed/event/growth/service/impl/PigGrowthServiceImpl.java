@@ -446,10 +446,7 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
         v.setBarnName(e.getBarnName());
         v.setPenName(e.getPenName());
         v.setRemark(e.getRemark());
-        Date created = e.getCreateTime();
-        if (created != null) {
-            v.setCreateTime(created.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime());
-        }
+        v.setCreateTime(e.getCreateTime());
         return v;
     }
 }

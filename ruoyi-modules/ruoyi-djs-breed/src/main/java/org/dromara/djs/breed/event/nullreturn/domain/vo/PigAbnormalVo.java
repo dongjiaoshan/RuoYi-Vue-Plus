@@ -11,6 +11,7 @@ import org.dromara.djs.breed.event.nullreturn.domain.PigAbnormal;
 import java.io.Serial;
 import java.io.Serializable;
 import java.time.LocalDateTime;
+import java.util.Date;
 
 /** 返空流记录视图（BRD-EVENT-002 NULL_RETURN）。 */
 @Data
@@ -59,5 +60,5 @@ public class PigAbnormalVo implements Serializable {
     private String remark;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
-    private LocalDateTime createTime;
+    private Date createTime;
 }

@@ -11,6 +11,7 @@ import org.dromara.djs.breed.event.transfer.domain.PigTransfer;
 import java.io.Serial;
 import java.io.Serializable;
 import java.time.LocalDateTime;
+import java.util.Date;
 
 /**
  * 转移记录视图（BRD-EVENT-004 TRANSFER）。
@@ -51,5 +52,5 @@ public class PigTransferVo implements Serializable {
     private String remark;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
-    private LocalDateTime createTime;
+    private Date createTime;
 }

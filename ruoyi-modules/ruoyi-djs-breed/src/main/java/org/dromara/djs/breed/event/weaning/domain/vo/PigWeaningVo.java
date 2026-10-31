@@ -12,6 +12,7 @@ import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Date;
 import java.util.List;
 
 /**
@@ -83,7 +84,7 @@ public class PigWeaningVo implements Serializable {
     private String remark;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
-    private LocalDateTime createTime;
+    private Date createTime;
 
     /** 逐头录重明细（BRD-FIX-MP-EVENT-BREED-IA-001；录入回显 / 记录回看用）。 */
     private List<PigWeaningDetailVo> details;

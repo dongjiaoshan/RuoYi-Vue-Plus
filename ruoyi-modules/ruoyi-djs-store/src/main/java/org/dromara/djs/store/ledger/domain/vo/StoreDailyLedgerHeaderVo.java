@@ -8,7 +8,7 @@ import org.dromara.common.translation.constant.TransConstant;
 import java.io.Serial;
 import java.io.Serializable;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
+import java.util.Date;
 
 /**
  * 门店盘点单表头 VO（STORE-LEDGER-001 盘点列表，按 门店 + 盘点日期 分组聚合）。
@@ -45,5 +45,5 @@ public class StoreDailyLedgerHeaderVo implements Serializable {
 
     /** 盘点时间（该组最早创建时间）。 */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
-    private LocalDateTime checkTime;
+    private Date checkTime;
 }
