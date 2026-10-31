@@ -824,7 +824,7 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             h.setLineCount(h.getLineCount() + 1);
             // 盘点时间取该组最早创建时间
             if (r.getCreateTime() != null
-                && (h.getCheckTime() == null || r.getCreateTime().isBefore(h.getCheckTime()))) {
+                && (h.getCheckTime() == null || r.getCreateTime().before(h.getCheckTime()))) {
                 h.setCheckTime(r.getCreateTime());
             }
             if (h.getOperatorId() == null) {

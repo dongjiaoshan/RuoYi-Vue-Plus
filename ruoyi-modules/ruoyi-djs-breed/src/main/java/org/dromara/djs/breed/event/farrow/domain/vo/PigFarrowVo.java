@@ -12,6 +12,7 @@ import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Date;
 
 /**
  * 分娩记录视图（BRD-EVENT-002）。
@@ -80,7 +81,7 @@ public class PigFarrowVo implements Serializable {
     private String remark;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
-    private LocalDateTime createTime;
+    private Date createTime;
 
     /** 已贴耳标头数（用于 mp 端"分娩 picker"显示"已贴/活产"，列表场景可空）。 */
     private Integer tagged;

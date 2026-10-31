@@ -16,6 +16,7 @@ import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Date;
 
 /**
  * 门店退回管理 VO（admin 列表 / 详情 / 导出共用，STR-RETURN-001）。
@@ -143,5 +144,5 @@ public class StoreReturnVo implements Serializable {
     @ExcelProperty(value = "创建时间")
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     @DateTimeFormat("yyyy-MM-dd HH:mm:ss")
-    private LocalDateTime createTime;
+    private Date createTime;
 }

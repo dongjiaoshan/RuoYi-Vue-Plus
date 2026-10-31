@@ -9,6 +9,7 @@ import org.dromara.djs.breed.event.castrate.domain.CastrateRecord;
 import java.io.Serial;
 import java.io.Serializable;
 import java.time.LocalDateTime;
+import java.util.Date;
 
 /**
  * 阉割记录视图（BRD-EVENT-004 CASTRATE）。
@@ -56,5 +57,5 @@ public class CastrateRecordVo implements Serializable {
     private String pigBreedName;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
-    private LocalDateTime createTime;
+    private Date createTime;
 }
