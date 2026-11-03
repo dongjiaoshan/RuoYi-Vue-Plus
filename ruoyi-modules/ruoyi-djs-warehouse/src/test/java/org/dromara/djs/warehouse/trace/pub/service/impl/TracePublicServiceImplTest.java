@@ -642,6 +642,64 @@ class TracePublicServiceImplTest {
         }
     }
 
+    @Test
+    @DisplayName("veg 码农事记录：本批那一茬种植日起、到本批采摘日为止的农事，按农事日期倒序（V7 row33）")
+    @SuppressWarnings("unchecked")
+    void getByProduceCode_veg_plotRecordsWithinBatchDesc() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(VEG_CODE);
+        code.setCodeType("veg");
+        code.setProductId(PRODUCT_ID);
+        code.setPlotId(PLOT_ID);
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+
+        PlotInfo plot = new PlotInfo();
+        plot.setId(PLOT_ID);
+        plot.setPlotCode("东区3号地块");
+        when(plotInfoMapper.selectById(PLOT_ID)).thenReturn(plot);
+
+        // 本批打包 9/20（无领用流水 → 锚点退到打包日）
+        ProductProduction pack = new ProductProduction();
+        pack.setTraceCode(VEG_CODE);
+        pack.setProduceTime(java.sql.Timestamp.valueOf(LocalDateTime.of(2026, 9, 20, 9, 0)));
+        when(productProductionMapper.selectOne(any(Wrapper.class))).thenReturn(pack);
+
+        PlantingRecord planting = new PlantingRecord();
+        planting.setPlotId(PLOT_ID);
+        planting.setPlantDate(java.sql.Date.valueOf(LocalDate.of(2026, 9, 1)));
+        planting.setHarvestDate(java.sql.Date.valueOf(LocalDate.of(2026, 9, 15)));
+        ArgumentCaptor<Wrapper<PlantingRecord>> plantingCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        when(plantingRecordMapper.selectOne(plantingCaptor.capture())).thenReturn(planting);
+
+        // 同茬 9/5 补种的明细不算下一茬：下一茬只认本茬开始采摘（9/15）之后种下的
+        ArgumentCaptor<Wrapper<PlantDetails>> detailCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        when(plantDetailsMapper.selectOne(detailCaptor.capture())).thenReturn(null);
+
+        ArgumentCaptor<Wrapper<FarmRecords>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        when(farmRecordsMapper.selectList(captor.capture())).thenReturn(List.of());
+
+        service.getByProduceCode(VEG_CODE);
+
+        LambdaQueryWrapper<PlantingRecord> plantingQuery = (LambdaQueryWrapper<PlantingRecord>) plantingCaptor.getAllValues().get(0);
+        assertThat(plantingQuery.getSqlSegment()).contains("harvest_date <=").containsPattern("ORDER BY harvest_date DESC");
+        assertThat(plantingQuery.getParamNameValuePairs()).containsValue(LocalDate.of(2026, 9, 20));
+
+        assertThat(detailCaptor.getAllValues())
+            .map(w -> (LambdaQueryWrapper<PlantDetails>) w)
+            .anySatisfy(w -> {
+                assertThat(w.getSqlSegment()).contains("begin_actualdate >");
+                assertThat(w.getParamNameValuePairs()).containsValue(LocalDate.of(2026, 9, 15));
+            });
+
+        LambdaQueryWrapper<FarmRecords> wrapper = (LambdaQueryWrapper<FarmRecords>) captor.getValue();
+        String sql = wrapper.getSqlSegment();
+        assertThat(sql).contains("farm_date >=").contains("farm_date <=");
+        assertThat(sql).containsPattern("ORDER BY farm_date DESC\\s*,\\s*id DESC");
+        assertThat(wrapper.getParamNameValuePairs())
+            .containsValue(LocalDate.of(2026, 9, 1))
+            .containsValue(LocalDate.of(2026, 9, 20));
+    }
+
     /** D-0119 第一步会先查一条生产领用出库流水拿库位；这里造那条。 */
     private static StockFlow pickFlow(Long locationId) {
         StockFlow pick = new StockFlow();

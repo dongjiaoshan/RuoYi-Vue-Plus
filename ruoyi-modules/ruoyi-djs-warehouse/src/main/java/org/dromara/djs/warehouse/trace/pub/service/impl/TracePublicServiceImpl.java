@@ -703,6 +703,14 @@ public class TracePublicServiceImpl
             }
         }
 
+        // 本批采摘时刻（D-0119）：同时是时间轴采摘节点，也是认定「当次种植」是哪一茬的锚点
+        Date packTime = packTime(pack);
+        LocalDateTime harvestInbound = pack == null ? null
+            : resolveHarvestInboundTime(pack.getMaterialId(), code.getPlotId(), packTime);
+        // 仓库种植记录（当次种植日 / 采摘兜底时间源）：农事过滤与时间轴种植节点共用同一条，两处口径不分叉
+        LocalDate batchDate = resolveBatchDate(code, harvestInbound, packTime);
+        PlantingRecord planting = findPlantingRecord(code.getPlotId(), code.getProductId(), batchDate);
+
         // 地块 + 片区
         if (code.getPlotId() != null) {
             PlotInfo plot = plotInfoMapper.selectById(code.getPlotId());
@@ -724,12 +732,21 @@ public class TracePublicServiceImpl
                     vo.getProduct().setPlotName(plot.getPlotCode());
                 }
             }
-            // 地块农事（row63：过滤掉采摘 / 采摘活动，追溯页只显真实农事工序）
+            // 地块农事（row63：过滤掉采摘 / 采摘活动，追溯页只显真实农事工序）。
+            // V7 row33：只取本批那一茬种植日起、到本批采摘日为止且早于下一茬种植的农事（上一茬的翻耕/退茬、
+            // 采完之后为下一茬做的整地、下一茬的农事都与这批货无关），按农事日期倒序；取不到的一端不截断。
+            LocalDate sowDate = resolveSowDate(code, planting, batchDate);
+            LocalDate nextSowDate = findNextSowDate(code.getPlotId(),
+                planting != null && planting.getHarvestDate() != null ? toLocalDate(planting.getHarvestDate()) : sowDate);
             List<FarmRecords> records = farmRecordsMapper.selectList(
                 new LambdaQueryWrapper<FarmRecords>()
                     .eq(FarmRecords::getPlotId, code.getPlotId())
                     .notIn(FarmRecords::getFarmType, VEG_PLOT_RECORD_EXCLUDED)
-                    .orderByAsc(FarmRecords::getFarmDate));
+                    .ge(sowDate != null, FarmRecords::getFarmDate, sowDate)
+                    .le(batchDate != null, FarmRecords::getFarmDate, batchDate)
+                    .lt(nextSowDate != null, FarmRecords::getFarmDate, nextSowDate)
+                    .orderByDesc(FarmRecords::getFarmDate)
+                    .orderByDesc(FarmRecords::getId));
             vo.setPlotRecords(toPlotRecordRows(records));
             // 该地块历史种植作物（与农事记录并存）
             vo.setPlotCropHistory(buildPlotCropHistory(code.getPlotId()));
@@ -739,7 +756,7 @@ public class TracePublicServiceImpl
         }
 
         // ④ 时间轴重构成 5 节点：种植 / 采摘 / 产品生产 / 冷链发货 / 到店（row62）
-        appendVegProcessNodes(timeline, code, pack);
+        appendVegProcessNodes(timeline, code, pack, planting, harvestInbound, batchDate);
 
         // 有机证书（作物认证 + 地块认证，图 ossId 解析 url）
         vo.setOrganicCerts(buildOrganicCerts(code));
@@ -866,15 +883,14 @@ public class TracePublicServiceImpl
      * 按 {@code trace_time} 倒序（最新在上，对齐原型「由下至上：种植→到店」）。</p>
      */
     private void appendVegProcessNodes(List<PublicTraceVo.TimelineNode> timeline,
-                                       TraceCode code, ProductProduction pack) {
+                                       TraceCode code, ProductProduction pack,
+                                       PlantingRecord planting, LocalDateTime harvestInbound,
+                                       LocalDate batchDate) {
         if (timeline == null) {
             return;
         }
         // 去掉基础 in_stock 事件节点：产品生产改用下方打包节点，不再另显入库
         timeline.removeIf(n -> TraceContentConst.IN_STOCK.equals(n.getTraceContent()));
-
-        // 仓库种植记录（种植 / 采摘兜底时间源）：按 plot_id + product_id 取一条
-        PlantingRecord planting = findPlantingRecord(code.getPlotId(), code.getProductId());
 
         // 邓博 row19：种植 / 采摘节点写班组名（非人员名）；取仓库种植记录的 team_name，无则 null。
         String teamName = planting != null ? planting.getTeamName() : null;
@@ -886,10 +902,8 @@ public class TracePublicServiceImpl
         LocalDate harvestDate = code.getHarvestDate() != null
             ? code.getHarvestDate()
             : (planting != null ? toLocalDate(planting.getHarvestDate()) : null);
-        Date packTime = pack == null ? null
-            : (pack.getProduceTime() != null ? pack.getProduceTime() : pack.getProduceDate());
-        LocalDateTime harvestTime = pack == null ? null
-            : resolveHarvestInboundTime(pack.getMaterialId(), code.getPlotId(), packTime);
+        Date packTime = packTime(pack);
+        LocalDateTime harvestTime = harvestInbound;
         if (harvestTime == null) {
             harvestTime = planting != null ? toLocalDateTime(planting.getDataDate()) : null;
         }
@@ -900,11 +914,8 @@ public class TracePublicServiceImpl
         // 种植（种植完成时间）：plant_date 为 DATE 无时分秒，取该地块种植明细录入时刻
         // plant_details.create_time（DATETIME，有真实时分秒）近似；无明细或晚于采摘时间则退化种植日 0 点
         // （保证时间轴顺序 种植 ≤ 采摘 ≤ 产品生产，不倒挂）。
-        LocalDate sowDate = planting != null ? toLocalDate(planting.getPlantDate()) : null;
-        if (sowDate == null && code.getHarvestDate() != null && code.getPlantDays() != null) {
-            sowDate = code.getHarvestDate().minusDays(code.getPlantDays());
-        }
-        LocalDateTime sowTime = resolvePlantRecordTime(code.getPlotId());
+        LocalDate sowDate = resolveSowDate(code, planting, batchDate);
+        LocalDateTime sowTime = resolvePlantRecordTime(code.getPlotId(), sowDate);
         if (sowTime == null || (harvestTime != null && sowTime.isAfter(harvestTime))) {
             sowTime = atDayStart(sowDate);
         }
@@ -923,32 +934,114 @@ public class TracePublicServiceImpl
     }
 
     /**
-     * 仓库种植记录：优先按 plot_id + product_id 取最近一条；exact 命中不到（种植记录 product_id 常为 NULL、
-     * 与追溯码 product_id 对不上）则退化为仅按 plot_id 取该地块最近一条——否则果蔬追溯的种植/采摘节点会因 join key
-     * 对不上被整体跳过（row74）。
+     * 追溯作物当次种植日：仓库种植记录 plant_date；缺则取该地块同作物、开工日 ≤ 本批锚点的最近一条种植明细开工日；
+     * 再缺用追溯码 采摘日 − 生长天数 推算；都没有返 null。
+     * 时间轴「种植」节点与农事记录起始日共用，保证页面上两处是同一天。
      */
-    private PlantingRecord findPlantingRecord(Long plotId, Long productId) {
+    private LocalDate resolveSowDate(TraceCode code, PlantingRecord planting, LocalDate batchDate) {
+        LocalDate sowDate = planting != null ? toLocalDate(planting.getPlantDate()) : null;
+        if (sowDate == null && planting != null && planting.getCropId() != null) {
+            PlantDetails detail = plantDetailsMapper.selectOne(
+                new LambdaQueryWrapper<PlantDetails>()
+                    .eq(PlantDetails::getPlotId, planting.getPlotId())
+                    .eq(PlantDetails::getCropId, planting.getCropId())
+                    .isNotNull(PlantDetails::getBeginActualdate)
+                    .le(batchDate != null, PlantDetails::getBeginActualdate, batchDate)
+                    .orderByDesc(PlantDetails::getBeginActualdate)
+                    .orderByDesc(PlantDetails::getId)
+                    .last("limit 1"));
+            sowDate = detail != null ? detail.getBeginActualdate() : null;
+        }
+        if (sowDate == null && code.getHarvestDate() != null && code.getPlantDays() != null) {
+            sowDate = code.getHarvestDate().minusDays(code.getPlantDays());
+        }
+        return sowDate;
+    }
+
+    /**
+     * 该地块在本茬之后的下一茬实际种植日：种植明细 begin_actualdate &gt; after 的最早一条；没有下一茬返 null。
+     * after 传本茬开始采摘日（仓库种植记录 harvest_date，缺则本茬种植日）——同一茬里套种 / 分批补种的明细
+     * 都在开始采摘之前，不能当成下一茬把本茬农事截掉。
+     * 取种植明细而非仓库种植记录：后者在开始采摘后才写入，下一茬刚种下还没采时查不到。
+     */
+    private LocalDate findNextSowDate(Long plotId, LocalDate after) {
+        if (plotId == null || after == null) {
+            return null;
+        }
+        PlantDetails next = plantDetailsMapper.selectOne(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlotId, plotId)
+                .gt(PlantDetails::getBeginActualdate, after)
+                .orderByAsc(PlantDetails::getBeginActualdate)
+                .orderByAsc(PlantDetails::getId)
+                .last("limit 1"));
+        return next != null ? next.getBeginActualdate() : null;
+    }
+
+    /** 打包时刻：produce_time 优先，缺则 produce_date；无打包记录返 null。 */
+    private Date packTime(ProductProduction pack) {
+        if (pack == null) {
+            return null;
+        }
+        return pack.getProduceTime() != null ? pack.getProduceTime() : pack.getProduceDate();
+    }
+
+    /**
+     * 本追溯码这一批的日期锚点：本批采摘入库日（D-0119）→ 打包日 → 追溯码采摘日；都没有返 null。
+     * 用来认定「当次种植」是哪一茬（同一地块多茬时不能取最新一茬，否则上一茬的码会套上下一茬的种植日），
+     * 也是追溯页农事记录的截止日。
+     */
+    private LocalDate resolveBatchDate(TraceCode code, LocalDateTime harvestInbound, Date packTime) {
+        if (harvestInbound != null) {
+            return harvestInbound.toLocalDate();
+        }
+        if (packTime != null) {
+            return toLocalDate(packTime);
+        }
+        return code.getHarvestDate();
+    }
+
+    /**
+     * 仓库种植记录（本批那一茬）。有日期锚点时：先取该地块 harvest_date ≤ 锚点的最近一条（已采过的那一茬；
+     * 打包前下一茬已种下、或本茬 plant_date 为空都不会认错），没有再取 plant_date ≤ 锚点的最近一茬；
+     * 无锚点时退化为该地块 harvest_date 最近一条。
+     * 每一步都先按 plot_id + product_id；exact 命中不到（种植记录 product_id 常为 NULL、与追溯码 product_id 对不上）
+     * 则退化为仅按 plot_id——否则果蔬追溯的种植/采摘节点会因 join key 对不上被整体跳过（row74）。
+     */
+    private PlantingRecord findPlantingRecord(Long plotId, Long productId, LocalDate batchDate) {
         if (plotId == null) {
             return null;
         }
+        if (batchDate == null) {
+            return selectPlanting(plotId, productId, q -> q.orderByDesc(PlantingRecord::getHarvestDate));
+        }
+        PlantingRecord harvested = selectPlanting(plotId, productId,
+            q -> q.le(PlantingRecord::getHarvestDate, batchDate).orderByDesc(PlantingRecord::getHarvestDate));
+        if (harvested != null) {
+            return harvested;
+        }
+        return selectPlanting(plotId, productId,
+            q -> q.le(PlantingRecord::getPlantDate, batchDate).orderByDesc(PlantingRecord::getPlantDate));
+    }
+
+    private PlantingRecord selectPlanting(Long plotId, Long productId,
+                                          java.util.function.Consumer<LambdaQueryWrapper<PlantingRecord>> condition) {
         if (productId != null) {
             PlantingRecord exact = plantingRecordMapper.selectOne(
-                new LambdaQueryWrapper<PlantingRecord>()
-                    .eq(PlantingRecord::getPlotId, plotId)
-                    .eq(PlantingRecord::getProductId, productId)
-                    .orderByDesc(PlantingRecord::getHarvestDate)
-                    .orderByDesc(PlantingRecord::getId)
-                    .last("limit 1"));
+                plantingRecordQuery(plotId, condition).eq(PlantingRecord::getProductId, productId));
             if (exact != null) {
                 return exact;
             }
         }
-        return plantingRecordMapper.selectOne(
-            new LambdaQueryWrapper<PlantingRecord>()
-                .eq(PlantingRecord::getPlotId, plotId)
-                .orderByDesc(PlantingRecord::getHarvestDate)
-                .orderByDesc(PlantingRecord::getId)
-                .last("limit 1"));
+        return plantingRecordMapper.selectOne(plantingRecordQuery(plotId, condition));
+    }
+
+    private LambdaQueryWrapper<PlantingRecord> plantingRecordQuery(Long plotId,
+                                                                  java.util.function.Consumer<LambdaQueryWrapper<PlantingRecord>> condition) {
+        LambdaQueryWrapper<PlantingRecord> query = new LambdaQueryWrapper<PlantingRecord>()
+            .eq(PlantingRecord::getPlotId, plotId);
+        condition.accept(query);
+        return query.orderByDesc(PlantingRecord::getId).last("limit 1");
     }
 
     /**
@@ -1021,18 +1114,20 @@ public class TracePublicServiceImpl
     }
 
     /**
-     * 种植节点时分秒源：按 plot 取最近一条种植明细的 {@code create_time}（DATETIME，录入时刻，有时分秒）。
+     * 种植节点时分秒源：取本茬（开工日 = 当次种植日）种植明细的 {@code create_time}（DATETIME，录入时刻，有时分秒）；
+     * 当次种植日未知时按 plot 取最近一条。
      *
      * <p>种植日 {@code plant_date} 是 DATE 无时分秒，故用种植明细录入时刻近似「种植完成时间」（与产品生产节点
      * 取 produce_time 录入时刻同理）；无种植明细返 null（调用方退化种植日 0 点）。</p>
      */
-    private LocalDateTime resolvePlantRecordTime(Long plotId) {
+    private LocalDateTime resolvePlantRecordTime(Long plotId, LocalDate sowDate) {
         if (plotId == null) {
             return null;
         }
         PlantDetails detail = plantDetailsMapper.selectOne(
             new LambdaQueryWrapper<PlantDetails>()
                 .eq(PlantDetails::getPlotId, plotId)
+                .eq(sowDate != null, PlantDetails::getBeginActualdate, sowDate)
                 .orderByDesc(PlantDetails::getBeginActualdate)
                 .orderByDesc(PlantDetails::getId)
                 .last("limit 1"));
