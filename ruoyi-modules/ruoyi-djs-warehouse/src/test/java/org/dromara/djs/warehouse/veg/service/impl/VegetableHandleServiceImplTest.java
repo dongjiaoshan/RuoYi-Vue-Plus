@@ -938,6 +938,32 @@ class VegetableHandleServiceImplTest {
     }
 
     @Test
+    @DisplayName("D-0147 ③ 果蔬入库：秤读数落采摘入库流水；对不上实重 → 拒绝且一行不写")
+    void testHarvest_ScaleReadingStoredOnInboundFlow() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(harvestHandle("50.000"));
+        mockCropProduct();
+        mockFreshLocation();
+        when(bizCodeGenerator.generate(eq(BizCodeType.STOCK_FLOW_NO), anyMap())).thenReturn("F20260831IN0001");
+        org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo bo = harvestBo("30.000", 0, List.of(30001L));
+        bo.setGrossWeight(new BigDecimal("31.200"));
+        bo.setTareWeight(new BigDecimal("1.200"));
+
+        service.submitHarvest(bo);
+
+        ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(flowCap.capture());
+        assertThat(flowCap.getValue().getGrossWeight()).isEqualByComparingTo("31.200");
+        assertThat(flowCap.getValue().getTareWeight()).isEqualByComparingTo("1.200");
+
+        org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo bad = harvestBo("30.000", 0, List.of(30001L));
+        bad.setGrossWeight(new BigDecimal("31.200"));
+        bad.setTareWeight(new BigDecimal("1.000"));
+        assertThatThrownBy(() -> service.submitHarvest(bad)).isInstanceOf(ServiceException.class).hasMessageContaining("不一致");
+        verify(stockFlowMapper, times(1)).insert(any(StockFlow.class));
+    }
+
+    @Test
     @DisplayName("作物未配产出产品 + >0 kg → 拒绝录入，一行都不写（甲方 2026-10-24：没有对应产品不应能录入）")
     void testHarvest_NoCropProduct_PositiveWeight_Rejected() {
         PlantingRecord planting = samplePlanting("processing");

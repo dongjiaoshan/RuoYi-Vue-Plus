@@ -1,5 +1,6 @@
 package org.dromara.djs.warehouse.pack.service.impl;
 
+import org.dromara.djs.warehouse.tare.domain.ScaleReading;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -835,6 +836,8 @@ public class ProductProductionServiceImpl
     public Long submitWhiteBarOut(WhiteBarOutBo bo) {
         Long userId = currentUserIdSafe();
         Date now = new Date();
+        // D-0147 ③：领用称重页另带秤读数（成对 + 称重 − 去皮 = 出库重量），先于任何写库校验
+        ScaleReading reading = ScaleReading.of(bo.getGrossWeight(), bo.getTareWeight(), bo.getProductWeight());
 
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         ProductInfo product = productInfoMapper.selectById(src.getProductId());
@@ -900,7 +903,7 @@ public class ProductProductionServiceImpl
 
         // P3（邓博 row13）：白条离白条库 = 白条出库。补白条库出库流水（去向=发货月台）+ 扣白条库存行
         // （P2 燎毛按 product_id+ear_no+burn_id 建的白条行）。修「白条库出库记录缺失致库存不准」。
-        writeWhiteBarOutFlow(src, bo.getProductWeight(), STOCK_OUT_DEST_SHIP_DOCK, userId);
+        writeWhiteBarOutFlow(src, bo.getProductWeight(), STOCK_OUT_DEST_SHIP_DOCK, userId, reading);
 
         // bug5：发货月台出库漏记预冷损耗。补记预冷损耗（入白条库重 − 本次出库重，非负；为 0 时 record 自动跳过）。
         writePrecoolLossOnBarOut(src, bo.getProductWeight(), p.getId(), userId);
@@ -981,6 +984,8 @@ public class ProductProductionServiceImpl
     public Long submitWarehouseOut(WarehouseOutBo bo) {
         Long userId = currentUserIdSafe();
         Date now = new Date();
+        // D-0147 ③：领用称重页另带秤读数（成对 + 称重 − 去皮 = 出库重量），先于任何写库校验
+        ScaleReading reading = ScaleReading.of(bo.getGrossWeight(), bo.getTareWeight(), bo.getProductWeight());
 
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         ProductInfo product = productInfoMapper.selectById(src.getProductId());
@@ -1029,7 +1034,7 @@ public class ProductProductionServiceImpl
         consumeInhouse(src, src.getProductWeight());
 
         // 白条离白条库 = 白条出库：写「白条出库」流水（去向=用户选的 outDest）+ 扣白条库存行（与发货月台同范式）
-        writeWhiteBarOutFlow(src, bo.getProductWeight(), bo.getOutDest(), userId);
+        writeWhiteBarOutFlow(src, bo.getProductWeight(), bo.getOutDest(), userId, reading);
 
         // bug5 同因：仓库出库同样补记预冷损耗（入白条库重 − 本次出库重，非负；为 0 时 record 自动跳过）
         writePrecoolLossOnBarOut(src, bo.getProductWeight(), p.getId(), userId);
@@ -1097,7 +1102,8 @@ public class ProductProductionServiceImpl
      * 邓博 row17：每个半只篮只能领用一次（inhouse pickup_status 乐观锁），领用扣重后篮内残量
      * （入库重 − 领用重）无后续业务消费 → 同事务清零并写 loss 流水（{@link #drainBarResidualToLossFlow}）。</p>
      */
-    private void writeWhiteBarOutFlow(ProductInhouse src, BigDecimal weight, String dest, Long userId) {
+    private void writeWhiteBarOutFlow(ProductInhouse src, BigDecimal weight, String dest, Long userId,
+                                      ScaleReading reading) {
         Long warehouseId = src.getLocationId();
         Long drainedBasketId = null;
         if (StringUtils.isNotBlank(src.getWhiteBarNo())) {
@@ -1136,6 +1142,10 @@ public class ProductProductionServiceImpl
         out.setStockOutDest(dest);
         out.setChangeNum(weight.negate());
         out.setChangeQuantity(weight);
+        if (reading != null) {
+            out.setGrossWeight(reading.grossWeight());
+            out.setTareWeight(reading.tareWeight());
+        }
         out.setEarNo(src.getEarNo());
         out.setWhiteBarNo(src.getWhiteBarNo());
         out.setWhiteBarId(src.getWhiteBarId());

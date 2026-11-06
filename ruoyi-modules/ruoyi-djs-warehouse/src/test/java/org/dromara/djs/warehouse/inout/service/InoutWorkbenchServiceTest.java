@@ -261,4 +261,74 @@ class InoutWorkbenchServiceTest {
         verify(cutService,never()).submitCutDone(any());
     }
 
+    // ===== D-0147 ③：称重页另带称重 / 去皮 =====
+
+    void stubDirectBurn() {
+        var product=new BurnProductTypeVo(); product.setProductId(2L); product.setIsWhiteBar(false); product.setDefaultLocationId(10L);
+        when(burnService.queryProductTypes(1L)).thenReturn(List.of(product));
+        when(burnService.submitBurnRecord(any())).thenReturn(11L);
+        var source=new ProductInhouse(); source.setId(12L); source.setWhiteBarNo("WB1");
+        when(inhouseMapper.selectOne(any())).thenReturn(source);
+        var stock=new LocationStock(); stock.setId(13L); when(stockMapper.selectOne(any())).thenReturn(stock);
+        when(flowMapper.selectOne(any())).thenReturn(null,receipt(null));
+        when(flowMapper.updateById(any(StockFlow.class))).thenReturn(1);
+        when(inhouseMapper.deductWeightById(eq(12L), any())).thenReturn(1);
+        when(inhouseMapper.deleteById(12L)).thenReturn(1);
+    }
+    @Test void burnScaleReadingReachesInboundFlowAndIsBoundIntoTheReceiptFingerprint() {
+        stubDirectBurn();
+        var bo=burnBo(); bo.setGrossWeight(new BigDecimal("5.600")); bo.setTareWeight(new BigDecimal("0.600"));
+        service.submitBurn(bo);
+        var burn=ArgumentCaptor.forClass(org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo.class);
+        verify(burnService).submitBurnRecord(burn.capture());
+        var item=burn.getValue().getProductTypeItems().getFirst();
+        assertThat(item.getGrossWeight()).isEqualByComparingTo("5.6");
+        assertThat(item.getTareWeight()).isEqualByComparingTo("0.6");
+        var saved=ArgumentCaptor.forClass(StockFlow.class); verify(flowMapper).updateById(saved.capture());
+        assertThat(saved.getValue().getRequestHash()).isNotEqualTo(burnHash())
+            .isEqualTo(InoutWorkbenchService.withReading(burnHash(),
+                org.dromara.djs.warehouse.tare.domain.ScaleReading.of(new BigDecimal("5.6"), new BigDecimal("0.6"), new BigDecimal("5"))));
+    }
+    @Test void legacyBurnWithoutReadingStoresNullAndKeepsTheOldFingerprint() {
+        stubDirectBurn();
+        service.submitBurn(burnBo());
+        var burn=ArgumentCaptor.forClass(org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo.class);
+        verify(burnService).submitBurnRecord(burn.capture());
+        assertThat(burn.getValue().getProductTypeItems().getFirst().getGrossWeight()).isNull();
+        assertThat(burn.getValue().getProductTypeItems().getFirst().getTareWeight()).isNull();
+        var saved=ArgumentCaptor.forClass(StockFlow.class); verify(flowMapper).updateById(saved.capture());
+        assertThat(saved.getValue().getRequestHash()).isEqualTo(burnHash());
+    }
+    @Test void burnReadingThatDoesNotAddUpOrIsHalfSentIsRejectedBeforeAnyLookup() {
+        var bad=burnBo(); bad.setGrossWeight(new BigDecimal("6.000")); bad.setTareWeight(new BigDecimal("0.500"));
+        assertThatThrownBy(() -> service.submitBurn(bad)).isInstanceOf(ServiceException.class).hasMessageContaining("不一致");
+        var half=burnBo(); half.setGrossWeight(new BigDecimal("5.000"));
+        assertThatThrownBy(() -> service.submitBurn(half)).isInstanceOf(ServiceException.class).hasMessageContaining("同时提交");
+        verifyNoInteractions(flowMapper, burnService, barMapper, stockService);
+    }
+    @Test void cutScaleReadingReachesTheProducedPartAndMismatchIsRejected() {
+        var bo=new CutWorkbenchSubmitBo(); bo.setInhouseId(12L); bo.setProductId(2L); bo.setWeight(new BigDecimal("5"));
+        bo.setDestination("outbound"); bo.setOutDest("kitchen"); bo.setRequestId(KEY);
+        bo.setGrossWeight(new BigDecimal("5.4")); bo.setTareWeight(new BigDecimal("0.4"));
+        var source=new ProductInhouse(); source.setId(12L); source.setWhiteBarId(1L); source.setProductWeight(new BigDecimal("40"));
+        when(inhouseMapper.selectById(12L)).thenReturn(source); when(inhouseMapper.selectOne(any())).thenReturn(source);
+        var card=new CutWorkbenchBarVo(); card.setInhouseId(12L); when(workbenchMapper.selectUnpickedBars()).thenReturn(List.of(card));
+        var product=new CutProductTypeVo(); product.setProductId(2L); product.setDefaultLocationId(10L);
+        when(cutService.queryCutProductTypes()).thenReturn(List.of(product));
+        when(cutService.submitPickup(any())).thenReturn(20L);
+        when(cutService.submitCutOutWithReceipt(any())).thenReturn(List.of(new CutPartReceipt(500L,13L)));
+        when(flowMapper.selectById(500L)).thenReturn(receipt(null)); when(flowMapper.updateById(any(StockFlow.class))).thenReturn(1);
+        service.submitCut(bo);
+        var cut=ArgumentCaptor.forClass(org.dromara.djs.warehouse.cut.domain.bo.PigCutOutBo.class);
+        verify(cutService).submitCutOutWithReceipt(cut.capture());
+        assertThat(cut.getValue().getPartItems().getFirst().getGrossWeight()).isEqualByComparingTo("5.4");
+        assertThat(cut.getValue().getPartItems().getFirst().getTareWeight()).isEqualByComparingTo("0.4");
+        // 领用是按来源全重自动领，不是这次称重 → 领用单不带读数
+        var pickup=ArgumentCaptor.forClass(PigCutPickupBo.class); verify(cutService).submitPickup(pickup.capture());
+        assertThat(pickup.getValue().getGrossWeight()).isNull();
+
+        bo.setTareWeight(new BigDecimal("0.3"));
+        assertThatThrownBy(() -> service.submitCut(bo)).hasMessageContaining("不一致");
+    }
+
 }

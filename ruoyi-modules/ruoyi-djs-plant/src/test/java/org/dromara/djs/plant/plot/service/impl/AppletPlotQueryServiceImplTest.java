@@ -7,6 +7,7 @@ import org.dromara.djs.plant.plot.domain.vo.PlotPlantingStatVo;
 import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotCardVo;
 import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotFarmworkVo;
 import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotPlantingVo;
+import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotSummaryVo;
 import org.dromara.djs.plant.plot.mapper.AppletPlotQueryMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -143,6 +144,41 @@ class AppletPlotQueryServiceImplTest {
         assertThat(out.get(0).getTeamNames()).isEqualTo("一组");
         assertThat(out.get(1).getTeamNames()).isEqualTo("一组,二组");
         assertThat(out.get(1).getFarmTypeLabel()).isEqualTo("除草");
+    }
+
+    @Test
+    @DisplayName("summary：名称与状态都透传给统计 SQL（与 list 同一归一规则：trim / 空白=不过滤）")
+    void summaryPassesSameFiltersAsList() {
+        AppletPlotSummaryVo onlyPicking = new AppletPlotSummaryVo();
+        onlyPicking.setPlantingCount(0L);
+        onlyPicking.setPickingCount(4L);
+        onlyPicking.setIdleCount(0L);
+        when(plotQueryMapper.selectSummary(eq("A1"), eq(3))).thenReturn(onlyPicking);
+
+        AppletPlotSummaryVo out = service.summary("  A1 ", 3);
+
+        assertThat(out.getPickingCount()).isEqualTo(4L);
+        assertThat(out.getPlantingCount()).isZero();
+        assertThat(out.getIdleCount()).isZero();
+    }
+
+    @Test
+    @DisplayName("summary：空白名称不过滤；SQL 返 null / 空计数时三项兜底为 0")
+    void summaryBlankKeywordAndNullCountsDefaultZero() {
+        AppletPlotSummaryVo partial = new AppletPlotSummaryVo();
+        partial.setPlantingCount(7L);
+        when(plotQueryMapper.selectSummary(eq(null), eq(null))).thenReturn(partial);
+
+        AppletPlotSummaryVo out = service.summary("   ", null);
+        assertThat(out.getPlantingCount()).isEqualTo(7L);
+        assertThat(out.getPickingCount()).isZero();
+        assertThat(out.getIdleCount()).isZero();
+
+        when(plotQueryMapper.selectSummary(eq("无"), eq(1))).thenReturn(null);
+        AppletPlotSummaryVo none = service.summary("无", 1);
+        assertThat(none.getPlantingCount()).isZero();
+        assertThat(none.getPickingCount()).isZero();
+        assertThat(none.getIdleCount()).isZero();
     }
 
     private static AppletPlotPlantingVo planting(long id, String harvestStatus, String actual, String area) {

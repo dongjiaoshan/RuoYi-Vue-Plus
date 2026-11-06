@@ -66,6 +66,10 @@ public class PigCutPickupBo {
      */
     @DecimalMin(value = "0", inclusive = false, message = "领用称重须大于 0")
     private BigDecimal pickupWeight;
+    /** 称重（秤读数 kg，可选；D-0147 ③）。与 tareWeight 要么都不传，要么都传且 称重 − 去皮 = pickupWeight（传读数时 pickupWeight 必填）（误差 ≤ 0.001kg）。 */
+    private BigDecimal grossWeight;
+    /** 去皮重量（kg，可选；不去皮传 0；D-0147 ③）。 */
+    private BigDecimal tareWeight;
 
     /**
      * 出库人 / 领用人（FK → {@code sys_user.user_id}，可空）。

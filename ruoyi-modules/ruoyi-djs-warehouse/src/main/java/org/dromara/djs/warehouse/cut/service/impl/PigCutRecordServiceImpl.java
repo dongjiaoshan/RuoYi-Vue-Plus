@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.dromara.djs.warehouse.cross.service.MarketingAges;
+import org.dromara.djs.warehouse.tare.domain.ScaleReading;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -225,6 +226,8 @@ public class PigCutRecordServiceImpl
     @Transactional(rollbackFor = Exception.class)
     public Long submitPickup(PigCutPickupBo bo) {
         Long userId = LoginHelper.getUserId();
+        // D-0147 ③：领用称重页另带秤读数（成对 + 称重 − 去皮 = 领用称重），先于任何写库校验
+        ScaleReading reading = ScaleReading.of(bo.getGrossWeight(), bo.getTareWeight(), bo.getPickupWeight());
 
         // Step 1：SELECT bar_info。邓博 row14 按半只领用：一头猪可分多次领（领一个半只后 bar 已转
         // pending_cut/cutting），故允许从 in_stock / pending_cut / cutting 继续领剩余产出行；
@@ -247,15 +250,15 @@ public class PigCutRecordServiceImpl
         // FIX-WMS-CUTPICKUP-SPLIT-001：admin 按燎毛产出行逐条领用（inhouseId 非空）→ 拆条路径；
         // mp 旧端 / 整只兜底（inhouseId 空）→ 整猪路径（行为同旧）。
         if (bo.getInhouseId() != null) {
-            return pickupByInhouseRow(bo, bar, userId);
+            return pickupByInhouseRow(bo, bar, userId, reading);
         }
-        return pickupWholeBar(bo, bar, userId);
+        return pickupWholeBar(bo, bar, userId, reading);
     }
 
     /**
      * 整猪领用（mp 旧端 / 白条无燎毛产出行兜底）：推 bar in_stock→pending_cut + 建一个整猪 cut_record。
      */
-    private Long pickupWholeBar(PigCutPickupBo bo, BarInfo bar, Long userId) {
+    private Long pickupWholeBar(PigCutPickupBo bo, BarInfo bar, Long userId, ScaleReading reading) {
         // 领用称重：现场录入优先，未录入回落 in_weight 快照（兼容 mp 旧端 / 不录重场景）
         BigDecimal pickupWeight = bo.getPickupWeight() != null ? bo.getPickupWeight() : bar.getInWeight();
         // 校验：领用称重不应大于该白条出栏重量（marketing_weight）
@@ -292,13 +295,14 @@ public class PigCutRecordServiceImpl
             if (marked == 0) {
                 continue;
             }
-            writeBarCutOutFlow(r, r.getProductWeight(), userId, true);
+            // 整只路径逐产出行按燎毛入库重出库，流水量 ≠ 本次领用称重 → 秤读数只落分割单（下方 insertCutRecord）
+            writeBarCutOutFlow(r, r.getProductWeight(), userId, true, null);
         }
         // mp 整只兜底路径：无逐产出行拆分，建整猪 cut_record（whiteBarNo=null → 剩余/超量回落 white_bar_id）。
         // 预冷按整只：inWeight = bar.in_weight（整猪入库重）；产品维度走通用白条产品 id（无逐行产品）。
         return insertCutRecord(bar, pickupWeight, bar.getInWeight(), bo.getLocationId(), bo.getTargetStoreId(),
             bo.getTargetDemandId(), bo.getIsHalf() == null ? 2 : bo.getIsHalf(), bo.getRemark(),
-            resolveOperatorId(bo, userId), null, resolveWhiteBarProductId());
+            resolveOperatorId(bo, userId), null, resolveWhiteBarProductId(), reading);
     }
 
     /**
@@ -308,7 +312,7 @@ public class PigCutRecordServiceImpl
      *
      * @return 领满 → 新 cut_record id；未领满（还有其他半只待领）→ {@code null}
      */
-    private Long pickupByInhouseRow(PigCutPickupBo bo, BarInfo bar, Long userId) {
+    private Long pickupByInhouseRow(PigCutPickupBo bo, BarInfo bar, Long userId, ScaleReading reading) {
         ProductInhouse row = productInhouseMapper.selectById(bo.getInhouseId());
         if (row == null || !bar.getId().equals(row.getWhiteBarId())) {
             throw new ServiceException("燎毛产出行不存在或不属于该白条：" + bo.getInhouseId());
@@ -351,7 +355,7 @@ public class PigCutRecordServiceImpl
         }
         // 白条领用到分割间 = 白条出白条库：扣该半只库存行(by white_bar_no) + 写白条出库流水（去向=白条分割）。
         // 本次补号的行（外购/旧数据）白条库本就无该篮子 → stockRequired=false 走降级；原生带号的现代燎毛行必须命中篮子。
-        writeBarCutOutFlow(row, rowWeight, userId, !barNoGenerated);
+        writeBarCutOutFlow(row, rowWeight, userId, !barNoGenerated, reading);
         // 邓博 row14 修复：按半只 surface —— 每领一个产出行即建独立 cut_record（picked）+ 推 bar pending_cut，
         // 立即在白条分割车间可见可分割，不再等整头猪所有产出行领完才建 cut_record（原 finalize 逻辑=「领半只后分割车间看不到」根因）。
         // bar → pending_cut 幂等（已 pending_cut/cutting → affected=0 不抛）；剩余未领行仍可继续领（picker 含 pending_cut/cutting）。
@@ -362,7 +366,7 @@ public class PigCutRecordServiceImpl
         // 预冷按白条：inWeight = 该燎毛产出行半只入库重（row.product_weight）减本行领用重 rowWeight；产品维度=该产出行产品。
         return insertCutRecord(bar, rowWeight, row.getProductWeight(), bo.getLocationId(), bo.getTargetStoreId(),
             bo.getTargetDemandId(), isHalf, bo.getRemark(), resolveOperatorId(bo, userId), whiteBarNo,
-            row.getProductId());
+            row.getProductId(), reading);
     }
 
     /**
@@ -389,7 +393,8 @@ public class PigCutRecordServiceImpl
      * 邓博 row17：每个半只篮只能领用一次（pickup_status 乐观锁），领用扣重后篮内残量（入库重 −
      * 领用重）无后续业务消费 → 同事务清零并写 loss 流水（{@link #drainBarResidualToLossFlow}）。</p>
      */
-    private void writeBarCutOutFlow(ProductInhouse row, BigDecimal weight, Long userId, boolean stockRequired) {
+    private void writeBarCutOutFlow(ProductInhouse row, BigDecimal weight, Long userId, boolean stockRequired,
+                                    ScaleReading reading) {
         Long warehouseId = row.getLocationId();
         Long drainedBasketId = null;
         if (StringUtils.isNotBlank(row.getWhiteBarNo())) {
@@ -431,6 +436,7 @@ public class PigCutRecordServiceImpl
         out.setStockOutDest(STOCK_OUT_DEST_BAR_CUT);
         out.setChangeNum(weight.negate());
         out.setChangeQuantity(weight);
+        applyReading(out, reading);
         out.setEarNo(row.getEarNo());
         out.setWhiteBarNo(row.getWhiteBarNo());
         out.setWhiteBarId(row.getWhiteBarId());
@@ -531,7 +537,8 @@ public class PigCutRecordServiceImpl
      */
     private Long insertCutRecord(BarInfo bar, BigDecimal pickupWeight, BigDecimal inWeight, Long locationId,
                                  Long targetStoreId, Long targetDemandId, int isHalf,
-                                 String remark, Long operatorId, String whiteBarNo, Long productId) {
+                                 String remark, Long operatorId, String whiteBarNo, Long productId,
+                                 ScaleReading reading) {
         PigCutRecord record = new PigCutRecord();
         record.setCutId(generateCutId());
         record.setWhiteBarId(bar.getId());
@@ -541,6 +548,10 @@ public class PigCutRecordServiceImpl
         Date pickupTime = new Date();
         record.setPickupTime(pickupTime);
         record.setPickupWeight(pickupWeight);
+        if (reading != null) {
+            record.setGrossWeight(reading.grossWeight());
+            record.setTareWeight(reading.tareWeight());
+        }
         // 白条领用表：分割车间领用 out_type=cut；排酸时长 = 领用出库时间 − 白条入库时间（row204，领用时一次写定，
         // 分割完成不再覆盖）。bar.in_time 缺失 → acid 留 null 不瞎编。
         record.setOutType(OUT_TYPE_CUT);
@@ -674,6 +685,11 @@ public class PigCutRecordServiceImpl
         PigCutOutBo bo, boolean includeLegacySummaryFlow) {
         List<org.dromara.djs.warehouse.cut.domain.vo.CutPartReceipt> receipts = new ArrayList<>();
         Long userId = LoginHelper.getUserId();
+        // D-0147 ③：每个部位一次称重，秤读数先于任何写库校验（成对 + 称重 − 去皮 = 该部位实重）
+        Map<PigCutOutBo.PartItem, ScaleReading> readings = new java.util.IdentityHashMap<>();
+        for (PigCutOutBo.PartItem part : bo.getPartItems()) {
+            readings.put(part, ScaleReading.of(part.getGrossWeight(), part.getTareWeight(), part.getProductWeight()));
+        }
 
         // Step 1：SELECT cut_record，校验 cut_status='picked' or 'cutting'
         PigCutRecord record = baseMapper.selectById(bo.getCutRecordId());
@@ -815,6 +831,7 @@ public class PigCutRecordServiceImpl
             flowIn.setFlowType(FLOW_TYPE_CUT_OUT_IN);
             flowIn.setChangeNum(part.getProductWeight());
             flowIn.setChangeQuantity(part.getProductWeight());
+            applyReading(flowIn, readings.get(part));
             flowIn.setEarNo(record.getEarNo());
             // 分割产出按 white_bar_id 关联白条（外购无耳号也稳定可聚合）+ 按 white_bar_no 关联半只
             // （邓博 row14：剩余可分割/超量校验按半只聚合，一头猪多半只互不串扣；旧记录 white_bar_no 空回落整猪）
@@ -1109,9 +1126,9 @@ public class PigCutRecordServiceImpl
                 rowsByBar.computeIfAbsent(r.getWhiteBarId(), k -> new ArrayList<>()).add(r);
             }
         }
-        // row145：卡片显示出栏日龄 —— 一次 IN 批量取出栏记录里冻结的 age_days（不 N+1）。
+        // row145 / D-0152 ②：卡片显示接收时日龄 —— 一次 IN 批量取出栏冻结 age_days + 一次 IN 取各白条接收时间（不 N+1）。
         // 外购白条无耳号、无出栏记录（外购不走出栏流程）的，Map 里没有该键 → 留 null，前端不渲染那格。
-        MarketingAges ages = MarketingAges.load(pigQueryService, bars);
+        MarketingAges ages = loadAges(bars);
         List<BarPickupItemVo> result = new ArrayList<>();
         for (BarInfo bar : bars) {
             List<ProductInhouse> rs = rowsByBar.get(bar.getId());
@@ -1154,7 +1171,7 @@ public class PigCutRecordServiceImpl
         // 到场时间/到场重量按整头猪取（燎毛前一次过磅，同一 bar 的各半只产出行共享），mp 白条出库卡第 2 行用
         vo.setArriveTime(bar.getArriveTime());
         vo.setArriveWeight(bar.getArriveWeight());
-        // row145：出栏当时日龄，读出栏记录冻结值（不现算，不随日后订正出生日期而变）
+        // row145 / D-0152 ②：接收时日龄 = 出栏冻结值 + 出栏→接收天数（不从出生日期现算）
         vo.setAgeDays(ages.of(bar));
         if (row != null) {
             vo.setInhouseId(row.getId());
@@ -1575,4 +1592,44 @@ public class PigCutRecordServiceImpl
         return wrapper;
     }
 
+
+    @Override
+    public void fillAgeDays(List<PigCutRecordVo> list) {
+        if (list == null || list.isEmpty()) {
+            return;
+        }
+        List<Long> barIds = list.stream().map(PigCutRecordVo::getWhiteBarId).filter(Objects::nonNull).distinct().toList();
+        if (barIds.isEmpty()) {
+            return;
+        }
+        List<BarInfo> bars = barInfoMapper.selectBatchIds(barIds);
+        MarketingAges ages = loadAges(bars);
+        Map<Long, BarInfo> barById = bars.stream().collect(Collectors.toMap(BarInfo::getId, b -> b, (x, y) -> x));
+        for (PigCutRecordVo vo : list) {
+            BarInfo bar = vo.getWhiteBarId() == null ? null : barById.get(vo.getWhiteBarId());
+            vo.setAgeDays(bar == null ? null : ages.of(bar));
+        }
+    }
+
+    /** 这批白条的接收时日龄：出栏冻结日龄 + 各白条最早燎毛入库流水日（白条沿用自身 bar_info 的接收日）。 */
+    private MarketingAges loadAges(List<BarInfo> bars) {
+        List<Long> ids = bars.stream().map(BarInfo::getId).filter(Objects::nonNull).toList();
+        Map<Long, Date> receiveTimes = new HashMap<>();
+        if (!ids.isEmpty()) {
+            for (org.dromara.djs.warehouse.burn.domain.vo.BurnInboundVo v : stockFlowMapper.selectFirstBurnInboundTimes(ids)) {
+                if (v.getBarInfoId() != null && v.getFlowTime() != null) {
+                    receiveTimes.merge(v.getBarInfoId(), v.getFlowTime(), (x, y) -> x.before(y) ? x : y);
+                }
+            }
+        }
+        return MarketingAges.load(pigQueryService, bars, receiveTimes);
+    }
+
+    /** 承载本次称重实重的流水行带上秤读数（D-0147 ③）；无读数（旧客户端）保持 NULL。 */
+    private static void applyReading(StockFlow flow, ScaleReading reading) {
+        if (reading != null) {
+            flow.setGrossWeight(reading.grossWeight());
+            flow.setTareWeight(reading.tareWeight());
+        }
+    }
 }

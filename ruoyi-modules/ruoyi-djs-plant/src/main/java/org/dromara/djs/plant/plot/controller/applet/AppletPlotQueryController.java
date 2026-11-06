@@ -6,6 +6,7 @@ import org.dromara.common.core.domain.R;
 import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotCardVo;
 import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotFarmworkVo;
 import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotPlantingVo;
+import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotSummaryVo;
 import org.dromara.djs.plant.plot.service.IAppletPlotQueryService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,6 +22,7 @@ import java.util.List;
  *
  * <ul>
  *   <li>{@code GET list?plotName=&plotStatus=}  地块查询卡片列表</li>
+ *   <li>{@code GET summary?plotName=&plotStatus=} 地块查询顶部统计（种植 / 采摘 / 空地数，参数同 list）</li>
  *   <li>{@code GET {plotId}}                    地块详情当前数据卡</li>
  *   <li>{@code GET {plotId}/plantings}          种植记录（种植日期降序，top=亩产最高一茬）</li>
  *   <li>{@code GET {plotId}/farmworks}          农事记录（农事日期降序，筛选在前端做）</li>
@@ -50,6 +52,19 @@ public class AppletPlotQueryController {
     public R<List<AppletPlotCardVo>> list(@RequestParam(required = false) String plotName,
                                           @RequestParam(required = false) Integer plotStatus) {
         return R.ok(plotQueryService.listPlots(plotName, plotStatus));
+    }
+
+    /**
+     * 地块查询顶部统计框（种植数 / 采摘数 / 空地数），参数与 {@link #list} 完全一致。
+     *
+     * @param plotName   地块名称关键字（模糊）
+     * @param plotStatus 1=空闲 / 2=种植 / 3=采摘；空=全部
+     * @return 三项计数
+     */
+    @GetMapping("/summary")
+    public R<AppletPlotSummaryVo> summary(@RequestParam(required = false) String plotName,
+                                          @RequestParam(required = false) Integer plotStatus) {
+        return R.ok(plotQueryService.summary(plotName, plotStatus));
     }
 
     /**

@@ -909,6 +909,65 @@ class ProductProductionServiceImplTest {
         verify(inhouseMapper, times(1)).deleteById(70001L);
     }
 
+    @Test
+    @DisplayName("D-0147 ③ 白条出库领用·发货月台：秤读数落白条出库流水；旧客户端为 NULL")
+    void whiteBarOutStoresScaleReadingOnTheBarOutFlow() {
+        ProductInhouse src = sampleVegSource();
+        src.setLocationId(90001L);
+        src.setWhiteBarNo("WB-1");
+        when(inhouseMapper.selectById(70001L)).thenReturn(src);
+        ProductInfo wb = sampleVegProduct();
+        wb.setId(60001L);
+        wb.setBelongType("white_bar");
+        when(productInfoMapper.selectById(60001L)).thenReturn(wb);
+        when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
+            ((ProductProduction) inv.getArgument(0)).setId(80500L);
+            return 1;
+        });
+        when(locationStockMapper.addByProductLocation(any(), any(), any(), any())).thenReturn(1);
+        when(inhouseMapper.deleteById(any())).thenReturn(1);
+        when(storeMapper.selectById(9L)).thenReturn(new org.dromara.djs.common.store.domain.Store());
+        var demand=new org.dromara.djs.warehouse.demand.domain.DemandManage();
+        demand.setId(99L); demand.setDemandQuantity(BigDecimal.ONE); demand.setProductId(60001L); demand.setStoreId(9L);
+        when(demandManageMapper.selectUncompletedDemands(60001L,9L)).thenReturn(List.of(demand));
+        when(demandManageMapper.incrementShipped(eq(99L),any(),eq(BigDecimal.ONE))).thenReturn(1);
+
+        WhiteBarOutBo bo = new WhiteBarOutBo();
+        bo.setSourceInhouseId(70001L);
+        bo.setProductWeight(new BigDecimal("12.000"));
+        bo.setGrossWeight(new BigDecimal("12.350"));
+        bo.setTareWeight(new BigDecimal("0.350"));
+        bo.setStoreId(9L);
+        service.submitWhiteBarOut(bo);
+
+        ArgumentCaptor<StockFlow> flows = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, org.mockito.Mockito.atLeastOnce()).insert(flows.capture());
+        StockFlow out = flows.getAllValues().stream().filter(f -> "cut_out".equals(f.getFlowType())).findFirst().orElseThrow();
+        assertThat(out.getChangeQuantity()).isEqualByComparingTo("12.000");
+        assertThat(out.getGrossWeight()).isEqualByComparingTo("12.350");
+        assertThat(out.getTareWeight()).isEqualByComparingTo("0.350");
+    }
+
+    @Test
+    @DisplayName("D-0147 ③ 白条出库领用·仓库出库 / 发货月台：秤读数对不上或只传一个 → 拒绝，不写任何生产记录")
+    void barOutRejectsScaleReadingThatDoesNotAddUp() {
+        var wh = new org.dromara.djs.warehouse.pack.domain.bo.WarehouseOutBo();
+        wh.setSourceInhouseId(70001L);
+        wh.setProductWeight(new BigDecimal("12.000"));
+        wh.setOutDest("kitchen");
+        wh.setGrossWeight(new BigDecimal("12.500"));
+        wh.setTareWeight(new BigDecimal("0.300"));
+        assertThatThrownBy(() -> service.submitWarehouseOut(wh)).isInstanceOf(ServiceException.class).hasMessageContaining("不一致");
+        WhiteBarOutBo ship = new WhiteBarOutBo();
+        ship.setSourceInhouseId(70001L);
+        ship.setProductWeight(new BigDecimal("12.000"));
+        ship.setStoreId(9L);
+        ship.setGrossWeight(new BigDecimal("12.000"));
+        assertThatThrownBy(() -> service.submitWhiteBarOut(ship)).hasMessageContaining("同时提交");
+        verify(inhouseMapper, never()).selectById(any());
+        verify(productionMapper, never()).insert(any(ProductProduction.class));
+    }
+
     // ============================================================
     // veg pack — product_material 库存校验（V4 果疏全流程 Part II）
     // ============================================================

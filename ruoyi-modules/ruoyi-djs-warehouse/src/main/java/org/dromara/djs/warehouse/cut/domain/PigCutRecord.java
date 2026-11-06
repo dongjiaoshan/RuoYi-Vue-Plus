@@ -91,6 +91,12 @@ public class PigCutRecord extends TenantEntity {
      */
     private BigDecimal pickupWeight;
 
+    /** 领用称重的秤读数（kg；D-0147 ③），满足 gross − tare = pickup_weight；旧入口 / 未现场称重为 NULL。 */
+    private BigDecimal grossWeight;
+
+    /** 领用称重的去皮重量（kg；不去皮为 0；D-0147 ③）。 */
+    private BigDecimal tareWeight;
+
     /**
      * 滴水损失 kg（cutDone 提交时写）。
      */

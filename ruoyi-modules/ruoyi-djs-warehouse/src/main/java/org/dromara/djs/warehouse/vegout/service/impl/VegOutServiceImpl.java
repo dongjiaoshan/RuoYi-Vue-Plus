@@ -1,5 +1,6 @@
 package org.dromara.djs.warehouse.vegout.service.impl;
 
+import org.dromara.djs.warehouse.tare.domain.ScaleReading;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
@@ -323,6 +324,9 @@ public class VegOutServiceImpl implements IVegOutService {
         Long userId = LoginHelper.getUserId();
 
         for (VegOutItemBo item : bo.getItems()) {
+            // D-0147 ③：果蔬出库称重页另带秤读数（成对 + 称重 − 去皮 = 本行出库量）。先进先出拆到多篮时，
+            // 同一次称重的各条切片流水（共用 batch_no）都记这次的秤读数，切片 change_quantity 之和 = 实重。
+            ScaleReading reading = ScaleReading.of(item.getGrossWeight(), item.getTareWeight(), item.getQuantity());
             // V6 row224 / D-0068：候选一行 = 一组库存篮，出库量按建篮时间先进先出摊到各篮。
             // 分配算法与库存查询页行内出库共用同一份（ILocationStockService#allocateFifo）——
             // 两处各写一份迟早会分叉，而分叉的表现是「同样的货从不同页面出，扣的篮不一样」。
@@ -388,6 +392,10 @@ public class VegOutServiceImpl implements IVegOutService {
                 patch.setEarNo(stock.getEarNo());
                 patch.setBatchNo(batchNo);
                 patch.setFlowDate(resolveFlowDate(bo.getOutDate()));
+                if (reading != null) {
+                    patch.setGrossWeight(reading.grossWeight());
+                    patch.setTareWeight(reading.tareWeight());
+                }
                 // row194：销售单价快照。前端默认带出产品 sale_price 但允许改，故必须按本次录入值落在流水行上，
                 // 不能事后回读产品主数据 —— 否则改一次产品价格，历史出库单金额会整体漂移。
                 patch.setOutUnitPrice(item.getOutUnitPrice() != null ? item.getOutUnitPrice() : product.getSalePrice());

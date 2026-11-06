@@ -53,6 +53,10 @@ public class HarvestSubmitBo {
     @NotNull(message = "请填写采摘重量")
     @DecimalMin(value = "0", message = "采摘重量不能为负数")
     private BigDecimal harvestWeight;
+    /** 称重（秤读数 kg，可选；D-0147 ③）。与 tareWeight 要么都不传，要么都传且 称重 − 去皮 = harvestWeight（误差 ≤ 0.001kg）。 */
+    private BigDecimal grossWeight;
+    /** 去皮重量（kg，可选；不去皮传 0；D-0147 ③）。 */
+    private BigDecimal tareWeight;
 
     /**
      * 地块是否称重完成 1=是 / 0=否（是时把该地块 weighStatus 推 done，即汇总 is_weighed=1）。

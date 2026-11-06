@@ -3,6 +3,7 @@ package org.dromara.djs.plant.plot.service;
 import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotCardVo;
 import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotFarmworkVo;
 import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotPlantingVo;
+import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotSummaryVo;
 
 import java.util.List;
 
@@ -21,6 +22,15 @@ public interface IAppletPlotQueryService {
      * @return 卡片列表（按地块编码升序）
      */
     List<AppletPlotCardVo> listPlots(String plotName, Integer plotStatus);
+
+    /**
+     * 地块查询顶部统计（种植数 / 采摘数 / 空地数），条件与 {@link #listPlots} 完全一致。
+     *
+     * @param plotName   地块名称关键字（可空）
+     * @param plotStatus 1=空闲 / 2=种植 / 3=采摘（可空 = 全部）
+     * @return 三项计数（均非空）
+     */
+    AppletPlotSummaryVo summary(String plotName, Integer plotStatus);
 
     /**
      * 地块详情顶部当前数据卡。

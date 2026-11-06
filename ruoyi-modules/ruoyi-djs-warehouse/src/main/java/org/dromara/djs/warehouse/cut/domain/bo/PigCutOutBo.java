@@ -90,6 +90,10 @@ public class PigCutOutBo {
         @NotNull(message = "{cut.product_weight.required}")
         @DecimalMin(value = "0.001", message = "{cut.product_weight.positive}")
         private BigDecimal productWeight;
+        /** 称重（秤读数 kg，可选；D-0147 ③）。与 tareWeight 要么都不传，要么都传且 称重 − 去皮 = productWeight（误差 ≤ 0.001kg）。 */
+        private BigDecimal grossWeight;
+        /** 去皮重量（kg，可选；不去皮传 0；D-0147 ③）。 */
+        private BigDecimal tareWeight;
 
         /**
          * 规格（可选）。

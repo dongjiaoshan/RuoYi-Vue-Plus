@@ -24,6 +24,10 @@ public class VegInSubmitBo {
     @DecimalMin(value = "0.001", message = "入库重量必须大于 0")
     @Digits(integer = 9, fraction = 3, message = "入库重量最多三位小数")
     private BigDecimal weight;
+    /** 称重（秤读数 kg，可选；D-0147 ③）。与 tareWeight 要么都不传，要么都传且 称重 − 去皮 = weight（误差 ≤ 0.001kg）。 */
+    private BigDecimal grossWeight;
+    /** 去皮重量（kg，可选；不去皮传 0；D-0147 ③）。 */
+    private BigDecimal tareWeight;
     @NotEmpty(message = "请选择采摘班组")
     private List<Long> teamIds;
     @NotNull(message = "请选择绩效百分比")

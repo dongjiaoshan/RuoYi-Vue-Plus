@@ -8,6 +8,7 @@ import org.dromara.djs.plant.plot.domain.vo.PlotPlantingStatVo;
 import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotCardVo;
 import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotFarmworkVo;
 import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotPlantingVo;
+import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotSummaryVo;
 
 import java.util.Collection;
 import java.util.List;
@@ -54,6 +55,32 @@ public interface AppletPlotQueryMapper {
     List<AppletPlotCardVo> selectPlots(@Param("plotName") String plotName, @Param("plotStatus") Integer plotStatus);
 
     /**
+     * 地块查询顶部统计：与 {@link #selectPlots} 同一 WHERE（名称模糊 + 状态精确），按 plot_status 计数。
+     *
+     * @param plotName   地块名称关键字（空 = 不过滤）
+     * @param plotStatus 地块状态 1/2/3（空 = 全部）
+     * @return 种植数 / 采摘数 / 空地数（无匹配地块时三项均为 0）
+     */
+    @InterceptorIgnore(tenantLine = "true")
+    @Select("""
+        <script>
+        SELECT COALESCE(SUM(CASE WHEN p.plot_status = 2 THEN 1 ELSE 0 END), 0) AS plantingCount,
+               COALESCE(SUM(CASE WHEN p.plot_status = 3 THEN 1 ELSE 0 END), 0) AS pickingCount,
+               COALESCE(SUM(CASE WHEN p.plot_status = 1 THEN 1 ELSE 0 END), 0) AS idleCount
+          FROM t_plant_plot_info p
+         WHERE p.del_flag = '0'
+           AND p.tenant_id = '1001'
+           <if test="plotName != null and plotName != ''">
+           AND p.plot_name LIKE CONCAT('%', #{plotName}, '%')
+           </if>
+           <if test="plotStatus != null">
+           AND p.plot_status = #{plotStatus}
+           </if>
+        </script>
+        """)
+    AppletPlotSummaryVo selectSummary(@Param("plotName") String plotName, @Param("plotStatus") Integer plotStatus);
+
+    /**
      * 单地块基础行。
      *
      * @param plotId 地块 id
@@ -74,7 +101,7 @@ public interface AppletPlotQueryMapper {
      * 批量取若干地块「已开工且未退茬」的种植明细（每地块按种植日期降序、id 降序），service 取每地块首行作当前茬。
      *
      * <p>复用 {@link AppletPlotCardVo} 承载：{@code id} 列放的是地块 id（便于按地块归组），
-     * 当前茬字段直接落同名属性。预计产量扣该地块该作物灾害损失（钳零），与 admin 地块详情种植子表同口径。</p>
+     * 当前茬字段直接落同名属性。预计产量只扣本茬期间的灾害损失（{@link PlotPlantingSql#NET_EXPECTED_YIELD}），与 admin 地块详情种植子表同口径。</p>
      *
      * @param plotIds 地块 id（非空）
      * @return 候选行
@@ -85,16 +112,10 @@ public interface AppletPlotQueryMapper {
         SELECT d.plot_id AS id, c.crop_name AS cropName,
                d.begin_actualdate AS plantDate, d.begin_harvestdate AS beginHarvestdate,
                d.end_harvestdate AS endHarvestdate,
-               GREATEST(COALESCE(d.expected_yield, 0) - COALESCE(dl.disaster_loss, 0), 0) AS expectedYield,
+               """ + PlotPlantingSql.NET_EXPECTED_YIELD + """
+               AS expectedYield,
                d.actual_yield AS actualYield
           FROM t_plant_plant_details d
-          LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss
-                       FROM t_plant_farm_records fr
-                      WHERE fr.del_flag = '0' AND fr.tenant_id = '1001'
-                        AND fr.farm_type = 'disaster'
-                        AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL
-                      GROUP BY fr.plot_id, fr.crop_id) dl
-            ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id
           LEFT JOIN t_plant_crop_info c
             ON c.id = d.crop_id AND c.del_flag = '0'
          WHERE d.del_flag = '0'
@@ -157,7 +178,8 @@ public interface AppletPlotQueryMapper {
             d.begin_actualdate    AS plantDate,
             d.begin_harvestdate   AS beginHarvestdate,
             d.end_harvestdate     AS endHarvestdate,
-            GREATEST(COALESCE(d.expected_yield, 0) - COALESCE(dl.disaster_loss, 0), 0) AS expectedYield,
+            """ + PlotPlantingSql.NET_EXPECTED_YIELD + """
+            AS expectedYield,
             d.actual_yield        AS actualYield,
             d.harvest_status      AS harvestStatus,
             d.plot_area           AS plotArea,
@@ -172,13 +194,6 @@ public interface AppletPlotQueryMapper {
                        WHERE dt.detail_id = d.id AND dt.role = 'harvest' AND dt.del_flag = '0'),
                      th.team_name) AS harvestTeamNames
           FROM t_plant_plant_details d
-          LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss
-                       FROM t_plant_farm_records fr
-                      WHERE fr.del_flag = '0' AND fr.tenant_id = '1001'
-                        AND fr.farm_type = 'disaster'
-                        AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL
-                      GROUP BY fr.plot_id, fr.crop_id) dl
-            ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id
           LEFT JOIN t_plant_crop_info c
             ON c.id = d.crop_id AND c.del_flag = '0'
           LEFT JOIN t_plant_work_team tp

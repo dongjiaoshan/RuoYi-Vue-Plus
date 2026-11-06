@@ -39,6 +39,10 @@ public class VegOutItemBo implements Serializable {
     @NotNull(message = "出库量不能为空")
     @DecimalMin(value = "0.001", message = "出库量必须大于 0")
     private BigDecimal quantity;
+    /** 称重（秤读数 kg，可选；D-0147 ③）。与 tareWeight 要么都不传，要么都传且 称重 − 去皮 = quantity（误差 ≤ 0.001kg）。 */
+    private BigDecimal grossWeight;
+    /** 去皮重量（kg，可选；不去皮传 0；D-0147 ③）。 */
+    private BigDecimal tareWeight;
 
     /**
      * 出库销售单价（row194）。前端默认带出产品 {@code sale_price}，用户可改；

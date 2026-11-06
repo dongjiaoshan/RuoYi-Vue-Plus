@@ -49,6 +49,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -647,6 +648,42 @@ class VegOutServiceImplTest {
         verify(stockFlowMapper).updateById(fc.capture());
         // productOut 建的流水行不带耳号，这里不补 → 出库明细「耳号」列 100% 为空（线上实测 78/78 行 NULL）
         assertThat(fc.getValue().getEarNo()).isEqualTo("A0012");
+    }
+
+    @Test
+    @DisplayName("D-0147 ③ 果蔬出库：先进先出拆到多篮时，每条切片流水都记这次称重的秤读数；旧客户端为 NULL")
+    void submit_writesScaleReadingOnEverySlice() {
+        LocationStock a = mkStock(1L, 10L, null);
+        a.setLocationId(70007L);
+        a.setProductStock(new BigDecimal("2.000"));
+        LocationStock b = mkStock(2L, 10L, null);
+        b.setLocationId(70007L);
+        b.setProductStock(new BigDecimal("5.000"));
+        when(locationStockMapper.selectById(1L)).thenReturn(a);
+        when(locationStockMapper.selectById(2L)).thenReturn(b);
+        ProductInfo pork = mkVegProduct(10L);
+        pork.setBelongType("pork");
+        when(productInfoMapper.selectById(10L)).thenReturn(pork);
+        LocationInfo porkLoc = new LocationInfo();
+        porkLoc.setId(70007L);
+        porkLoc.setLocationCode("L0007");
+        when(locationInfoMapper.selectList(any())).thenReturn(java.util.List.of(porkLoc));
+        VegOutSubmitBo bo = mkBo("kitchen", 1L, "3.000");
+        bo.getItems().getFirst().setStockIds(List.of(1L, 2L));
+        bo.getItems().getFirst().setGrossWeight(new BigDecimal("3.400"));
+        bo.getItems().getFirst().setTareWeight(new BigDecimal("0.400"));
+
+        service.submit(bo, true);
+        service.submit(mkBo("kitchen", 2L, "1.000"), true);
+
+        ArgumentCaptor<StockFlow> fc = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(3)).updateById(fc.capture());
+        assertThat(fc.getAllValues().subList(0, 2)).allSatisfy(f -> {
+            assertThat(f.getGrossWeight()).isEqualByComparingTo("3.400");
+            assertThat(f.getTareWeight()).isEqualByComparingTo("0.400");
+        });
+        assertThat(fc.getAllValues().get(2).getGrossWeight()).isNull();
+        assertThat(fc.getAllValues().get(2).getTareWeight()).isNull();
     }
 
     @Test

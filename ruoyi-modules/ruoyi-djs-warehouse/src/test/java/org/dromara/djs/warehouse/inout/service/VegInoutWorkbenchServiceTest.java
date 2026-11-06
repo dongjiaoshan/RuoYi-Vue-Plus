@@ -50,6 +50,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -416,5 +418,53 @@ class VegInoutWorkbenchServiceTest {
         assertThat(service.recentOutDests()).hasSize(10)
             .extracting(RecentOutDestVo::getValue)
             .containsExactly("dest1", "dest2", "dest3", "dest4", "dest5", "dest6", "dest7", "dest8", "dest9", "dest10");
+    }
+
+    // ===== D-0147 ③：称重页另带称重 / 去皮 =====
+
+    @Test
+    void confirmInPassesScaleReadingToTheHarvestEntryAndLegacyStaysNull() {
+        VegInSubmitBo bo = inBo();
+        bo.setGrossWeight(new BigDecimal("13.250"));
+        bo.setTareWeight(new BigDecimal("0.750"));
+        service.submitIn(bo);
+        service.submitIn(inBo());
+        ArgumentCaptor<HarvestSubmitBo> sent = ArgumentCaptor.forClass(HarvestSubmitBo.class);
+        verify(vegHandleService, times(2)).submitHarvest(sent.capture());
+        assertThat(sent.getAllValues().get(0).getGrossWeight()).isEqualByComparingTo("13.25");
+        assertThat(sent.getAllValues().get(0).getTareWeight()).isEqualByComparingTo("0.75");
+        assertThat(sent.getAllValues().get(1).getGrossWeight()).isNull();
+        assertThat(sent.getAllValues().get(1).getTareWeight()).isNull();
+    }
+
+    @Test
+    void confirmInRejectsReadingThatDoesNotAddUpToTheNetWeight() {
+        VegInSubmitBo bo = inBo();
+        bo.setGrossWeight(new BigDecimal("13.250"));
+        bo.setTareWeight(new BigDecimal("0.500"));
+        assertThatThrownBy(() -> service.submitIn(bo)).isInstanceOf(ServiceException.class).hasMessageContaining("不一致");
+        verify(vegHandleService, never()).submitHarvest(any());
+    }
+
+    @Test
+    void outPassesScaleReadingToTheVegOutItemAndRejectsHalfReading() {
+        when(workbenchMapper.selectVegStocks(PRODUCT)).thenReturn(List.of(
+            basket(11L, FRESH, "毛菜鲜品库", 101L, "A-001", "10"),
+            basket(15L, FRESH, "毛菜鲜品库", 101L, "A-001", "2")));
+        VegOutWorkbenchSubmitBo bo = outBo("warehouse", "kitchen", "11", 15L, 11L);
+        bo.setGrossWeight(new BigDecimal("11.800"));
+        bo.setTareWeight(new BigDecimal("0.800"));
+        service.submitOut(bo);
+        ArgumentCaptor<VegOutSubmitBo> sent = ArgumentCaptor.forClass(VegOutSubmitBo.class);
+        verify(vegOutService).submitVegetableOut(sent.capture());
+        assertThat(sent.getValue().getItems()).singleElement().satisfies(item -> {
+            assertThat(item.getGrossWeight()).isEqualByComparingTo("11.8");
+            assertThat(item.getTareWeight()).isEqualByComparingTo("0.8");
+        });
+
+        VegOutWorkbenchSubmitBo half = outBo("warehouse", "kitchen", "11", 15L, 11L);
+        half.setTareWeight(BigDecimal.ZERO);
+        assertThatThrownBy(() -> service.submitOut(half)).hasMessageContaining("同时提交");
+        verify(vegOutService, times(1)).submitVegetableOut(any());
     }
 }

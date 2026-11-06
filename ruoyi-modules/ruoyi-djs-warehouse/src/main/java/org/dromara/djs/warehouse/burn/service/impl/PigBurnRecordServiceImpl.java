@@ -2,6 +2,7 @@ package org.dromara.djs.warehouse.burn.service.impl;
 
 import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.dromara.djs.warehouse.cross.service.MarketingAges;
+import org.dromara.djs.warehouse.tare.domain.ScaleReading;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
@@ -249,6 +250,8 @@ public class PigBurnRecordServiceImpl
             if (item.getWeight() == null || item.getWeight().signum() <= 0 || item.getWeight().scale() > 3) {
                 throw new ServiceException("产品重量须大于 0，最多三位小数");
             }
+            // D-0147 ③：称重页另带秤读数 → 先校验成对且 称重 − 去皮 = 实重，再动任何库存
+            ScaleReading.of(item.getGrossWeight(), item.getTareWeight(), item.getWeight());
             boolean half = PRODUCT_TYPE_HALF.equals(resolveProductType(type));
             long count = counts.merge(item.getProductId(), 1L, Long::sum);
             if (count > 1) {
@@ -335,6 +338,11 @@ public class PigBurnRecordServiceImpl
             flowIn.setFlowType(FLOW_TYPE_SLAUGHTER_BURN);
             flowIn.setChangeNum(item.getWeight());
             flowIn.setChangeQuantity(item.getWeight());
+            ScaleReading reading = ScaleReading.of(item.getGrossWeight(), item.getTareWeight(), item.getWeight());
+            if (reading != null) {
+                flowIn.setGrossWeight(reading.grossWeight());
+                flowIn.setTareWeight(reading.tareWeight());
+            }
             flowIn.setEarNo(earNo);
             flowIn.setWhiteBarNo(whiteBarNo);
             flowIn.setWhiteBarId(bar.getId());
@@ -378,8 +386,8 @@ public class PigBurnRecordServiceImpl
                 firstTimes.merge(inbound.getBarInfoId(), inbound.getFlowTime(), (x, y) -> x.before(y) ? x : y);
             }
         }
-        // V7 row9：卡片右上角显示出栏日龄（出栏记录冻结值，一次批量取，不 N+1）
-        MarketingAges ages = MarketingAges.load(pigQueryService, bars);
+        // V7 row9 / D-0152 ②：卡片右上角显示接收时日龄（出栏冻结值 + 出栏→接收天数；未接收按今天），一次批量取，不 N+1
+        MarketingAges ages = MarketingAges.load(pigQueryService, bars, firstTimes);
         List<BarPendingVo> list = new ArrayList<>(bars.size());
         for (BarInfo bar : bars) {
             BarPendingVo vo = new BarPendingVo();

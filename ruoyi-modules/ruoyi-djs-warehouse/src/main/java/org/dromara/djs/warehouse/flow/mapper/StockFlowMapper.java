@@ -36,6 +36,22 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
     List<org.dromara.djs.warehouse.burn.domain.vo.BurnInboundVo> selectBurnInbounds(
         @Param("barIds") java.util.Collection<Long> barIds);
 
+    /**
+     * 各白条「接收时间」= 最早一条燎毛入库流水时间（D-0152 ② 日龄参照日）。关联口径同 {@link #selectBurnInbounds}，
+     * 但只读不加锁，供列表页批量取（一次 IN，禁 N+1）。无入库流水的白条不在结果里。
+     */
+    @Select("<script>SELECT COALESCE(f.white_bar_id, i.white_bar_id) AS bar_info_id, MIN(f.flow_date) AS flow_time "
+        + "FROM t_warehouse_stock_flow f LEFT JOIN "
+        + "(SELECT tenant_id, white_bar_no, MAX(white_bar_id) AS white_bar_id FROM t_warehouse_product_inhouse "
+        + "WHERE white_bar_id IS NOT NULL GROUP BY tenant_id, white_bar_no) i "
+        + "ON f.white_bar_id IS NULL AND i.white_bar_no = f.white_bar_no AND i.tenant_id = f.tenant_id "
+        + "WHERE f.del_flag='0' AND f.flow_type='slaughter_burn' AND f.inout_type='IN' "
+        + "AND COALESCE(f.white_bar_id, i.white_bar_id) IN "
+        + "<foreach collection='barIds' item='id' open='(' separator=',' close=')'>#{id}</foreach> "
+        + "GROUP BY COALESCE(f.white_bar_id, i.white_bar_id)</script>")
+    List<org.dromara.djs.warehouse.burn.domain.vo.BurnInboundVo> selectFirstBurnInboundTimes(
+        @Param("barIds") java.util.Collection<Long> barIds);
+
     /** 当前读确保等待整猪锁后能看见刚完成的幂等回执。 */
     @Select("SELECT * FROM t_warehouse_stock_flow WHERE request_key=#{key} AND del_flag='0' FOR UPDATE")
     StockFlow selectRequestReceipt(@Param("key") String key);

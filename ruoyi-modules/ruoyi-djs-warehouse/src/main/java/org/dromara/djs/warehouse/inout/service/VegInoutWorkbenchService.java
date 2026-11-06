@@ -20,6 +20,7 @@ import org.dromara.djs.warehouse.inout.domain.vo.VegTeamOptionVo;
 import org.dromara.djs.warehouse.inout.mapper.VegInoutWorkbenchMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.tare.domain.ScaleReading;
 import org.dromara.djs.warehouse.veg.domain.FeedAnimal;
 import org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegCropVo;
@@ -109,6 +110,11 @@ public class VegInoutWorkbenchService {
             requirePercent(bo.getPerfPercent()));
         harvest.setProductId(bo.getProductId());
         harvest.setHarvestWeight(weight);
+        ScaleReading reading = ScaleReading.of(bo.getGrossWeight(), bo.getTareWeight(), weight);
+        if (reading != null) {
+            harvest.setGrossWeight(reading.grossWeight());
+            harvest.setTareWeight(reading.tareWeight());
+        }
         harvest.setWeighFinish(0);
         return vegHandleService.submitHarvest(harvest);
     }
@@ -215,6 +221,7 @@ public class VegInoutWorkbenchService {
             throw new ServiceException("请选择出库地块");
         }
         BigDecimal weight = requirePositive(bo.getWeight(), "出库");
+        ScaleReading reading = ScaleReading.of(bo.getGrossWeight(), bo.getTareWeight(), weight);
         String outDest = resolveOutDest(bo.getDestination(), bo.getOutDest());
 
         Set<Long> requested = new LinkedHashSet<>(bo.getStockIds());
@@ -243,6 +250,10 @@ public class VegInoutWorkbenchService {
         VegOutItemBo item = new VegOutItemBo();
         item.setStockIds(baskets.stream().map(VegOutStockRow::getStockId).toList());
         item.setQuantity(weight);
+        if (reading != null) {
+            item.setGrossWeight(reading.grossWeight());
+            item.setTareWeight(reading.tareWeight());
+        }
         VegOutSubmitBo out = new VegOutSubmitBo();
         out.setOutDate(new Date());
         out.setOutDest(outDest);

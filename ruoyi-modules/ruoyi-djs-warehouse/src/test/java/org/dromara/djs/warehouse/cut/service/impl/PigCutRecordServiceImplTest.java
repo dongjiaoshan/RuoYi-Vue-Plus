@@ -658,4 +658,199 @@ class PigCutRecordServiceImplTest {
         verify(cutMapper,times(1)).insert(any(PigCutRecord.class));
     }
 
+
+    // ===== D-0147 ③：称重页另带称重 / 去皮 =====
+
+    @Test
+    @DisplayName("D-0147 ③ 白条分割管理：部位秤读数落该部位入冻品库流水；未带读数的部位与汇总 OT 为 NULL")
+    void cutOutStoresScaleReadingOnTheWeighedPartFlow() {
+        when(cutMapper.selectById(80001L)).thenReturn(sampleRecord("picked"));
+        when(cutMapper.updateStatusToCutting(eq(80001L), any(Date.class), eq(9001L))).thenReturn(1);
+        LocationInfo loc = new LocationInfo();
+        loc.setId(90002L);
+        when(locationInfoMapper.selectById(90002L)).thenReturn(loc);
+        when(bizCodeGenerator.generate(eq(BizCodeType.STOCK_FLOW_NO), anyMap())).thenReturn("F1");
+        PigCutOutBo bo = sampleCutOutBo();
+        bo.getPartItems().get(0).setGrossWeight(new BigDecimal("30.450"));
+        bo.getPartItems().get(0).setTareWeight(new BigDecimal("0.450"));
+
+        service.submitCutOut(bo);
+
+        ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(flowMapper, times(4)).insert(flowCap.capture());
+        List<StockFlow> flows = flowCap.getAllValues();
+        assertThat(flows.get(0).getGrossWeight()).isEqualByComparingTo("30.450");
+        assertThat(flows.get(0).getTareWeight()).isEqualByComparingTo("0.450");
+        assertThat(flows.subList(1, 4)).allSatisfy(f -> {
+            assertThat(f.getGrossWeight()).isNull();
+            assertThat(f.getTareWeight()).isNull();
+        });
+    }
+
+    @Test
+    @DisplayName("D-0147 ③ 白条分割管理：秤读数对不上部位实重 → 拒绝，不推进状态、不写篮子 / 流水")
+    void cutOutRejectsScaleReadingThatDoesNotAddUp() {
+        PigCutOutBo bo = sampleCutOutBo();
+        bo.getPartItems().get(1).setGrossWeight(new BigDecimal("15.500"));
+        bo.getPartItems().get(1).setTareWeight(new BigDecimal("0.200"));
+        assertThatThrownBy(() -> service.submitCutOut(bo)).isInstanceOf(ServiceException.class).hasMessageContaining("不一致");
+        verify(cutMapper, never()).updateStatusToCutting(anyLong(), any(), anyLong());
+        verify(flowMapper, never()).insert(any(StockFlow.class));
+        verify(locationStockMapper, never()).insert(any(LocationStock.class));
+    }
+
+    @Test
+    @DisplayName("D-0147 ③ 白条出库领用（按产出行）：秤读数同落白条出库流水与分割单")
+    void pickupByRowStoresScaleReadingOnFlowAndCutRecord() {
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(sampleBar());
+        when(productInhouseMapper.selectById(60001L)).thenReturn(inhouseRowA());
+        when(productInhouseMapper.selectList(any())).thenReturn(List.of());
+        when(productInhouseMapper.update(any(), any())).thenReturn(1);
+        when(locationStockMapper.selectOne(any())).thenReturn(barStockRowA());
+        when(locationStockMapper.deductStockById(eq(111L), any(BigDecimal.class), eq(9001L))).thenReturn(1);
+        when(bizCodeGenerator.generate(any(), anyMap())).thenReturn("FAKE_FLOW_NO");
+        PigCutPickupBo bo = pickupRowBo();
+        bo.setPickupWeight(new BigDecimal("41.500"));
+        bo.setGrossWeight(new BigDecimal("42.700"));
+        bo.setTareWeight(new BigDecimal("1.200"));
+
+        service.submitPickup(bo);
+
+        ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(flowMapper, org.mockito.Mockito.atLeastOnce()).insert(flowCap.capture());
+        StockFlow out = flowCap.getAllValues().stream().filter(f -> "cut_out".equals(f.getFlowType())).findFirst().orElseThrow();
+        assertThat(out.getChangeQuantity()).isEqualByComparingTo("41.500");
+        assertThat(out.getGrossWeight()).isEqualByComparingTo("42.700");
+        assertThat(out.getTareWeight()).isEqualByComparingTo("1.200");
+        // 残量转损耗流水不是这次称重 → 不带读数
+        assertThat(flowCap.getAllValues().stream().filter(f -> "loss".equals(f.getFlowType())))
+            .allSatisfy(f -> assertThat(f.getGrossWeight()).isNull());
+        ArgumentCaptor<PigCutRecord> recCap = ArgumentCaptor.forClass(PigCutRecord.class);
+        verify(cutMapper).insert(recCap.capture());
+        assertThat(recCap.getValue().getGrossWeight()).isEqualByComparingTo("42.700");
+        assertThat(recCap.getValue().getTareWeight()).isEqualByComparingTo("1.200");
+    }
+
+    @Test
+    @DisplayName("D-0147 ③ 白条出库领用（整只兜底）：没有与称重同量的流水，读数落分割单；旧客户端为 NULL")
+    void wholeBarPickupStoresScaleReadingOnCutRecordAndLegacyStaysNull() {
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(sampleBar());
+        when(barInfoMapper.updateStatusToPendingCut(eq(70001L), eq(9001L))).thenReturn(1);
+        PigCutPickupBo bo = samplePickupBo();
+        bo.setPickupWeight(new BigDecimal("79.500"));
+        bo.setGrossWeight(new BigDecimal("80.000"));
+        bo.setTareWeight(new BigDecimal("0.500"));
+        service.submitPickup(bo);
+        service.submitPickup(samplePickupBo());
+
+        ArgumentCaptor<PigCutRecord> recCap = ArgumentCaptor.forClass(PigCutRecord.class);
+        verify(cutMapper, times(2)).insert(recCap.capture());
+        assertThat(recCap.getAllValues().get(0).getPickupWeight()).isEqualByComparingTo("79.500");
+        assertThat(recCap.getAllValues().get(0).getGrossWeight()).isEqualByComparingTo("80.000");
+        assertThat(recCap.getAllValues().get(0).getTareWeight()).isEqualByComparingTo("0.500");
+        assertThat(recCap.getAllValues().get(1).getGrossWeight()).isNull();
+        assertThat(recCap.getAllValues().get(1).getTareWeight()).isNull();
+    }
+
+    @Test
+    @DisplayName("D-0147 ③ 白条出库领用：带读数却没给领用称重 / 只给一个数 → 拒绝，不动白条")
+    void pickupRejectsReadingWithoutNetOrHalfReading() {
+        PigCutPickupBo noNet = samplePickupBo();
+        noNet.setGrossWeight(new BigDecimal("80"));
+        noNet.setTareWeight(BigDecimal.ZERO);
+        assertThatThrownBy(() -> service.submitPickup(noNet)).hasMessageContaining("实重");
+        PigCutPickupBo half = samplePickupBo();
+        half.setPickupWeight(new BigDecimal("80"));
+        half.setGrossWeight(new BigDecimal("80"));
+        assertThatThrownBy(() -> service.submitPickup(half)).hasMessageContaining("同时提交");
+        verify(barInfoMapper, never()).selectForUpdate(anyLong());
+        verify(cutMapper, never()).insert(any(PigCutRecord.class));
+    }
+
+    // ===== D-0152 ②：白条日龄 = 出栏冻结日龄 + 出栏→接收天数 =====
+
+    private static Date shanghai(java.time.LocalDateTime t) {
+        return Date.from(t.atZone(java.time.ZoneId.of("Asia/Shanghai")).toInstant());
+    }
+
+    private BarInfo agedBar(Long id, String ear, java.time.LocalDateTime marketed) {
+        BarInfo bar = new BarInfo();
+        bar.setId(id);
+        bar.setEarNo(ear);
+        bar.setStatus("in_stock");
+        bar.setMarketingTime(Date.from(marketed.atZone(java.time.ZoneId.systemDefault()).toInstant()));
+        return bar;
+    }
+
+    private static org.dromara.djs.breed.core.domain.vo.PigMarketingAgeVo frozenAge(String ear, java.time.LocalDateTime marketed, int days) {
+        var vo = new org.dromara.djs.breed.core.domain.vo.PigMarketingAgeVo();
+        vo.setEarNo(ear);
+        vo.setMarketingDate(marketed);
+        vo.setAgeDays(days);
+        return vo;
+    }
+
+    private static org.dromara.djs.warehouse.burn.domain.vo.BurnInboundVo received(Long barId, Date at) {
+        var vo = new org.dromara.djs.warehouse.burn.domain.vo.BurnInboundVo();
+        vo.setBarInfoId(barId);
+        vo.setFlowTime(at);
+        return vo;
+    }
+
+    @Test
+    @DisplayName("D-0152 ② 白条分割管理列表：日龄按各自白条接收日；未接收按今天；无出栏记录为 null（一次批量取）")
+    void cutListAgeUsesEachBarsOwnReceiptDay() {
+        java.time.LocalDateTime marketed = java.time.LocalDateTime.of(2026, 10, 26, 8, 0);
+        BarInfo receivedBar = agedBar(1L, "E1", marketed);
+        BarInfo pendingBar = agedBar(2L, "E2", marketed);
+        BarInfo outsourced = agedBar(3L, null, marketed);
+        when(barInfoMapper.selectBatchIds(any())).thenReturn(List.of(receivedBar, pendingBar, outsourced));
+        when(pigQueryService.listMarketingAgeByEarNos(any()))
+            .thenReturn(List.of(frozenAge("E1", marketed, 180), frozenAge("E2", marketed, 180)));
+        when(flowMapper.selectFirstBurnInboundTimes(any()))
+            .thenReturn(List.of(received(1L, shanghai(java.time.LocalDateTime.of(2026, 10, 28, 0, 5)))));
+        org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo a = new org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo();
+        a.setWhiteBarId(1L);
+        org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo a2 = new org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo();
+        a2.setWhiteBarId(1L);
+        org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo b = new org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo();
+        b.setWhiteBarId(2L);
+        org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo c = new org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo();
+        c.setWhiteBarId(3L);
+
+        service.fillAgeDays(List.of(a, a2, b, c));
+
+        long toToday = java.time.temporal.ChronoUnit.DAYS.between(java.time.LocalDate.of(2026, 10, 26),
+            java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")));
+        assertThat(a.getAgeDays()).isEqualTo(182);
+        assertThat(a2.getAgeDays()).isEqualTo(182);
+        assertThat(b.getAgeDays()).isEqualTo(180 + (int) Math.max(0, toToday));
+        assertThat(c.getAgeDays()).isNull();
+        verify(barInfoMapper, times(1)).selectBatchIds(any());
+        verify(flowMapper, times(1)).selectFirstBurnInboundTimes(any());
+        verify(pigQueryService, times(1)).listMarketingAgeByEarNos(any());
+    }
+
+    @Test
+    @DisplayName("D-0152 ② 白条出库领用卡：日龄沿用该白条 bar_info 的接收日（不是领用当天）")
+    void pickupCardAgeUsesTheBarsReceiptDay() {
+        java.time.LocalDateTime marketed = java.time.LocalDateTime.of(2026, 10, 20, 15, 0);
+        BarInfo bar = agedBar(1L, "E1", marketed);
+        when(barInfoMapper.selectList(any())).thenReturn(List.of(bar));
+        when(productInhouseMapper.selectList(any())).thenReturn(List.of());
+        when(pigQueryService.listMarketingAgeByEarNos(any())).thenReturn(List.of(frozenAge("E1", marketed, 200)));
+        when(flowMapper.selectFirstBurnInboundTimes(any()))
+            .thenReturn(List.of(received(1L, shanghai(java.time.LocalDateTime.of(2026, 10, 23, 9, 0)))));
+        var items = service.queryPickupItems();
+        assertThat(items).singleElement().satisfies(it -> assertThat(it.getAgeDays()).isEqualTo(203));
+    }
+
+    @Test
+    @DisplayName("D-0152 ② 白条分割管理列表：空列表 / 无白条 id 不发查询")
+    void cutListAgeSkipsQueriesWhenNothingToFill() {
+        service.fillAgeDays(List.of());
+        service.fillAgeDays(List.of(new org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo()));
+        verify(barInfoMapper, never()).selectBatchIds(any());
+        verify(flowMapper, never()).selectFirstBurnInboundTimes(any());
+    }
 }

@@ -1,5 +1,6 @@
 package org.dromara.djs.warehouse.veg.service.impl;
 
+import org.dromara.djs.warehouse.tare.domain.ScaleReading;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -361,7 +362,8 @@ public class VegetableHandleServiceImpl
      *         {@code false} = 产品主数据缺失，只写了流水、余额跳过（调用方不应把它计进 stock_in_weight）
      */
     private boolean writeFreshVegStockIn(Long locationId, Long productId, Long plotId, Long sourceBizId,
-                                         BigDecimal weight, Long userId, Date now, String remark) {
+                                         BigDecimal weight, Long userId, Date now, String remark,
+                                         ScaleReading reading) {
         StockFlow flow = new StockFlow();
         Map<String, Object> ctx = new HashMap<>(2);
         ctx.put("ioCode", INOUT_IN);
@@ -373,6 +375,10 @@ public class VegetableHandleServiceImpl
         flow.setFlowType(FLOW_TYPE_VEG_STOCK_IN);
         flow.setChangeNum(weight);
         flow.setChangeQuantity(weight);
+        if (reading != null) {
+            flow.setGrossWeight(reading.grossWeight());
+            flow.setTareWeight(reading.tareWeight());
+        }
         flow.setPlotId(plotId);
         flow.setThirdPhase(0);
         flow.setOperatorId(userId);
@@ -901,6 +907,8 @@ public class VegetableHandleServiceImpl
         if (weight == null || weight.signum() < 0) {
             throw new ServiceException("采摘重量不能为空或负数", 400);
         }
+        // D-0147 ③：果蔬入库称重页另带秤读数（成对 + 称重 − 去皮 = 采摘重量），先于任何写库校验
+        ScaleReading reading = ScaleReading.of(bo.getGrossWeight(), bo.getTareWeight(), weight);
 
         // Step 1.0a V6 row28：允许 0 kg 收口 —— 解决「人已经称完、但没人去点完成」导致地块卡在称重中。
         // 代价是 0 kg 必须真的把「地块是否称重完成」打开：一条既不带重量、又不收口的记录没有任何业务含义。
@@ -978,7 +986,7 @@ public class VegetableHandleServiceImpl
 
         // Step 3.2 V6 row102：采摘录入即入库 —— 称重的这一刻作物就变成产品，默认进毛菜保鲜库 L0006，
         // 按 (产品, 地块) 建一个地块篮 + 写一条入库流水。后面的「处理录入」出的就是这批货。
-        BigDecimal stockedIn = stockInHarvestToFreshVeg(planting, weight, record.getProductId(), userId, now);
+        BigDecimal stockedIn = stockInHarvestToFreshVeg(planting, weight, record.getProductId(), userId, now, reading);
 
         // Step 4：聚合 UPDATE vegetable_handle（picked_weight += weight，stock_in_weight += 实际入库量）
         // 序号9-Req1：采摘阶段 is_finish 恒为 2（未处理完成）→ 损耗恒置 0，不在采摘时结算损耗（客户 2026-06-20）
@@ -1021,14 +1029,14 @@ public class VegetableHandleServiceImpl
      * @return 实际入毛菜间的重量（0 = 未入库：0kg 收口记录 / 产品主数据缺失）
      */
     private BigDecimal stockInHarvestToFreshVeg(PlantingRecord planting, BigDecimal weight,
-                                                Long productId, Long userId, Date now) {
+                                                Long productId, Long userId, Date now, ScaleReading reading) {
         // 0 kg 收口记录不写库存、不写流水（写了只会造出空篮子进果蔬打包的 FIFO 领用列表，纯噪声）
         if (weight == null || weight.signum() <= 0) {
             return BigDecimal.ZERO;
         }
         boolean stocked = writeFreshVegStockIn(requireFreshVegLocationId(), productId, planting.getPlotId(),
             planting.getId(), weight, userId, now,
-            "采摘录入入毛菜保鲜库 plantingRecordId=" + planting.getId() + " crop=" + planting.getCropName());
+            "采摘录入入毛菜保鲜库 plantingRecordId=" + planting.getId() + " crop=" + planting.getCropName(), reading);
         return stocked ? weight : BigDecimal.ZERO;
     }
 
@@ -1341,7 +1349,7 @@ public class VegetableHandleServiceImpl
                 + "请先在 admin 作物管理 → 编辑作物 →「产品配置」页签为该作物添加产出产品后再提交");
         }
         writeFreshVegStockIn(requireFreshVegLocationId(), productId, bo.getPlotId(), null,
-            weight, userId, now, "采摘去向[毛菜保鲜室]入库 crop=" + bo.getCropName());
+            weight, userId, now, "采摘去向[毛菜保鲜室]入库 crop=" + bo.getCropName(), null);
     }
 
     /**

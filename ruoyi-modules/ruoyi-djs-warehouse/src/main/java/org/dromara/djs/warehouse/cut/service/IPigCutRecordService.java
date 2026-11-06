@@ -61,6 +61,12 @@ public interface IPigCutRecordService {
     List<PigCutRecordVo> queryList(PigCutRecordQuery query);
 
     /**
+     * 回填各分割记录所属白条的接收时日龄 {@link PigCutRecordVo#getAgeDays()}（D-0152 ②，白条分割管理卡用）。
+     * 批量取（白条 / 出栏日龄 / 接收时间各一次 IN），不 N+1。
+     */
+    void fillAgeDays(List<PigCutRecordVo> list);
+
+    /**
      * 详情。
      */
     PigCutRecordVo queryById(Long id);

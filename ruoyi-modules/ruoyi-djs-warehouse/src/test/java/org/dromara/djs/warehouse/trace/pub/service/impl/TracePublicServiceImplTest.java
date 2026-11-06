@@ -691,13 +691,80 @@ class TracePublicServiceImplTest {
                 assertThat(w.getParamNameValuePairs()).containsValue(LocalDate.of(2026, 9, 15));
             });
 
+        // D-0155 ②：这一茬还没退茬 → 不再截到本批锚点日（9/20），只受种植日下界（无下一茬时无上界）
         LambdaQueryWrapper<FarmRecords> wrapper = (LambdaQueryWrapper<FarmRecords>) captor.getValue();
         String sql = wrapper.getSqlSegment();
-        assertThat(sql).contains("farm_date >=").contains("farm_date <=");
+        assertThat(sql).contains("farm_date >=").doesNotContain("farm_date <=");
         assertThat(sql).containsPattern("ORDER BY farm_date DESC\\s*,\\s*id DESC");
         assertThat(wrapper.getParamNameValuePairs())
             .containsValue(LocalDate.of(2026, 9, 1))
-            .containsValue(LocalDate.of(2026, 9, 20));
+            .doesNotContainValue(LocalDate.of(2026, 9, 20));
+    }
+
+    @Test
+    @DisplayName("veg 码农事记录显示到这一茬的退茬日（含）且早于下一茬种植：种植 7/10 · 采摘 8/15 · 退茬 8/24 · 下一茬 8/25（D-0155 ②）")
+    @SuppressWarnings("unchecked")
+    void getByProduceCode_veg_plotRecordsUpToRotationOfThisCrop() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(VEG_CODE);
+        code.setCodeType("veg");
+        code.setProductId(PRODUCT_ID);
+        code.setPlotId(PLOT_ID);
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        PlotInfo plot = new PlotInfo();
+        plot.setId(PLOT_ID);
+        plot.setPlotCode("东区3号地块");
+        when(plotInfoMapper.selectById(PLOT_ID)).thenReturn(plot);
+
+        ProductProduction pack = new ProductProduction();
+        pack.setTraceCode(VEG_CODE);
+        pack.setProduceTime(java.sql.Timestamp.valueOf(LocalDateTime.of(2026, 8, 16, 9, 0)));
+        when(productProductionMapper.selectOne(any(Wrapper.class))).thenReturn(pack);
+
+        PlantingRecord planting = new PlantingRecord();
+        planting.setPlotId(PLOT_ID);
+        planting.setPlantDate(java.sql.Date.valueOf(LocalDate.of(2026, 7, 10)));
+        planting.setHarvestDate(java.sql.Date.valueOf(LocalDate.of(2026, 8, 15)));
+        when(plantingRecordMapper.selectOne(any(Wrapper.class))).thenReturn(planting);
+
+        PlantDetails next = new PlantDetails();
+        next.setPlotId(PLOT_ID);
+        next.setBeginActualdate(LocalDate.of(2026, 8, 25));
+        when(plantDetailsMapper.selectOne(any(Wrapper.class))).thenReturn(next);
+
+        FarmRecords rotation = new FarmRecords();
+        rotation.setPlotId(PLOT_ID);
+        rotation.setFarmType("rotation");
+        rotation.setFarmDate(LocalDate.of(2026, 8, 24));
+        ArgumentCaptor<Wrapper<FarmRecords>> rotationCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        when(farmRecordsMapper.selectOne(rotationCaptor.capture())).thenReturn(rotation);
+        ArgumentCaptor<Wrapper<FarmRecords>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        when(farmRecordsMapper.selectList(captor.capture())).thenReturn(List.of());
+
+        service.getByProduceCode(VEG_CODE);
+
+        // 退茬日 = 本茬种植日起、下一茬之前最早的一条 rotation
+        LambdaQueryWrapper<FarmRecords> rotationQuery = (LambdaQueryWrapper<FarmRecords>) rotationCaptor.getValue();
+        // 严格大于种植日：和本茬种植同一天的退茬是上一茬收尾，不能当成本茬退茬
+        assertThat(rotationQuery.getSqlSegment()).contains("farm_type =").contains("farm_date >").contains("farm_date <")
+            .doesNotContain("farm_date >=")
+            .containsPattern("ORDER BY farm_date ASC");
+        assertThat(rotationQuery.getParamNameValuePairs())
+            .containsValue("rotation")
+            .containsValue(LocalDate.of(2026, 7, 10))
+            .containsValue(LocalDate.of(2026, 8, 25));
+
+        // 农事：≥ 7/10 · ≤ 8/24（退茬含）· < 8/25；8/26 整地这类退茬后的农事被截掉
+        LambdaQueryWrapper<FarmRecords> wrapper = (LambdaQueryWrapper<FarmRecords>) captor.getValue();
+        assertThat(wrapper.getSqlSegment()).contains("farm_date >=").contains("farm_date <=").contains("farm_date <")
+            // 种植当天的退茬记录不算本茬农事（上一茬收尾）
+            .contains("farm_type <>").contains("farm_date >")
+            .containsPattern("ORDER BY farm_date DESC\\s*,\\s*id DESC");
+        assertThat(wrapper.getParamNameValuePairs())
+            .containsValue(LocalDate.of(2026, 7, 10))
+            .containsValue(LocalDate.of(2026, 8, 24))
+            .containsValue(LocalDate.of(2026, 8, 25))
+            .doesNotContainValue(LocalDate.of(2026, 8, 16));
     }
 
     /** D-0119 第一步会先查一条生产领用出库流水拿库位；这里造那条。 */

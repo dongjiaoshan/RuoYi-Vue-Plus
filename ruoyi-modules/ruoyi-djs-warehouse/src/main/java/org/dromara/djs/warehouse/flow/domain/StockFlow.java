@@ -120,6 +120,15 @@ public class StockFlow extends TenantEntity {
     private BigDecimal changeNum;
 
     /**
+     * 称重（秤读数，kg；D-0147 ③）。仅称重页提交的、承载该次称重实重的流水行写值，
+     * 满足 {@code gross_weight − tare_weight = 该次称重实重}；旧入口 / 非称重流水为 NULL。
+     */
+    private BigDecimal grossWeight;
+
+    /** 去皮重量（kg；不去皮为 0；D-0147 ③），与 {@link #grossWeight} 成对写入。 */
+    private BigDecimal tareWeight;
+
+    /**
      * 变更件数 / 包数（本 ticket 同 changeNum 写一份）。
      */
     private BigDecimal changeQuantity;

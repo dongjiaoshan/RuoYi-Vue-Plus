@@ -36,6 +36,7 @@ import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.domain.bo.StockOutBo;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.stock.service.ILocationStockService;
+import org.dromara.djs.warehouse.tare.domain.ScaleReading;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -94,8 +95,9 @@ public class InoutWorkbenchService {
     @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public WorkbenchSubmitVo submitBurn(BurnWorkbenchSubmitBo bo) {
         String key = requestKey(bo.getRequestId());
-        String hash = fingerprint("burn", bo.getBarInfoId(), bo.getProductId(), normalized(bo.getWeight()),
-            bo.getDestination(), bo.getStoreId(), bo.getOutDest(), LoginHelper.getUserId());
+        ScaleReading reading = ScaleReading.of(bo.getGrossWeight(), bo.getTareWeight(), bo.getWeight());
+        String hash = withReading(fingerprint("burn", bo.getBarInfoId(), bo.getProductId(), normalized(bo.getWeight()),
+            bo.getDestination(), bo.getStoreId(), bo.getOutDest(), LoginHelper.getUserId()), reading);
         StockFlow receipt = existing(key);
         if (receipt != null) { return replay(receipt, hash, null); }
         requireBar(bo.getBarInfoId());
@@ -127,6 +129,8 @@ public class InoutWorkbenchService {
         burn.setLocationId(locationId);
         PigBurnRecordBo.ProductTypeItem item = new PigBurnRecordBo.ProductTypeItem();
         item.setProductId(bo.getProductId()); item.setWeight(bo.getWeight());
+        // 秤读数只落本次称重的入库流水（即回执那一行）；同一操作随后的直发 / 出库流水不重复记
+        if (reading != null) { item.setGrossWeight(reading.grossWeight()); item.setTareWeight(reading.tareWeight()); }
         burn.setProductTypeItems(List.of(item));
         Long burnRecordId = burnService.submitBurnRecord(burn);
         ProductInhouse source = inhouseMapper.selectOne(new LambdaQueryWrapper<ProductInhouse>()
@@ -159,12 +163,14 @@ public class InoutWorkbenchService {
             throw new ServiceException("请选择一条在库白条或已领用白条");
         }
         String key = requestKey(bo.getRequestId());
+        ScaleReading reading = ScaleReading.of(bo.getGrossWeight(), bo.getTareWeight(), bo.getWeight());
         // 保留旧去向回执的指纹，新增门店分支绑定门店、成品与计量确认，重试不可换单。
         String hash = "store".equals(bo.getDestination())
             ? fingerprint("cut-store", bo.getInhouseId(), bo.getCutRecordId(), bo.getProductId(),
                 normalized(bo.getWeight()), bo.getStoreId(), bo.getProductionProductId(), Boolean.TRUE.equals(bo.getAllowOverMeasure()), LoginHelper.getUserId())
             : fingerprint("cut", bo.getInhouseId(), bo.getCutRecordId(), bo.getProductId(),
                 normalized(bo.getWeight()), bo.getDestination(), bo.getOutDest(), LoginHelper.getUserId());
+        hash = withReading(hash, reading);
         StockFlow receipt = existing(key);
         if (receipt != null) { return replayCut(receipt, hash, bo.getCutRecordId()); }
         ProductInhouse source = bo.getInhouseId() == null ? null : inhouseMapper.selectById(bo.getInhouseId());
@@ -215,6 +221,7 @@ public class InoutWorkbenchService {
         cut.setCutRecordId(cutId); cut.setLocationId(locationId);
         PigCutOutBo.PartItem part = new PigCutOutBo.PartItem();
         part.setProductId(bo.getProductId()); part.setProductWeight(bo.getWeight());
+        if (reading != null) { part.setGrossWeight(reading.grossWeight()); part.setTareWeight(reading.tareWeight()); }
         cut.setPartItems(List.of(part));
         var produced = cutService.submitCutOutWithReceipt(cut);
         if (produced.size() != 1) { throw new ServiceException("分割入库回执异常，操作已撤销"); }
@@ -350,6 +357,11 @@ public class InoutWorkbenchService {
     private static String normalized(BigDecimal value) {
         if (value == null || value.signum() <= 0 || value.scale() > 3) { throw new ServiceException("请输入有效重量，最多三位小数"); }
         return value.stripTrailingZeros().toPlainString();
+    }
+
+    /** 带秤读数的请求把读数并进指纹（同一 requestId 不许换读数）；不带读数的旧客户端指纹与原来逐字节一致。 */
+    static String withReading(String hash, ScaleReading reading) {
+        return reading == null ? hash : fingerprint(hash, "scale", reading.fingerprint());
     }
 
     static String fingerprint(Object... fields) {

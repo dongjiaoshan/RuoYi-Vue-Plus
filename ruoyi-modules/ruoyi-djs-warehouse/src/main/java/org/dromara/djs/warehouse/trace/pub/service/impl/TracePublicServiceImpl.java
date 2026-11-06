@@ -150,6 +150,8 @@ public class TracePublicServiceImpl
      * 果蔬农事记录不展示的类型（DENGBO row63）：采摘 / 采摘活动——追溯页只显真实农事工序，采摘另有节点。
      */
     private static final Set<String> VEG_PLOT_RECORD_EXCLUDED = Set.of("harvest", "harvest_activity");
+    /** 农事类型「退茬」（djs_farm_type）：追溯页农事显示到这一茬的退茬为止（D-0155 ②）。 */
+    private static final String FARM_TYPE_ROTATION = "rotation";
 
     /** 门店现场生码 remark 前缀（{@code TraceServiceImpl.buildOnsiteRemark} 写入）。 */
     private static final String ONSITE_REMARK_PREFIX = "现场生码";
@@ -733,17 +735,22 @@ public class TracePublicServiceImpl
                 }
             }
             // 地块农事（row63：过滤掉采摘 / 采摘活动，追溯页只显真实农事工序）。
-            // V7 row33：只取本批那一茬种植日起、到本批采摘日为止且早于下一茬种植的农事（上一茬的翻耕/退茬、
-            // 采完之后为下一茬做的整地、下一茬的农事都与这批货无关），按农事日期倒序；取不到的一端不截断。
+            // V7 row33 / D-0155 ②（甲方「显示到退茬」）：取本批那一茬种植日起、到这一茬退茬记录日（含）为止、
+            // 且早于下一茬种植的农事，按农事日期倒序。上一茬的翻耕/退茬、退茬后为下一茬做的整地、下一茬的农事
+            // 都与这批货无关；这一茬还没退茬 → 不设该上界（仍受下一茬种植日限制）。取不到的一端不截断。
             LocalDate sowDate = resolveSowDate(code, planting, batchDate);
             LocalDate nextSowDate = findNextSowDate(code.getPlotId(),
                 planting != null && planting.getHarvestDate() != null ? toLocalDate(planting.getHarvestDate()) : sowDate);
+            LocalDate rotationDate = findRotationDate(code.getPlotId(), sowDate, nextSowDate);
             List<FarmRecords> records = farmRecordsMapper.selectList(
                 new LambdaQueryWrapper<FarmRecords>()
                     .eq(FarmRecords::getPlotId, code.getPlotId())
                     .notIn(FarmRecords::getFarmType, VEG_PLOT_RECORD_EXCLUDED)
                     .ge(sowDate != null, FarmRecords::getFarmDate, sowDate)
-                    .le(batchDate != null, FarmRecords::getFarmDate, batchDate)
+                    // 种植当天的退茬记录是上一茬的收尾，不算本茬农事
+                    .and(sowDate != null, w -> w.ne(FarmRecords::getFarmType, FARM_TYPE_ROTATION)
+                        .or().gt(FarmRecords::getFarmDate, sowDate))
+                    .le(rotationDate != null, FarmRecords::getFarmDate, rotationDate)
                     .lt(nextSowDate != null, FarmRecords::getFarmDate, nextSowDate)
                     .orderByDesc(FarmRecords::getFarmDate)
                     .orderByDesc(FarmRecords::getId));
@@ -959,6 +966,27 @@ public class TracePublicServiceImpl
     }
 
     /**
+     * 这一茬的退茬日（D-0155 ②）：该地块 {@code farm_type='rotation'} 且 {@code farm_date > 当次种植日}
+     * （且早于下一茬种植日）的最早一条农事日期。当次种植日未知时无法认定是哪一茬的退茬 → 返 null（不设上界）。
+     * 严格大于种植日：和本茬种植同一天的退茬记录是上一茬收尾，不能当成本茬的退茬把整茬农事吞掉。
+     */
+    private LocalDate findRotationDate(Long plotId, LocalDate sowDate, LocalDate nextSowDate) {
+        if (plotId == null || sowDate == null) {
+            return null;
+        }
+        FarmRecords rotation = farmRecordsMapper.selectOne(
+            new LambdaQueryWrapper<FarmRecords>()
+                .eq(FarmRecords::getPlotId, plotId)
+                .eq(FarmRecords::getFarmType, FARM_TYPE_ROTATION)
+                .gt(FarmRecords::getFarmDate, sowDate)
+                .lt(nextSowDate != null, FarmRecords::getFarmDate, nextSowDate)
+                .orderByAsc(FarmRecords::getFarmDate)
+                .orderByAsc(FarmRecords::getId)
+                .last("limit 1"));
+        return rotation != null ? rotation.getFarmDate() : null;
+    }
+
+    /**
      * 该地块在本茬之后的下一茬实际种植日：种植明细 begin_actualdate &gt; after 的最早一条；没有下一茬返 null。
      * after 传本茬开始采摘日（仓库种植记录 harvest_date，缺则本茬种植日）——同一茬里套种 / 分批补种的明细
      * 都在开始采摘之前，不能当成下一茬把本茬农事截掉。
@@ -989,7 +1017,7 @@ public class TracePublicServiceImpl
     /**
      * 本追溯码这一批的日期锚点：本批采摘入库日（D-0119）→ 打包日 → 追溯码采摘日；都没有返 null。
      * 用来认定「当次种植」是哪一茬（同一地块多茬时不能取最新一茬，否则上一茬的码会套上下一茬的种植日），
-     * 也是追溯页农事记录的截止日。
+     * 农事记录的截止日另按这一茬的退茬日认定（见 findRotationDate）。
      */
     private LocalDate resolveBatchDate(TraceCode code, LocalDateTime harvestInbound, Date packTime) {
         if (harvestInbound != null) {

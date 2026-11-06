@@ -69,6 +69,12 @@ public class PigCutRecordVo implements Serializable {
      */
     private BigDecimal remainingWeight;
 
+    /**
+     * 所属白条接收时日龄（天；D-0152 ②：出栏冻结日龄 + 出栏→燎毛接收天数）。外购 / 无出栏记录为 null。
+     * 仅白条分割管理列表回填（运行期展示），故无 {@code @ExcelProperty}。
+     */
+    private Integer ageDays;
+
     // ===== P5 外购标注（compute-on-read，按 white_bar_id 关联 bar_info 派生，无持久列）=====
 
     /**

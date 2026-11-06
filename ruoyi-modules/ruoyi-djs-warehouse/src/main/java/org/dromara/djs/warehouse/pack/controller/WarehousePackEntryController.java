@@ -351,6 +351,7 @@ public class WarehousePackEntryController extends BaseController {
         PigCutRecordQuery cuttingQ = new PigCutRecordQuery();
         cuttingQ.setCutStatus("cutting");
         result.addAll(pigCutService.queryList(cuttingQ));
+        pigCutService.fillAgeDays(result);
         return R.ok(result);
     }
 

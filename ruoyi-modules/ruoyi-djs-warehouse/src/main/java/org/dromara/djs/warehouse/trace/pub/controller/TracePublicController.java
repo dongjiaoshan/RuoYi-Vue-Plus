@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.domain.R;
 import org.dromara.djs.warehouse.trace.pub.domain.vo.PublicTraceVo;
+import org.dromara.djs.warehouse.trace.pub.service.IStoreTracePublicService;
 import org.dromara.djs.warehouse.trace.pub.service.ITracePublicService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -31,6 +32,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class TracePublicController {
 
     private final ITracePublicService tracePublicService;
+    private final IStoreTracePublicService storeTracePublicService;
 
     /**
      * 公开追溯聚合（@SaIgnore 无登录）。
@@ -51,6 +53,27 @@ public class TracePublicController {
             return R.ok(tracePublicService.getByProduceCode(traceCode));
         } catch (Exception e) {
             log.warn("[trace-public] 查询追溯码失败 traceCode={}: {}", traceCode, e.getMessage());
+            return R.ok((PublicTraceVo) null);
+        }
+    }
+
+    /**
+     * 门店级猪肉动态追溯（@SaIgnore 无登录，V7 row40）。
+     *
+     * <p>每个门店一个固定二维码 {@code /trace/store/<门店编码>}；内容按门店当天到店猪肉货品里最重的那头猪动态选取，
+     * 返回结构同 {@link #getByTraceCode}（{@code codeType=pork}）。门店不存在 → {@code data=null}；
+     * 门店当天没有可追溯的猪 → {@code pig=null} 的空态（只带门店块）。</p>
+     *
+     * @param storeKey 门店标识（= 门店编码 store_code）
+     * @return 门店猪肉追溯 VO；门店不存在返 data null
+     */
+    @SaIgnore
+    @GetMapping("/store/{storeKey}")
+    public R<PublicTraceVo> getByStore(@PathVariable("storeKey") String storeKey) {
+        try {
+            return R.ok(storeTracePublicService.getByStoreKey(storeKey));
+        } catch (Exception e) {
+            log.warn("[trace-public] 查询门店追溯失败 storeKey={}", storeKey, e);
             return R.ok((PublicTraceVo) null);
         }
     }

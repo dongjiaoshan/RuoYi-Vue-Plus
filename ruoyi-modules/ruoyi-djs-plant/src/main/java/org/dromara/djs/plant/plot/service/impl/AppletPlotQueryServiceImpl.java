@@ -10,6 +10,7 @@ import org.dromara.djs.plant.plot.domain.vo.PlotPlantingStatVo;
 import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotCardVo;
 import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotFarmworkVo;
 import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotPlantingVo;
+import org.dromara.djs.plant.plot.domain.vo.applet.AppletPlotSummaryVo;
 import org.dromara.djs.plant.plot.mapper.AppletPlotQueryMapper;
 import org.dromara.djs.plant.plot.service.IAppletPlotQueryService;
 import org.springframework.stereotype.Service;
@@ -54,10 +55,21 @@ public class AppletPlotQueryServiceImpl implements IAppletPlotQueryService {
 
     @Override
     public List<AppletPlotCardVo> listPlots(String plotName, Integer plotStatus) {
-        String keyword = StringUtils.isNotBlank(plotName) ? plotName.trim() : null;
-        List<AppletPlotCardVo> plots = plotQueryMapper.selectPlots(keyword, plotStatus);
+        List<AppletPlotCardVo> plots = plotQueryMapper.selectPlots(normalizeKeyword(plotName), plotStatus);
         enrich(plots);
         return plots;
+    }
+
+    @Override
+    public AppletPlotSummaryVo summary(String plotName, Integer plotStatus) {
+        AppletPlotSummaryVo vo = plotQueryMapper.selectSummary(normalizeKeyword(plotName), plotStatus);
+        if (vo == null) {
+            vo = new AppletPlotSummaryVo();
+        }
+        vo.setPlantingCount(vo.getPlantingCount() == null ? 0L : vo.getPlantingCount());
+        vo.setPickingCount(vo.getPickingCount() == null ? 0L : vo.getPickingCount());
+        vo.setIdleCount(vo.getIdleCount() == null ? 0L : vo.getIdleCount());
+        return vo;
     }
 
     @Override
@@ -181,6 +193,11 @@ public class AppletPlotQueryServiceImpl implements IAppletPlotQueryService {
                 p.setHistoryPlantCount(0L);
             }
         }
+    }
+
+    /** 名称关键字归一：空白 → null（不过滤），否则 trim。list 与 summary 共用，保证两者条件一致。 */
+    private static String normalizeKeyword(String plotName) {
+        return StringUtils.isNotBlank(plotName) ? plotName.trim() : null;
     }
 
     /** 本条亩产（kg/亩）；不参与评比返 null。 */

@@ -604,10 +604,9 @@ class PigBurnRecordServiceImplTest {
         assertThat(result.getInboundedWeight()).isEqualByComparingTo("0");
     }
 
-    @Test
-    void pendingCardShowsTheAgeFrozenAtThatMarketingNotAnEarlierPigWithTheSameTag() {
+    /** 出栏 marketed、出栏冻结日龄 183 的待燎毛猪；另有同耳号上一轮（一年前、200 天）出栏记录用来防串号。 */
+    private BarInfo marketedBar(java.time.LocalDateTime marketed) {
         BarInfo bar=sampleBar("pending_singe");
-        java.time.LocalDateTime marketed=java.time.LocalDateTime.of(2026,10,25,10,21,11);
         bar.setMarketingTime(Date.from(marketed.atZone(java.time.ZoneId.systemDefault()).toInstant()));
         when(barInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(bar));
         var reused=new org.dromara.djs.breed.core.domain.vo.PigMarketingAgeVo();
@@ -615,7 +614,78 @@ class PigBurnRecordServiceImplTest {
         var current=new org.dromara.djs.breed.core.domain.vo.PigMarketingAgeVo();
         current.setEarNo(bar.getEarNo()); current.setMarketingDate(marketed); current.setAgeDays(183);
         when(pigQueryService.listMarketingAgeByEarNos(any())).thenReturn(List.of(reused,current));
-        assertThat(service.queryPendingBars().getFirst().getAgeDays()).isEqualTo(183);
+        return bar;
+    }
+
+    private static Date shanghai(java.time.LocalDateTime t) {
+        return Date.from(t.atZone(java.time.ZoneId.of("Asia/Shanghai")).toInstant());
+    }
+
+    @Test
+    void pendingCardAgeUsesThatMarketingNotAnEarlierPigWithTheSameTagAndCountsUpToTodayBeforeReceipt() {
+        // D-0152 ②：还没接收（无燎毛入库流水）→ 按今天算：183 + (今天 − 出栏日)
+        java.time.LocalDateTime marketed=java.time.LocalDateTime.of(2026,10,25,10,21,11);
+        marketedBar(marketed);
+        long elapsed=java.time.temporal.ChronoUnit.DAYS.between(java.time.LocalDate.of(2026,10,25),
+            java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")));
+        assertThat(service.queryPendingBars().getFirst().getAgeDays()).isEqualTo(183 + (int) Math.max(0, elapsed));
+    }
+
+    @Test
+    void pendingCardAgeIsFixedAtTheFirstReceiptDayAcrossCalendarDays() {
+        // 出栏 10-26 08:00，接收（首条燎毛入库）10-28 23:30 → 按自然日差 2 天：185；后续入库不改接收日
+        marketedBar(java.time.LocalDateTime.of(2026,10,26,8,0,0));
+        var first=inhouse(TYPE_HALF,"40"); first.setFlowTime(shanghai(java.time.LocalDateTime.of(2026,10,28,23,30)));
+        var later=inhouse(TYPE_RIGHT,"41"); later.setFlowTime(shanghai(java.time.LocalDateTime.of(2026,10,30,9,0)));
+        when(flowMapper.selectBurnInbounds(any())).thenReturn(List.of(later,first));
+        assertThat(service.queryPendingBars().getFirst().getAgeDays()).isEqualTo(185);
+    }
+
+    @Test
+    void pendingCardAgeIsNullWithoutAFrozenMarketingRecord() {
+        BarInfo bar=sampleBar("pending_singe");
+        bar.setMarketingTime(shanghai(java.time.LocalDateTime.of(2026,10,26,8,0,0)));
+        when(barInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(bar));
+        when(pigQueryService.listMarketingAgeByEarNos(any())).thenReturn(List.of());
+        assertThat(service.queryPendingBars().getFirst().getAgeDays()).isNull();
+    }
+
+    @Test
+    @DisplayName("D-0147 ③：称重页秤读数落到该产出行的燎毛入库流水；不带读数的产出行保持 NULL")
+    void submitStoresScaleReadingOnTheInboundFlow() {
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBar("pending_singe"));
+        when(locationInfoMapper.selectById(LOCATION_ID)).thenReturn(new LocationInfo());
+        stubTypes();
+        when(burnMapper.insert(any(PigBurnRecord.class))).thenAnswer(inv -> { ((PigBurnRecord) inv.getArgument(0)).setId(60001L); return 1; });
+        when(bizCodeGenerator.generate(eq(BizCodeType.STOCK_FLOW_NO), anyMap())).thenReturn("F2606040IN0001");
+        when(barInfoMapper.updateBurnProgress(eq(BAR_ID), any(BigDecimal.class), any(Date.class), eq(OPERATOR_ID))).thenReturn(1);
+        PigBurnRecordBo bo = sampleBo();
+        bo.getProductTypeItems().get(0).setGrossWeight(new BigDecimal("81.000"));
+        bo.getProductTypeItems().get(0).setTareWeight(new BigDecimal("0.700"));
+
+        service.submitBurnRecord(bo);
+
+        ArgumentCaptor<StockFlow> flows = ArgumentCaptor.forClass(StockFlow.class);
+        verify(flowMapper, times(2)).insert(flows.capture());
+        assertThat(flows.getAllValues().get(0).getGrossWeight()).isEqualByComparingTo("81.000");
+        assertThat(flows.getAllValues().get(0).getTareWeight()).isEqualByComparingTo("0.700");
+        assertThat(flows.getAllValues().get(0).getChangeQuantity()).isEqualByComparingTo("80.300");
+        assertThat(flows.getAllValues().get(1).getGrossWeight()).isNull();
+        assertThat(flows.getAllValues().get(1).getTareWeight()).isNull();
+    }
+
+    @Test
+    @DisplayName("D-0147 ③：称重 − 去皮 ≠ 实重 → 拒绝，不写任何产出 / 流水")
+    void submitRejectsScaleReadingThatDoesNotAddUp() {
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(sampleBar("pending_singe"));
+        when(locationInfoMapper.selectById(LOCATION_ID)).thenReturn(new LocationInfo());
+        stubTypes();
+        PigBurnRecordBo bo = sampleBo();
+        bo.getProductTypeItems().get(0).setGrossWeight(new BigDecimal("81.000"));
+        bo.getProductTypeItems().get(0).setTareWeight(new BigDecimal("0.500"));
+        assertThatThrownBy(() -> service.submitBurnRecord(bo)).isInstanceOf(ServiceException.class).hasMessageContaining("不一致");
+        verify(flowMapper, never()).insert(any(StockFlow.class));
+        verify(productInhouseMapper, never()).insert(any(ProductInhouse.class));
     }
 
     @Test
