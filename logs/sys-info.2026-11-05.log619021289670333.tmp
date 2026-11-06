@@ -1,0 +1,92 @@
+2026-11-06 06:41:21 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/store/S931105A],无参数
+2026-11-06 06:41:25 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/store/S931105A],耗时:[4420]毫秒
+2026-11-06 06:41:25 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/store/S931105B],无参数
+2026-11-06 06:41:26 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/store/S931105B],耗时:[217]毫秒
+2026-11-06 06:41:26 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/store/S931105C],无参数
+2026-11-06 06:41:26 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/store/S931105C],耗时:[10]毫秒
+2026-11-06 06:41:26 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/store/S931105D],无参数
+2026-11-06 06:41:26 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/store/S931105D],耗时:[68]毫秒
+2026-11-06 06:41:26 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/store/NOPE],无参数
+2026-11-06 06:41:26 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/store/NOPE],耗时:[4]毫秒
+2026-11-06 06:41:32 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/S1105-PD],无参数
+2026-11-06 06:41:33 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/S1105-PD],耗时:[283]毫秒
+2026-11-06 06:44:04 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/store/S931105A],无参数
+2026-11-06 06:44:05 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/store/S931105A],耗时:[84]毫秒
+2026-11-06 06:44:06 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/store/S931105D],无参数
+2026-11-06 06:44:06 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/store/S931105D],耗时:[33]毫秒
+2026-11-06 06:44:07 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/store/S931105C],无参数
+2026-11-06 06:44:07 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/store/S931105C],耗时:[22]毫秒
+2026-11-06 06:44:08 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/store/NOPE-404],无参数
+2026-11-06 06:44:08 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/store/NOPE-404],耗时:[10]毫秒
+2026-11-06 06:44:09 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/S1105-PD],无参数
+2026-11-06 06:44:09 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/S1105-PD],耗时:[16]毫秒
+2026-11-06 06:44:10 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/store/S931105A],无参数
+2026-11-06 06:44:10 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/store/S931105A],耗时:[10]毫秒
+2026-11-06 06:44:10 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/S1105-PA1],无参数
+2026-11-06 06:44:10 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/S1105-PA1],耗时:[16]毫秒
+2026-11-06 06:47:51 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /auth/tenant/list],无参数
+2026-11-06 06:47:51 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /auth/code],无参数
+2026-11-06 06:47:52 [XNIO-1 task-2] INFO  o.d.c.r.aspectj.RateLimiterAspect - 限制令牌 => 20, 剩余令牌 => 19, 缓存key => 'global:rate_limit:/auth/tenant/list:127.0.0.1:'
+2026-11-06 06:47:52 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /auth/code],耗时:[1012]毫秒
+2026-11-06 06:47:52 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /auth/tenant/list],耗时:[1155]毫秒
+2026-11-06 06:48:15 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[POST /applet/auth/login],参数类型[json],参数:[{"username":"admin","clientId":"e5cd7e4891bf95d1d19206ce24a7b32e","grantType":"password"}]
+2026-11-06 06:48:20 [async-1] INFO  o.d.s.s.i.SysLogininforServiceImpl - [127.0.0.1]内网IP[admin][Success][Login successful]
+2026-11-06 06:48:20 [XNIO-1 task-2] INFO  o.d.web.listener.UserActionListener - user doLogin, userId:sys_user:1, token:***hZsOD3_g
+2026-11-06 06:48:20 [XNIO-1 task-2] INFO  o.d.web.listener.UserActionListener - user doLogout, userId:sys_user:1, token:***WKBiHFAg
+2026-11-06 06:48:20 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[POST /applet/auth/login],耗时:[4770]毫秒
+2026-11-06 06:48:23 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/user/getInfo],无参数
+2026-11-06 06:48:23 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/user/getInfo],耗时:[183]毫秒
+2026-11-06 06:48:23 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/menu/getRouters],无参数
+2026-11-06 06:48:23 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/menu/getRouters],耗时:[56]毫秒
+2026-11-06 06:48:24 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/user/farm/accessible],无参数
+2026-11-06 06:48:24 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_type],无参数
+2026-11-06 06:48:24 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_status],无参数
+2026-11-06 06:48:24 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/common/store/list],参数类型[param],参数:[{"pageSize":["10"],"pageNum":["1"]}]
+2026-11-06 06:48:24 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/user/farm/accessible],耗时:[35]毫秒
+2026-11-06 06:48:24 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_status],耗时:[61]毫秒
+2026-11-06 06:48:24 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_status],无参数
+2026-11-06 06:48:24 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_status],耗时:[10]毫秒
+2026-11-06 06:48:24 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_status],无参数
+2026-11-06 06:48:24 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_status],耗时:[3]毫秒
+2026-11-06 06:48:24 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_status],无参数
+2026-11-06 06:48:24 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_status],耗时:[3]毫秒
+2026-11-06 06:48:24 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_type],耗时:[213]毫秒
+2026-11-06 06:48:24 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_status],无参数
+2026-11-06 06:48:24 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_status],耗时:[32]毫秒
+2026-11-06 06:48:24 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_type],无参数
+2026-11-06 06:48:24 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_status],无参数
+2026-11-06 06:48:24 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_type],耗时:[96]毫秒
+2026-11-06 06:48:24 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_status],耗时:[98]毫秒
+2026-11-06 06:48:24 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_type],无参数
+2026-11-06 06:48:24 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_status],无参数
+2026-11-06 06:48:24 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_status],耗时:[4]毫秒
+2026-11-06 06:48:25 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_type],耗时:[32]毫秒
+2026-11-06 06:48:25 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/common/store/list],耗时:[422]毫秒
+2026-11-06 06:48:25 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_status],无参数
+2026-11-06 06:48:25 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_type],无参数
+2026-11-06 06:48:25 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_status],耗时:[9]毫秒
+2026-11-06 06:48:25 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_type],耗时:[9]毫秒
+2026-11-06 06:48:25 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_status],无参数
+2026-11-06 06:48:25 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_type],无参数
+2026-11-06 06:48:25 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_status],耗时:[7]毫秒
+2026-11-06 06:48:25 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_type],耗时:[7]毫秒
+2026-11-06 06:48:25 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_type],无参数
+2026-11-06 06:48:25 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_type],耗时:[67]毫秒
+2026-11-06 06:48:25 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_type],无参数
+2026-11-06 06:48:25 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_type],耗时:[6]毫秒
+2026-11-06 06:48:25 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_type],无参数
+2026-11-06 06:48:25 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_type],耗时:[2]毫秒
+2026-11-06 06:48:25 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/dict/data/type/djs_store_type],无参数
+2026-11-06 06:48:25 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/dict/data/type/djs_store_type],耗时:[3]毫秒
+2026-11-06 06:48:25 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/common/store/list],参数类型[param],参数:[{"pageSize":["10"],"pageNum":["1"],"storeCode":["S931105A"]}]
+2026-11-06 06:48:25 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/common/store/list],耗时:[74]毫秒
+2026-11-06 06:48:31 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/store/S931105A],无参数
+2026-11-06 06:48:31 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/store/S931105A],耗时:[153]毫秒
+2026-11-06 06:49:06 [SpringApplicationShutdownHook] INFO  io.undertow - stopping server: Undertow - 2.3.24.Final
+2026-11-06 06:49:07 [SpringApplicationShutdownHook] INFO  o.d.c.core.config.ThreadPoolConfig - ====关闭后台任务任务线程池====
+2026-11-06 06:49:07 [SpringApplicationShutdownHook] INFO  c.b.d.d.DynamicRoutingDataSource - dynamic-datasource start closing ....
+2026-11-06 06:49:07 [SpringApplicationShutdownHook] INFO  com.zaxxer.hikari.HikariDataSource - master - Shutdown initiated...
+2026-11-06 06:49:07 [SpringApplicationShutdownHook] INFO  com.zaxxer.hikari.HikariDataSource - master - Shutdown completed.
+2026-11-06 06:49:07 [SpringApplicationShutdownHook] INFO  c.b.d.d.d.DefaultDataSourceDestroyer - dynamic-datasource close the datasource named [master] success,
+2026-11-06 06:49:07 [SpringApplicationShutdownHook] INFO  c.b.d.d.DynamicRoutingDataSource - dynamic-datasource all closed success,bye
+2026-11-06 06:49:07 [SpringApplicationShutdownHook] INFO  io.undertow.servlet - Destroying Spring FrameworkServlet 'dispatcherServlet'
