@@ -134,6 +134,12 @@ public interface InoutStatMapper {
      *
      * <p>参数名固定 {@code tenantId / query / outExcluded}。日期区间的半开右端理由同
      * {@link #IN_WHERE}。</p>
+     *
+     * <p>门店白条先写 cut_out 转到月台，再写 ship_out 实际发货；同一片不能在本页计两次。
+     * 只排除能由同租户、同产品、同白条号的门店产出确定为内部转移的 cut_out，
+     * 不推断缺少关联的历史流水，不排除仓库直接取货或礼盒领用。产出仅用于辨认历史身份，
+     * 不按其软删/清点状态或日期改变分类；跨日发货按 ship_out 自身日期计量。
+     * EXISTS 不会因一片白条有多条产出记录而放大原始流水。</p>
      */
     String OUT_WHERE = """
         WHERE f.del_flag = '0' AND f.tenant_id = #{tenantId}
@@ -141,6 +147,19 @@ public interface InoutStatMapper {
           AND f.product_id IS NOT NULL AND f.product_id &lt;&gt; 0
           AND f.flow_type NOT IN
               <foreach collection="outExcluded" item="t" open="(" separator="," close=")">#{t}</foreach>
+          AND NOT (
+              f.flow_type = 'cut_out'
+              AND COALESCE(f.stock_out_dest, '') = 'ship_dock'
+              AND NULLIF(TRIM(f.white_bar_no), '') IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM t_warehouse_product_production pp
+                  WHERE pp.tenant_id = f.tenant_id
+                    AND pp.product_id = f.product_id
+                    AND pp.white_bar_no = f.white_bar_no
+                    AND pp.store_id IS NOT NULL
+                    AND COALESCE(pp.deliver_dest, '') NOT IN ('warehouse_out', 'gift')
+              )
+          )
         <if test="query.dateFrom != null">
           AND f.flow_date &gt;= #{query.dateFrom}
         </if>
