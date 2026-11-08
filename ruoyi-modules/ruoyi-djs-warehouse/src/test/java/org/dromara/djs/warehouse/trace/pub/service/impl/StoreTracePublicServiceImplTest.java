@@ -79,6 +79,7 @@ class StoreTracePublicServiceImplTest {
     @Mock private TraceCodeMapper traceCodeMapper;
     @Mock private ITracePublicService tracePublicService;
     @Mock private OssService ossService;
+    @Mock private org.dromara.djs.warehouse.trace.mapper.TracePageConfigMapper tracePageConfigMapper;
 
     private StoreTracePublicServiceImpl service;
     private MockedStatic<TenantHelper> tenantHelperMock;
@@ -94,12 +95,13 @@ class StoreTracePublicServiceImplTest {
         TableInfoHelper.initTableInfo(assistant, ProductProduction.class);
         TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
         TableInfoHelper.initTableInfo(assistant, TraceCode.class);
+        TableInfoHelper.initTableInfo(assistant, org.dromara.djs.warehouse.trace.domain.TracePageConfig.class);
     }
 
     @BeforeEach
     void setup() {
         service = spy(new StoreTracePublicServiceImpl(storeMapper, demandManageMapper, productProductionMapper,
-            productInfoMapper, traceCodeMapper, tracePublicService, ossService));
+            productInfoMapper, traceCodeMapper, tracePublicService, ossService, tracePageConfigMapper));
         doReturn(TODAY).when(service).today();
         cache.clear();
         doAnswer(inv -> cache.get(inv.<String>getArgument(0))).when(service).readCache(anyString());
@@ -229,6 +231,30 @@ class StoreTracePublicServiceImplTest {
         assertThat(vo.getStore().getName()).isEqualTo("东角山测试门店");
         assertThat(cache).containsEntry("trace:public-store:" + STORE_ID + ":20261105", StoreTracePublicServiceImpl.NONE);
         verify(tracePublicService, never()).getByProduceCode(anyString());
+    }
+
+    @Test
+    @DisplayName("当天无猪时仍返回猪肉基地配置，配置更新立即生效")
+    void emptyStoreStillHasPorkBaseConfiguration() {
+        when(demandManageMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+        var config = new org.dromara.djs.warehouse.trace.domain.TracePageConfig();
+        config.setCodeType("pork");
+        config.setBaseIntroImageOssId("9001");
+        when(tracePageConfigMapper.selectOne(any(Wrapper.class))).thenReturn(config);
+        when(ossService.selectUrlByIds("9001")).thenReturn("https://test.example/pork-base.jpg");
+        PublicTraceVo first = service.getByStoreKey(STORE_CODE);
+        assertThat(first.getPig()).isNull();
+        assertThat(first.getBaseIntroImageUrl()).isEqualTo("https://test.example/pork-base.jpg");
+
+        config.setBaseIntroImageOssId("9002");
+        when(ossService.selectUrlByIds("9002")).thenReturn("https://test.example/pork-base-new.jpg");
+        PublicTraceVo refreshed = service.getByStoreKey(STORE_CODE);
+        assertThat(refreshed.getBaseIntroImageUrl()).isEqualTo("https://test.example/pork-base-new.jpg");
+        ArgumentCaptor<Wrapper> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(tracePageConfigMapper, Mockito.times(2)).selectOne(captor.capture());
+        assertThat(captor.getValue().getTargetSql()).contains("code_type");
+        var params = ((LambdaQueryWrapper<?>) captor.getValue()).getParamNameValuePairs();
+        assertThat(params.values()).contains("pork");
     }
 
     @Test

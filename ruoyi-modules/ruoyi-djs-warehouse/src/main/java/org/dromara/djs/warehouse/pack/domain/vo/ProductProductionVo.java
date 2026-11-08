@@ -49,6 +49,9 @@ public class ProductProductionVo implements Serializable {
     @ExcelDictFormat(dictType = "djs_product_type")
     private Integer productType;
 
+    /** 产品主数据属性：1=生产产品、2=原材料，产品明细查询时批量回填。 */
+    private Integer productAttr;
+
     @ExcelProperty(value = "单位")
     private String productUnit;
 

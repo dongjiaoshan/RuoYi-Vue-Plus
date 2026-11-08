@@ -1,8 +1,13 @@
 package org.dromara.djs.store.demand.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.store.service.IStoreService;
+import org.dromara.djs.common.store.domain.vo.StoreVo;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
@@ -16,6 +21,7 @@ import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -31,6 +37,7 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -94,10 +101,16 @@ class StoreDemandServiceImplTest {
 
     private MockedStatic<LoginHelper> loginHelperMock;
 
+    @BeforeAll
+    static void initTableInfo() {
+        TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "store-arrival-test"), DemandManage.class);
+    }
+
     @BeforeEach
     void setUp() {
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(2001L);
+        when(demandManageMapper.update(any(DemandManage.class), any(Wrapper.class))).thenReturn(1);
         // 自产产品闸的默认桩：8001 = 自产白条（可下单）；测外购拒绝的用例自带 product_type=2 的桩
         ProductInfo sellable = new ProductInfo();
         sellable.setId(8001L);
@@ -268,7 +281,7 @@ class StoreDemandServiceImplTest {
         service.receive(9001L);
 
         ArgumentCaptor<DemandManage> cap = ArgumentCaptor.forClass(DemandManage.class);
-        verify(demandManageMapper, times(1)).updateById(cap.capture());
+        verify(demandManageMapper, times(1)).update(cap.capture(), any(Wrapper.class));
         DemandManage patch = cap.getValue();
         assertThat(patch.getId()).isEqualTo(9001L);
         assertThat(patch.getReceivedTime()).isNotNull();
@@ -285,7 +298,7 @@ class StoreDemandServiceImplTest {
 
         service.receive(9003L);
 
-        verify(demandManageMapper, times(1)).updateById(any(DemandManage.class));
+        verify(demandManageMapper, times(1)).update(any(DemandManage.class), any(Wrapper.class));
     }
 
     @Test
@@ -297,6 +310,86 @@ class StoreDemandServiceImplTest {
         when(demandManageMapper.selectById(9002L)).thenReturn(confirmed);
 
         assertThatThrownBy(() -> service.receive(9002L)).isInstanceOf(ServiceException.class);
-        verify(demandManageMapper, never()).updateById(any(DemandManage.class));
+        verify(demandManageMapper, never()).update(any(DemandManage.class), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("到店确认门店卡：跨日期聚合，重复产品仅计一种")
+    void pendingArrivalsGroupByStoreAndProduct() {
+        DemandManage a = arrivalDemand(9010L, 5001L, 7001L);
+        a.setDemandDate(LocalDate.now().minusDays(3));
+        DemandManage b = arrivalDemand(9011L, 5001L, 7001L);
+        DemandManage c = arrivalDemand(9012L, 5001L, 7002L);
+        DemandManage other = arrivalDemand(9013L, 5002L, 7002L);
+        when(demandManageMapper.selectList(any(Wrapper.class))).thenReturn(List.of(a, b, c, other));
+        StoreVo store = new StoreVo();
+        store.setStoreName("到店测试门店");
+        when(storeService.queryById(5001L)).thenReturn(store);
+
+        var result = service.listPendingArrivalStores();
+
+        assertThat(result).hasSize(2);
+        assertThat(result.get(0).getStoreName()).isEqualTo("到店测试门店");
+        assertThat(result.get(0).getPendingDemandCount()).isEqualTo(3);
+        assertThat(result.get(0).getProductKindCount()).isEqualTo(2);
+        assertThat(result.get(1).getPendingDemandCount()).isEqualTo(1);
+        ArgumentCaptor<Wrapper<DemandManage>> query = ArgumentCaptor.forClass(Wrapper.class);
+        verify(demandManageMapper).selectList(query.capture());
+        assertThat(query.getValue().getSqlSegment()).contains("received_time IS NULL", "is_delivery_check = 1", "EXISTS",
+                "NOT IN ('mail', 'gift', 'warehouse_out')", "pp.deliver_type <> 2")
+            .doesNotContain("demand_date");
+    }
+
+    @Test
+    @DisplayName("整店到店确认：逐单沿用收货字段，二次提交无新需求时返回0")
+    void receiveWholeStoreAndNoOpOnRepeat() {
+        when(demandManageMapper.selectList(any(Wrapper.class))).thenReturn(
+            List.of(arrivalDemand(9010L, 5001L, 7001L), arrivalDemand(9011L, 5001L, 7002L)), List.of());
+
+        assertThat(service.receiveStoreArrivals(5001L)).isEqualTo(2);
+        assertThat(service.receiveStoreArrivals(5001L)).isZero();
+
+        ArgumentCaptor<DemandManage> patches = ArgumentCaptor.forClass(DemandManage.class);
+        verify(demandManageMapper, times(2)).update(patches.capture(), any(Wrapper.class));
+        assertThat(patches.getAllValues()).extracting(DemandManage::getId).containsExactly(9010L, 9011L);
+        assertThat(patches.getAllValues()).allSatisfy(patch -> {
+            assertThat(patch.getReceivedTime()).isNotNull();
+            assertThat(patch.getReceivedBy()).isEqualTo(2001L);
+            assertThat(patch.getDemandStatus()).isNull();
+            assertThat(patch.getDemandQuantity()).isNull();
+        });
+    }
+
+    @Test
+    @DisplayName("并发收货已被其他请求处理：条件更新失败即拒绝，不重复写追溯")
+    void concurrentReceiveDoesNotRecordDuplicateArrival() {
+        when(demandManageMapper.selectById(9010L)).thenReturn(arrivalDemand(9010L, 5001L, 7001L));
+        when(demandManageMapper.update(any(DemandManage.class), any(Wrapper.class))).thenReturn(0);
+
+        assertThatThrownBy(() -> service.receive(9010L)).isInstanceOf(ServiceException.class).hasMessageContaining("重复");
+
+        verify(productProductionMapper, never()).selectList(any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("已经收货的需求拒绝再次收货，不覆盖原收货时间")
+    void receivedDemandDoesNotChangeTimestamp() {
+        DemandManage demand = arrivalDemand(9010L, 5001L, 7001L);
+        demand.setReceivedTime(LocalDateTime.of(2026, 11, 6, 9, 0));
+        when(demandManageMapper.selectById(9010L)).thenReturn(demand);
+
+        assertThatThrownBy(() -> service.receive(9010L)).isInstanceOf(ServiceException.class);
+
+        verify(demandManageMapper, never()).update(any(DemandManage.class), any(Wrapper.class));
+    }
+
+    private DemandManage arrivalDemand(Long id, Long storeId, Long productId) {
+        DemandManage demand = new DemandManage();
+        demand.setId(id);
+        demand.setStoreId(storeId);
+        demand.setProductId(productId);
+        demand.setDemandStatus(DemandStatus.COMPLETED.name());
+        demand.setDemandType("store");
+        return demand;
     }
 }

@@ -215,6 +215,37 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
     List<DemandManage> selectUncompletedDemands(@Param("productId") Long productId,
                                                 @Param("storeId") Long storeId);
 
+    /** 白条出门店使用全部已确认未满足需求，按需求日先后履约，日期不设下界。 */
+    @Select("""
+        SELECT dm.* FROM t_warehouse_demand_manage dm
+        JOIN t_warehouse_product_info p ON p.id=dm.product_id AND p.tenant_id=dm.tenant_id
+          AND p.del_flag='0' AND p.belong_type='white_bar'
+        WHERE dm.product_id=#{productId} AND dm.store_id=#{storeId}
+          AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')
+          AND COALESCE(dm.shipped_count,0)<dm.demand_quantity
+          AND dm.del_flag='0' AND dm.tenant_id='1001'
+        ORDER BY dm.demand_date ASC,dm.id ASC
+        """)
+    List<DemandManage> selectUncompletedWhiteBarDemands(@Param("productId") Long productId,
+                                                       @Param("storeId") Long storeId);
+
+    /** 与白条履约候选保持同一范围，避免可选门店在提交时被日期条件拒绝。 */
+    @Select("""
+        SELECT dm.store_id AS storeId,s.store_name AS storeName,
+               SUM(GREATEST(dm.demand_quantity-COALESCE(dm.shipped_count,0),0)) AS copies
+        FROM t_warehouse_demand_manage dm
+        JOIN t_warehouse_product_info p ON p.id=dm.product_id AND p.tenant_id=dm.tenant_id
+          AND p.del_flag='0' AND p.belong_type='white_bar' AND p.product_status=0
+        JOIN t_md_store s ON s.id=dm.store_id AND s.tenant_id=dm.tenant_id AND s.del_flag='0'
+        WHERE dm.product_id=#{productId}
+          AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')
+          AND dm.del_flag='0' AND dm.tenant_id='1001'
+        GROUP BY dm.store_id,s.store_name
+        HAVING copies>=1
+        ORDER BY copies DESC,dm.store_id
+        """)
+    List<StoreDemandCopiesVo> selectWhiteBarStoreDemandCopies(@Param("productId") Long productId);
+
     /**
      * 某门店某产品「今天及以后的在途需求行」<b>全量</b>（V6-R160 发货月台「已备齐」判定的归并范围）。
      *

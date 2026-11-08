@@ -842,7 +842,7 @@ class ProductProductionServiceImplTest {
         when(productInfoMapper.selectById(101L)).thenReturn(left); when(productInfoMapper.selectById(102L)).thenReturn(right);
         var demand=new org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo();
         demand.setStoreId(2104385571342807042L); demand.setStoreName("浦东店"); demand.setCopies(new BigDecimal("2.000"));
-        when(demandManageMapper.selectStoreDemandCopies(eq(101L),any())).thenReturn(List.of(demand));
+        when(demandManageMapper.selectWhiteBarStoreDemandCopies(101L)).thenReturn(List.of(demand));
         assertThat(service.listWhiteBarShipStores(101L)).hasSize(1);
         assertThat(service.listWhiteBarShipStores(101L).getFirst()).containsEntry("storeId","2104385571342807042").containsEntry("demandQty",new BigDecimal("2.000"));
         assertThat(service.listWhiteBarShipStores(102L)).isEmpty();
@@ -888,7 +888,8 @@ class ProductProductionServiceImplTest {
 
         var demand=new org.dromara.djs.warehouse.demand.domain.DemandManage();
         demand.setId(99L); demand.setDemandQuantity(BigDecimal.ONE); demand.setProductId(60001L); demand.setStoreId(9L);
-        when(demandManageMapper.selectUncompletedDemands(60001L,9L)).thenReturn(List.of(demand));
+        demand.setDemandDate(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).minusDays(7));
+        when(demandManageMapper.selectUncompletedWhiteBarDemands(60001L,9L)).thenReturn(List.of(demand));
         when(demandManageMapper.incrementShipped(eq(99L),any(),eq(BigDecimal.ONE))).thenReturn(1);
         Long id = service.submitWhiteBarOut(bo);
 
@@ -902,6 +903,9 @@ class ProductProductionServiceImplTest {
         assertThat(saved.getStoreId()).isEqualTo(9L);
         assertThat(saved.getEarNo()).isEqualTo("010126050101");
         assertThat(saved.getProductWeight()).isEqualByComparingTo("12.000");
+        verify(demandManageMapper).incrementShipped(eq(99L),any(),eq(BigDecimal.ONE));
+        verify(demandManageMapper,never()).selectUncompletedDemands(60001L,9L);
+        verify(pigCutService).insertOutRecord(eq("ship"), any(), eq(src), eq(bo.getProductWeight()), eq(9L), eq(99L), any(), any());
         // DENGBO row28：发货月台出库按「整条产出行」消耗软删（产出重 50 全额 → deleteById），
         // 差额(50−12)=预冷损耗由 lossFlowService 记，不留零头残行。
         // row60：整行用尽先经带条件的 deductWeightById 扣到 0 拿行锁（防并发两人同时"删成功"各自产出），再软删。
@@ -929,7 +933,7 @@ class ProductProductionServiceImplTest {
         when(storeMapper.selectById(9L)).thenReturn(new org.dromara.djs.common.store.domain.Store());
         var demand=new org.dromara.djs.warehouse.demand.domain.DemandManage();
         demand.setId(99L); demand.setDemandQuantity(BigDecimal.ONE); demand.setProductId(60001L); demand.setStoreId(9L);
-        when(demandManageMapper.selectUncompletedDemands(60001L,9L)).thenReturn(List.of(demand));
+        when(demandManageMapper.selectUncompletedWhiteBarDemands(60001L,9L)).thenReturn(List.of(demand));
         when(demandManageMapper.incrementShipped(eq(99L),any(),eq(BigDecimal.ONE))).thenReturn(1);
 
         WhiteBarOutBo bo = new WhiteBarOutBo();
@@ -1233,6 +1237,94 @@ class ProductProductionServiceImplTest {
         verify(productionMapper).updateDamage(eq(81002L), any(), eq("破损"), any());
     }
 
+    @Test
+    @DisplayName("markDamage: 已确认到店的非白条 KG 生产产品允许标损，未到店拒绝")
+    void markDamageAllowsArrivedKgFinishedProductOnly() {
+        ProductProduction production = arrivedKgProduction();
+        when(productionMapper.selectById(81003L)).thenReturn(production);
+        var demand = arrivedKgDemand("vegetable");
+        when(demandManageMapper.selectById(91003L)).thenReturn(demand);
+        ProductInfo product = new ProductInfo();
+        product.setId(71003L);
+        product.setProductAttr(1);
+        product.setBelongType("vegetable");
+        when(productInfoMapper.selectById(71003L)).thenReturn(product);
+        when(productionMapper.updateDamage(eq(81003L), any(), any(), any())).thenReturn(1);
+        MarkDamageBo bo = new MarkDamageBo();
+        bo.setId(81003L);
+
+        service.markDamage(bo);
+        verify(productionMapper).updateDamage(eq(81003L), any(), any(), any());
+
+        demand.setReceivedTime(null);
+        assertThatThrownBy(() -> service.markDamage(bo)).isInstanceOf(ServiceException.class).hasMessageContaining("到店");
+        verify(productionMapper, times(1)).updateDamage(eq(81003L), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("markDamage: 已到店白条和仓库自用 KG 仍拒绝，不通过状态放大范围")
+    void markDamageStillRejectsWhiteBarAndWarehouseKg() {
+        ProductProduction production = arrivedKgProduction();
+        when(productionMapper.selectById(81003L)).thenReturn(production);
+        when(demandManageMapper.selectById(91003L)).thenReturn(arrivedKgDemand("white_bar"));
+        MarkDamageBo bo = new MarkDamageBo();
+        bo.setId(81003L);
+
+        assertThatThrownBy(() -> service.markDamage(bo)).isInstanceOf(ServiceException.class);
+
+        production.setDeliverDest("warehouse_out");
+        assertThatThrownBy(() -> service.markDamage(bo)).isInstanceOf(ServiceException.class);
+        verify(productionMapper, never()).updateDamage(eq(81003L), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("markDamage: 邮寄去向或邮寄方式不能借已到店门店需求开放 KG 标损")
+    void markDamageRejectsMailedKgEvenWhenLinkedToArrivedStoreDemand() {
+        ProductProduction production = arrivedKgProduction();
+        when(productionMapper.selectById(81003L)).thenReturn(production);
+        when(demandManageMapper.selectById(91003L)).thenReturn(arrivedKgDemand("vegetable"));
+        ProductInfo product = new ProductInfo();
+        product.setId(71003L);
+        product.setProductAttr(1);
+        product.setBelongType("vegetable");
+        when(productInfoMapper.selectById(71003L)).thenReturn(product);
+        when(productionMapper.updateDamage(eq(81003L), any(), any(), any())).thenReturn(1);
+        MarkDamageBo bo = new MarkDamageBo();
+        bo.setId(81003L);
+
+        service.markDamage(bo);
+        production.setDeliverDest("mail");
+        assertThatThrownBy(() -> service.markDamage(bo)).isInstanceOf(ServiceException.class);
+        production.setDeliverDest("platform");
+        production.setDeliverType(2);
+        assertThatThrownBy(() -> service.markDamage(bo)).isInstanceOf(ServiceException.class);
+        production.setDeliverDest("mail");
+        assertThatThrownBy(() -> service.markDamage(bo)).isInstanceOf(ServiceException.class);
+        verify(productionMapper, times(1)).updateDamage(eq(81003L), any(), any(), any());
+    }
+
+    private ProductProduction arrivedKgProduction() {
+        ProductProduction production = new ProductProduction();
+        production.setId(81003L);
+        production.setProductId(71003L);
+        production.setProductUnit("KG");
+        production.setIsDeliveryCheck(1);
+        production.setStoreId(51003L);
+        production.setDemandId(91003L);
+        production.setDeliverDest("platform");
+        return production;
+    }
+
+    private org.dromara.djs.warehouse.demand.domain.DemandManage arrivedKgDemand(String type) {
+        var demand = new org.dromara.djs.warehouse.demand.domain.DemandManage();
+        demand.setId(91003L);
+        demand.setStoreId(51003L);
+        demand.setDemandType("store");
+        demand.setProductType(type);
+        demand.setReceivedTime(java.time.LocalDateTime.now());
+        return demand;
+    }
+
     // ============================================================
     // listMaterialStock（打包卡片「原材料实时库存」批量口径）
     // ============================================================
@@ -1337,6 +1429,36 @@ class ProductProductionServiceImplTest {
         // 明细这侧也一条都不许加 —— 多一道条件，明细行的抵扣量之和就对不上需求行的到店量
         // （线上实证：需求 2089615514926686209 到店量 100，带 excludeGiftDeliver 只剩 1 行 50）。
         assertThat(sql).doesNotContain("deliver_dest");
+    }
+
+    @Test
+    @DisplayName("产品明细批量回填生产产品/原材料属性，缺主数据不伪造属性")
+    void queryItemPageListFillsProductAttributes() {
+        var finished = new org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo();
+        finished.setProductId(771L);
+        var material = new org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo();
+        material.setProductId(772L);
+        var missing = new org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo();
+        missing.setProductId(773L);
+        var page = new com.baomidou.mybatisplus.extension.plugins.pagination.Page<org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo>();
+        page.setRecords(List.of(finished, material, missing));
+        when(productionMapper.selectVoPage(any(), any())).thenReturn(page);
+        ProductInfo product = new ProductInfo();
+        product.setId(771L);
+        product.setProductAttr(1);
+        ProductInfo raw = new ProductInfo();
+        raw.setId(772L);
+        raw.setProductAttr(2);
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(product, raw));
+
+        var query = new org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery();
+        query.setDemandId(999L);
+        service.queryItemPageList(query, new org.dromara.common.mybatis.core.page.PageQuery(1, 10));
+
+        assertThat(finished.getProductAttr()).isEqualTo(1);
+        assertThat(material.getProductAttr()).isEqualTo(2);
+        assertThat(missing.getProductAttr()).isNull();
+        verify(productInfoMapper, times(1)).selectList(any());
     }
 
     @Test

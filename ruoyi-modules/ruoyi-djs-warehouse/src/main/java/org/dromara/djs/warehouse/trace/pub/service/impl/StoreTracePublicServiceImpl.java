@@ -16,8 +16,10 @@ import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
+import org.dromara.djs.warehouse.trace.domain.TracePageConfig;
 import org.dromara.djs.warehouse.trace.domain.TraceCodeTypeConst;
 import org.dromara.djs.warehouse.trace.mapper.TraceCodeMapper;
+import org.dromara.djs.warehouse.trace.mapper.TracePageConfigMapper;
 import org.dromara.djs.warehouse.trace.pub.domain.vo.PublicTraceVo;
 import org.dromara.djs.warehouse.trace.pub.service.IStoreTracePublicService;
 import org.dromara.djs.warehouse.trace.pub.service.ITracePublicService;
@@ -103,6 +105,7 @@ public class StoreTracePublicServiceImpl implements IStoreTracePublicService {
     private final TraceCodeMapper traceCodeMapper;
     private final ITracePublicService tracePublicService;
     private final OssService ossService;
+    private final TracePageConfigMapper tracePageConfigMapper;
 
     @Override
     public PublicTraceVo getByStoreKey(String storeKey) {
@@ -131,6 +134,14 @@ public class StoreTracePublicServiceImpl implements IStoreTracePublicService {
             adaptForStore(vo, produceCode);
         }
         vo.setStore(buildStoreBlock(store));
+        if (vo.getPig() == null) {
+            TracePageConfig config = TenantHelper.ignore(() -> tracePageConfigMapper.selectOne(
+                new LambdaQueryWrapper<TracePageConfig>()
+                    .eq(TracePageConfig::getCodeType, TraceCodeTypeConst.PORK).last("limit 1")));
+            if (config != null && StringUtils.isNotBlank(config.getBaseIntroImageOssId())) {
+                vo.setBaseIntroImageUrl(firstOssUrl(config.getBaseIntroImageOssId()));
+            }
+        }
         return vo;
     }
 
@@ -334,7 +345,7 @@ public class StoreTracePublicServiceImpl implements IStoreTracePublicService {
         vo.setProduct(product);
     }
 
-    /** 当天没有可追溯的猪：pork 空态（只带门店块，H5 显示「暂无追溯信息」）。 */
+    /** 当天没有可追溯的猪：pork 空态；门店和基地配置在返回前回填。 */
     private PublicTraceVo emptyVo() {
         PublicTraceVo vo = new PublicTraceVo();
         vo.setCodeType(TraceCodeTypeConst.PORK);
@@ -356,10 +367,11 @@ public class StoreTracePublicServiceImpl implements IStoreTracePublicService {
     }
 
     private String firstOssUrl(Long ossId) {
-        if (ossId == null) {
-            return null;
-        }
-        String urls = ossService.selectUrlByIds(String.valueOf(ossId));
+        return ossId == null ? null : firstOssUrl(String.valueOf(ossId));
+    }
+
+    private String firstOssUrl(String ossIds) {
+        String urls = ossService.selectUrlByIds(ossIds);
         if (StringUtils.isBlank(urls)) {
             return null;
         }

@@ -1,6 +1,7 @@
 package org.dromara.djs.store.demand.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
@@ -9,6 +10,8 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
+import org.dromara.djs.store.demand.domain.vo.StorePendingArrivalVo;
+import org.dromara.djs.common.store.domain.vo.StoreVo;
 import org.dromara.djs.common.store.service.IStoreService;
 import org.dromara.djs.store.demand.core.StoreDemandViewEnricher;
 import org.dromara.djs.store.demand.service.IStoreDemandService;
@@ -31,8 +34,10 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * 门店端需求服务实现（STR-DEMAND-001 + STORE-DEMAND-REALIGN-001，薄封装复用 WMS demand）。
@@ -160,6 +165,60 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
         if (demand == null) {
             throw new ServiceException("需求不存在或已删除：" + id, 404);
         }
+        receiveDemand(demand);
+    }
+
+    @Override
+    public List<StorePendingArrivalVo> listPendingArrivalStores() {
+        List<DemandManage> demands = demandManageMapper.selectList(pendingArrivalQuery(null));
+        Map<Long, List<DemandManage>> byStore = demands.stream().collect(java.util.stream.Collectors.groupingBy(
+            DemandManage::getStoreId, LinkedHashMap::new, java.util.stream.Collectors.toList()));
+        return byStore.entrySet().stream().map(entry -> {
+            StorePendingArrivalVo vo = new StorePendingArrivalVo();
+            vo.setStoreId(entry.getKey());
+            StoreVo store = storeService.queryById(entry.getKey());
+            vo.setStoreName(store == null ? null : store.getStoreName());
+            vo.setPendingDemandCount(entry.getValue().size());
+            vo.setProductKindCount((int) entry.getValue().stream().map(DemandManage::getProductId)
+                .filter(Objects::nonNull).distinct().count());
+            return vo;
+        }).toList();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int receiveStoreArrivals(Long storeId) {
+        if (storeId == null) {
+            throw new ServiceException("请选择门店", 400);
+        }
+        // 按主键顺序锁定本店当前待收货行，整店确认与其他收货操作不会重复记录到店事件。
+        List<DemandManage> demands = demandManageMapper.selectList(pendingArrivalQuery(storeId).last("FOR UPDATE"));
+        for (DemandManage demand : demands) {
+            receiveDemand(demand);
+        }
+        return demands.size();
+    }
+
+    private LambdaQueryWrapper<DemandManage> pendingArrivalQuery(Long storeId) {
+        return new LambdaQueryWrapper<DemandManage>()
+            .eq(storeId != null, DemandManage::getStoreId, storeId)
+            .isNotNull(DemandManage::getStoreId)
+            .eq(DemandManage::getDemandType, DEMAND_TYPE_STORE)
+            .isNull(DemandManage::getReceivedTime)
+            .in(DemandManage::getDemandStatus, DemandStatus.PARTIAL_SHIPPED.name(), DemandStatus.COMPLETED.name())
+            // 缺量发车可能把零产出需求也关成 COMPLETED；没有实际发货的需求不能确认到店。
+            .exists("SELECT 1 FROM t_warehouse_product_production pp "
+                + "WHERE pp.demand_id = t_warehouse_demand_manage.id "
+                + "AND pp.store_id = t_warehouse_demand_manage.store_id "
+                + "AND pp.tenant_id = t_warehouse_demand_manage.tenant_id "
+                + "AND pp.del_flag = '0' AND pp.is_delivery_check = 1 "
+                + "AND (pp.deliver_dest IS NULL OR pp.deliver_dest NOT IN ('mail', 'gift', 'warehouse_out')) "
+                + "AND (pp.deliver_type IS NULL OR pp.deliver_type <> 2)")
+            .orderByAsc(DemandManage::getId);
+    }
+
+    private void receiveDemand(DemandManage demand) {
+        Long id = demand.getId();
         if (demand.getReceivedTime() != null) {
             throw new ServiceException("该需求已确认到店，请勿重复确认", 400);
         }
@@ -175,7 +234,12 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
         patch.setId(id);
         patch.setReceivedTime(LocalDateTime.now());
         patch.setReceivedBy(LoginHelper.getUserId());
-        demandManageMapper.updateById(patch);
+        int affected = demandManageMapper.update(patch, new LambdaUpdateWrapper<DemandManage>()
+            .eq(DemandManage::getId, id)
+            .isNull(DemandManage::getReceivedTime));
+        if (affected == 0) {
+            throw new ServiceException("该需求已确认到店，请勿重复确认", 400);
+        }
         log.info("[STORE-DEMAND-REALIGN-001] receive demand id={} no={} by={}",
             id, demand.getDemandNo(), LoginHelper.getUserId());
 

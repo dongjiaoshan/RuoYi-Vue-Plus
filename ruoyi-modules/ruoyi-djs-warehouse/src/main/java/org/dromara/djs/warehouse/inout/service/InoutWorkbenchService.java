@@ -11,6 +11,7 @@ import org.dromara.djs.warehouse.burn.domain.vo.BurnProductTypeVo;
 import org.dromara.djs.warehouse.burn.service.IPigBurnRecordService;
 import org.dromara.djs.warehouse.cross.domain.BarInfo;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
+import org.dromara.djs.warehouse.cross.mapper.PigReceptionMapper;
 import org.dromara.djs.warehouse.cut.domain.PigCutRecord;
 import org.dromara.djs.warehouse.cut.domain.bo.PigCutOutBo;
 import org.dromara.djs.warehouse.cut.domain.bo.PigCutPickupBo;
@@ -57,6 +58,7 @@ public class InoutWorkbenchService {
     private final IMatFlowService matFlowService;
     private final ILocationStockService stockService;
     private final BarInfoMapper barMapper;
+    private final PigReceptionMapper pigReceptionMapper;
     private final PigCutRecordMapper cutMapper;
     private final ProductInhouseMapper inhouseMapper;
     private final StockFlowMapper flowMapper;
@@ -75,11 +77,17 @@ public class InoutWorkbenchService {
         }
         return workbenchMapper.selectCutStoreDemands(materialProductId, java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")));
     }
-    public List<StoreDemandCopiesVo> shipStores(Long productId) { return productionService.listStoreDemandCopies(productId); }
+    public List<StoreDemandCopiesVo> shipStores(Long productId) { return productionService.listWhiteBarStoreDemandCopies(productId); }
 
     public List<CutWorkbenchBarVo> cutBars() {
         List<CutWorkbenchBarVo> rows = new ArrayList<>(workbenchMapper.selectUnpickedBars());
         rows.addAll(workbenchMapper.selectPickedBars());
+        List<Long> barIds = rows.stream().map(CutWorkbenchBarVo::getBarInfoId).filter(Objects::nonNull).distinct().toList();
+        if (!barIds.isEmpty()) {
+            Map<Long, Integer> ages = new HashMap<>();
+            pigReceptionMapper.selectReceptionAges(barIds).forEach(age -> ages.put(age.getBarInfoId(), age.getAgeDays()));
+            rows.forEach(row -> row.setAgeDays(ages.get(row.getBarInfoId())));
+        }
         rows.sort(Comparator.comparing(CutWorkbenchBarVo::getInTime, Comparator.nullsLast(Comparator.reverseOrder()))
             .thenComparing(v -> v.getCutRecordId() == null ? v.getInhouseId() : v.getCutRecordId(), Comparator.reverseOrder()));
         return rows;

@@ -3,9 +3,12 @@ package org.dromara.djs.store.demand.service;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
+import org.dromara.djs.store.demand.domain.vo.StorePendingArrivalVo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
+
+import java.util.List;
 
 /**
  * 门店端需求服务（STR-DEMAND-001）。
@@ -72,4 +75,10 @@ public interface IStoreDemandService {
      * @param id 需求 ID
      */
     void receive(Long id);
+
+    /** 发货月台待到店门店：仅包含真实已发货、尚未收货的需求，不限日期。 */
+    List<StorePendingArrivalVo> listPendingArrivalStores();
+
+    /** 在一个事务中确认门店全部待到店需求；重复调用返回 0。 */
+    int receiveStoreArrivals(Long storeId);
 }

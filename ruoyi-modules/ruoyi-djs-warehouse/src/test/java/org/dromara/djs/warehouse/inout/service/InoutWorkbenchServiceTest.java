@@ -53,6 +53,7 @@ class InoutWorkbenchServiceTest {
     @Mock org.dromara.djs.warehouse.flow.service.IMatFlowService matFlowService;
     @Mock ILocationStockService stockService;
     @Mock BarInfoMapper barMapper;
+    @Mock org.dromara.djs.warehouse.cross.mapper.PigReceptionMapper pigReceptionMapper;
     @Mock PigCutRecordMapper cutMapper;
     @Mock ProductInhouseMapper inhouseMapper;
     @Mock StockFlowMapper flowMapper;
@@ -99,6 +100,22 @@ class InoutWorkbenchServiceTest {
         assertThat(result.receiptId()).isEqualTo(500L);
         assertThat(result.requestId()).isEqualTo(KEY);
         verifyNoInteractions(inhouseMapper, burnService, productionService, stockService, barMapper);
+    }
+    @Test void cutCardsUseTheSameReceivingAgeForPickedAndUnpickedHalves() {
+        var unpicked = new CutWorkbenchBarVo(); unpicked.setBarInfoId(1L); unpicked.setInhouseId(2L);
+        var picked = new CutWorkbenchBarVo(); picked.setBarInfoId(1L); picked.setCutRecordId(3L);
+        var unknown = new CutWorkbenchBarVo(); unknown.setBarInfoId(4L); unknown.setInhouseId(5L);
+        when(workbenchMapper.selectUnpickedBars()).thenReturn(List.of(unpicked, unknown));
+        when(workbenchMapper.selectPickedBars()).thenReturn(List.of(picked));
+        var age = new org.dromara.djs.warehouse.cross.domain.vo.PigReceptionAgeVo();
+        age.setBarInfoId(1L); age.setAgeDays(400);
+        when(pigReceptionMapper.selectReceptionAges(List.of(1L,4L))).thenReturn(List.of(age));
+        var rows = service.cutBars();
+        assertThat(rows).hasSize(3);
+        assertThat(unpicked.getAgeDays()).isEqualTo(400);
+        assertThat(picked.getAgeDays()).isEqualTo(400);
+        assertThat(unknown.getAgeDays()).isNull();
+        verify(pigReceptionMapper).selectReceptionAges(List.of(1L,4L));
     }
     @Test void sameKeyDifferentWeightRejectedBeforeAnyMutation() {
         when(flowMapper.selectOne(any())).thenReturn(receipt(burnHash()));

@@ -193,6 +193,9 @@ public interface IProductProductionService {
      */
     List<StoreDemandCopiesVo> listStoreDemandCopies(Long productId);
 
+    /** 白条出库的门店候选：全部日期已确认未满足的同款白条需求。 */
+    List<StoreDemandCopiesVo> listWhiteBarStoreDemandCopies(Long productId);
+
     /**
      * 批量版「各产品各门店未发货需求份数」（打包录入卡片网格「需求量」批量聚合，去前端 N+1）。
      *

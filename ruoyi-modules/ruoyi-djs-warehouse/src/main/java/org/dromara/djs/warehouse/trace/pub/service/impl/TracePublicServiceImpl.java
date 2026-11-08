@@ -38,6 +38,8 @@ import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.zone.domain.PlotZone;
 import org.dromara.djs.plant.zone.mapper.PlotZoneMapper;
+import org.dromara.djs.warehouse.cross.mapper.PigReceptionMapper;
+import org.dromara.djs.warehouse.cross.domain.vo.PigReceptionAgeVo;
 import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
@@ -113,7 +115,7 @@ public class TracePublicServiceImpl
     private static final String DEFAULT_TENANT = "1001";
 
     /** Redis 缓存 key 前缀。 */
-    private static final String CACHE_PREFIX = "trace:public:";
+    private static final String CACHE_PREFIX = "trace:public:reception-v2:";
 
     /** 缓存 TTL（~10min）。 */
     private static final Duration CACHE_TTL = Duration.ofMinutes(10);
@@ -179,6 +181,7 @@ public class TracePublicServiceImpl
     private final PigMapper pigMapper;
     private final PigGrowthMapper pigGrowthMapper;
     private final PigMarketingMapper pigMarketingMapper;
+    private final PigReceptionMapper pigReceptionMapper;
     private final MedRecordMapper medRecordMapper;
     private final MedicineMapper medicineMapper;
     /** 谱系复用 breed 既有反查逻辑（earNo→Pig→queryPedigree），不重写。 */
@@ -213,6 +216,7 @@ public class TracePublicServiceImpl
                                   PigMapper pigMapper,
                                   PigGrowthMapper pigGrowthMapper,
                                   PigMarketingMapper pigMarketingMapper,
+                                  PigReceptionMapper pigReceptionMapper,
                                   MedRecordMapper medRecordMapper,
                                   MedicineMapper medicineMapper,
                                   ISowDetailService sowDetailService,
@@ -239,6 +243,7 @@ public class TracePublicServiceImpl
         this.pigMapper = pigMapper;
         this.pigGrowthMapper = pigGrowthMapper;
         this.pigMarketingMapper = pigMarketingMapper;
+        this.pigReceptionMapper = pigReceptionMapper;
         this.medRecordMapper = medRecordMapper;
         this.medicineMapper = medicineMapper;
         this.sowDetailService = sowDetailService;
@@ -533,6 +538,9 @@ public class TracePublicServiceImpl
                         .last("limit 1"));
                 if (marketing != null) {
                     pigBlock.setMarketWeight(toStr(marketing.getOutWeight()));
+                    if (pigBlock.getMarketDate() == null) {
+                        pigBlock.setMarketDate(marketing.getMarketingDate());
+                    }
                 }
                 // 生长记录倒序（最新在前）+ 栋舍名（barnName 用生长记录冗余兜底）
                 List<PigGrowth> growths = pigGrowthMapper.selectList(
@@ -561,9 +569,20 @@ public class TracePublicServiceImpl
             vo.setGrowthRecords(new ArrayList<>());
             vo.setMedications(new ArrayList<>());
         }
-        // 日龄：出栏日（marketing 事件）− 出生日；任一缺 → null
         LocalDateTime marketDt = pigBlock.getMarketDate();
-        pigBlock.setAgeDays(calcAgeDays(birthDate, marketDt == null ? null : marketDt.toLocalDate()));
+        if (StringUtils.isNotBlank(earNo) && marketDt != null) {
+            ZoneId zone = ZoneId.of("Asia/Shanghai");
+            PigReceptionAgeVo reception = pigReceptionMapper.selectReceptionAge(earNo,
+                Date.from(marketDt.atZone(zone).toInstant()));
+            if (reception != null) {
+                // 出生日与接收日均绑定这次出栏的 pig_id，耳号复用时不会串生命周期。
+                pigBlock.setBirthDate(reception.getBirthDate());
+                pigBlock.setAgeDays(reception.getAgeDays());
+                if (reception.getReceiveTime() != null) {
+                    pigBlock.setReceiveDate(reception.getReceiveTime().toInstant().atZone(zone).toLocalDateTime());
+                }
+            }
+        }
         vo.setPig(pigBlock);
 
         // 检疫信息：V1 数据源缺口（无检疫表/字段），返 null（见 _open-issues）
@@ -669,12 +688,21 @@ public class TracePublicServiceImpl
         PublicTraceVo.PedigreeBlock block = new PublicTraceVo.PedigreeBlock();
         block.setSireEarNo(p.getSireEarNo());
         block.setSireBreed(p.getSireBreed());
-        block.setSireAgeDays(p.getSireAgeDays());
+        block.setSireAgeDays(trueParentAge(p.getSirePigId(), p.getSireAgeDays()));
         block.setDamEarNo(p.getDamEarNo());
         block.setDamBreed(p.getDamBreed());
-        block.setDamAgeDays(p.getDamAgeDays());
+        block.setDamAgeDays(trueParentAge(p.getDamPigId(), p.getDamAgeDays()));
         block.setDamParity(p.getDamParity());
         return block;
+    }
+
+    /** 公开追溯不把引种时长当成父母日龄；出生日期未知时保留空值。 */
+    private Integer trueParentAge(Long pigId, Integer ageDays) {
+        if (pigId == null) {
+            return null;
+        }
+        Pig parent = pigMapper.selectById(pigId);
+        return parent == null || parent.getBirthDate() == null ? null : ageDays;
     }
 
     // ============================ veg 分支 ============================

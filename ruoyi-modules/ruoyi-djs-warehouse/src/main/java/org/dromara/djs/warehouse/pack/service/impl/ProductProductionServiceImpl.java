@@ -855,7 +855,7 @@ public class ProductProductionServiceImpl
         }
         List<DemandManage> whiteBarDemands = List.of();
         if (BELONG_TYPE_WHITE_BAR.equals(belongType)) {
-            whiteBarDemands = demandManageMapper.selectUncompletedDemands(product.getId(), bo.getStoreId());
+            whiteBarDemands = demandManageMapper.selectUncompletedWhiteBarDemands(product.getId(), bo.getStoreId());
             BigDecimal remaining = whiteBarDemands.stream().map(ProductProductionServiceImpl::rowRemain)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
             if (remaining.compareTo(BigDecimal.ONE) < 0) {
@@ -940,10 +940,11 @@ public class ProductProductionServiceImpl
         }
 
         // row205（邓博 2026-07-05）：发货月台出库补记「白条领用表」cut_record（out_type=ship，领用即终态）。
-        // 记出库位置 + 预冷损耗 + 排酸时长 + 目标门店/需求。target_demand_id 与门店下拉同口径（含已完成需求、优先未完成）
-        // ——门店因当天有该产品需求才可选，选中即回填该需求；无匹配需求 → null。分割统计只算 out_type='cut'，本行不计入。
+        // 记出库位置 + 预冷损耗 + 排酸时长 + 目标门店/需求。白条引用本次实际履约候选的最早需求，
+        // 与门店候选及扣减范围一致；猪肉仍沿用原有引用规则。分割统计只算 out_type='cut'，本行不计入。
         BarInfo shipBar = whiteBarId != null ? barInfoMapper.selectById(whiteBarId) : null;
-        DemandManage shipDemand = demandManageMapper.selectShipTargetDemand(product.getId(), bo.getStoreId());
+        DemandManage shipDemand = BELONG_TYPE_WHITE_BAR.equals(belongType) ? whiteBarDemands.getFirst()
+            : demandManageMapper.selectShipTargetDemand(product.getId(), bo.getStoreId());
         Long shipDemandId = shipDemand != null ? shipDemand.getId() : null;
         Long shipCutRecordId = pigCutService.insertOutRecord("ship", shipBar, src, bo.getProductWeight(),
             bo.getStoreId(), shipDemandId, userId, null);
@@ -1341,6 +1342,7 @@ public class ProductProductionServiceImpl
             .orderByDesc(ProductProduction::getId);
         Page<ProductProductionVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillJoinNames(page.getRecords());
+        fillProductAttributes(page.getRecords());
         return TableDataInfo.build(page);
     }
 
@@ -1363,10 +1365,9 @@ public class ProductProductionServiceImpl
         if (production == null) {
             throw new ServiceException("生产记录不存在或已删除：" + bo.getId());
         }
-        // admin row99：按 KG 计量的生产产品只能按重量管理，不能按“件”标损。
-        // 后端必须同步守门，避免隐藏按钮后仍可直接调用接口绕过业务规则。
-        if (isKgUnit(production.getProductUnit())) {
-            throw new ServiceException("KG 产品不支持记为损坏");
+        // KG 生产产品仅在真实发到门店且已确认到店后可标损，白条及仓库自用仍保持原规则。
+        if (isKgUnit(production.getProductUnit()) && !canMarkArrivedKgDamage(production)) {
+            throw new ServiceException("仅已确认到店的非白条 KG 生产产品支持记为损坏");
         }
         // 标损时间由后端取 now（前端不传，避免客户端时钟漂移）
         int affected = baseMapper.updateDamage(bo.getId(), bo.getEvidenceOssIds(), bo.getRemark(), new Date());
@@ -1375,6 +1376,27 @@ public class ProductProductionServiceImpl
         }
         log.info("[DENGBO-DAMAGE-001] mark damage id={} evidenceOssIds={} remark={}",
             bo.getId(), bo.getEvidenceOssIds(), bo.getRemark());
+    }
+
+    private boolean canMarkArrivedKgDamage(ProductProduction production) {
+        if (!Integer.valueOf(1).equals(production.getIsDeliveryCheck())
+            || production.getDemandId() == null || production.getStoreId() == null
+            || "mail".equals(production.getDeliverDest())
+            || Integer.valueOf(2).equals(production.getDeliverType())
+            || DELIVER_DEST_GIFT.equals(production.getDeliverDest())
+            || DELIVER_DEST_WAREHOUSE_OUT.equals(production.getDeliverDest())) {
+            return false;
+        }
+        DemandManage demand = demandManageMapper.selectById(production.getDemandId());
+        if (demand == null || demand.getReceivedTime() == null
+            || !Objects.equals(demand.getStoreId(), production.getStoreId())
+            || !"store".equals(demand.getDemandType())
+            || BELONG_TYPE_WHITE_BAR.equals(demand.getProductType())) {
+            return false;
+        }
+        ProductInfo product = productInfoMapper.selectById(production.getProductId());
+        return product != null && Integer.valueOf(1).equals(product.getProductAttr())
+            && !BELONG_TYPE_WHITE_BAR.equals(product.getBelongType());
     }
 
     @Override
@@ -1501,7 +1523,7 @@ public class ProductProductionServiceImpl
         if (product == null || !BELONG_TYPE_WHITE_BAR.equals(product.getBelongType())
             || !Integer.valueOf(0).equals(product.getProductStatus())) { return List.of(); }
         List<Map<String, Object>> result = new java.util.ArrayList<>();
-        for (StoreDemandCopiesVo demand : listStoreDemandCopies(productId)) {
+        for (StoreDemandCopiesVo demand : listWhiteBarStoreDemandCopies(productId)) {
             if (demand.getCopies() == null || demand.getCopies().compareTo(BigDecimal.ONE) < 0) { continue; }
             Map<String, Object> item = new java.util.LinkedHashMap<>();
             item.put("storeId", String.valueOf(demand.getStoreId()));
@@ -1542,6 +1564,12 @@ public class ProductProductionServiceImpl
         }
         // 打包台只显示「当天」已确认门店需求（与发货月台 demand_date=today 一致，Kevin 2026-06-26）。
         return demandManageMapper.selectStoreDemandCopies(productId, LocalDate.now(PACK_TODAY_ZONE));
+    }
+
+    @Override
+    public List<StoreDemandCopiesVo> listWhiteBarStoreDemandCopies(Long productId) {
+        if (productId == null) { return List.of(); }
+        return demandManageMapper.selectWhiteBarStoreDemandCopies(productId);
     }
 
     @Override
@@ -2651,6 +2679,22 @@ public class ProductProductionServiceImpl
             .orderByDesc(ProductProduction::getProduceTime)
             .orderByDesc(ProductProduction::getId);
         return w;
+    }
+
+    /** 批量回填产品主数据属性，供产品明细按实际成品/原材料控制操作。 */
+    private void fillProductAttributes(List<ProductProductionVo> rows) {
+        Set<Long> productIds = rows.stream().map(ProductProductionVo::getProductId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (productIds.isEmpty()) {
+            return;
+        }
+        Map<Long, ProductInfo> products = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .select(ProductInfo::getId, ProductInfo::getProductAttr).in(ProductInfo::getId, productIds))
+            .stream().collect(Collectors.toMap(ProductInfo::getId, product -> product, (a, b) -> a));
+        for (ProductProductionVo row : rows) {
+            ProductInfo product = products.get(row.getProductId());
+            row.setProductAttr(product == null ? null : product.getProductAttr());
+        }
     }
 
     /**
