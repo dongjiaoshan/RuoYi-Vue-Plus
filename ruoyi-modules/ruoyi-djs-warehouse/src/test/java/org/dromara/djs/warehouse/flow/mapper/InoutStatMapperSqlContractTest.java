@@ -80,7 +80,7 @@ class InoutStatMapperSqlContractTest {
     void inStatGroupsByProductModeSupplier() throws Exception {
         String sql = inPageSql();
         assertThat(sql).contains(
-            "group by pi.product_id, pi.product_name, pi.product_type, coalesce(pi.product_spec, ''), "
+            "group by pi.product_id, pi.product_name, pi.product_type, pi.belong_type, coalesce(pi.product_spec, ''), "
                 + "coalesce(pi.product_unit, ''), f.flow_type, coalesce(sp.supplier_name, '')");
         assertThat(sql).contains("f.inout_type = 'in'");
         // row187：产品编码是页面第一列，必须真的被 SELECT 出来并透到外层
@@ -93,7 +93,7 @@ class InoutStatMapperSqlContractTest {
     void outStatGroupsByProductAndDest() throws Exception {
         String sql = outPageSql();
         assertThat(sql).contains(
-            "group by pi.product_id, pi.product_name, pi.product_type, coalesce(pi.product_spec, ''), "
+            "group by pi.product_id, pi.product_name, pi.product_type, pi.belong_type, coalesce(pi.product_spec, ''), "
                 + "coalesce(pi.product_unit, ''), coalesce(f.stock_out_dest, '')");
         assertThat(sql).contains("f.inout_type = 'ot'");
         assertThat(sql).contains("pi.product_id as productcode");
@@ -285,10 +285,10 @@ class InoutStatMapperSqlContractTest {
     @DisplayName("外层只排序不聚合：MP 自动 count 数的是聚合后的行数；ORDER BY 取全分组键保证翻页稳定")
     void outerQueryIsOrderOnlySoPagingIsStable() throws Exception {
         String in = inPageSql();
-        assertThat(in).contains(") g order by g.productname, g.productcode, g.producttype, g.productspec, "
+        assertThat(in).contains(") g order by g.productname, g.productcode, g.producttype, g.belongtype, g.productspec, "
             + "g.productunit, g.flowtype, g.suppliername");
         String out = outPageSql();
-        assertThat(out).contains(") g order by g.productname, g.productcode, g.producttype, g.productspec, "
+        assertThat(out).contains(") g order by g.productname, g.productcode, g.producttype, g.belongtype, g.productspec, "
             + "g.productunit, g.stockoutdest");
     }
 }

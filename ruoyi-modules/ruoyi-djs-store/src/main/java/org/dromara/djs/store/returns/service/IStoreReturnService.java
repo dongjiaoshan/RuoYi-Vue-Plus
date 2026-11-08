@@ -190,4 +190,13 @@ public interface IStoreReturnService {
      * @return 成功建条数
      */
     int createUnitReturns(StoreReturnUnitBo bo);
+
+    /** 仓库分列记录入库与丢弃量。 */
+    int confirmOperation(org.dromara.djs.store.returns.domain.bo.WarehouseReturnConfirmBo bo);
+    /** 仓库新增原材料单位退回。 */
+    int createOperationUnitReturns(org.dromara.djs.store.returns.domain.bo.WarehouseReturnUnitBo bo);
+    /** 仓库原材料候选。 */
+    java.util.List<org.dromara.djs.store.returns.domain.vo.StoreReturnUnitCandidateVo> listOperationRawCandidates();
+    /** 在原退回单中增加字典清单产品。 */
+    int addOperationProducts(org.dromara.djs.store.returns.domain.bo.WarehouseReturnExtraBo bo);
 }

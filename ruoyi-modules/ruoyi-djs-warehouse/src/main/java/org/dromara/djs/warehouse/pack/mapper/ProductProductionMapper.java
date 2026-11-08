@@ -315,7 +315,7 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "  ) dm",
         "         ON dm.tenant_id = pp.tenant_id",
         "        AND dm.product_id = pp.product_id",
-        "        AND dm.demand_day = DATE(pp.produce_date)",
+        "        AND dm.demand_day = DATE_ADD(DATE(pp.produce_date), INTERVAL 1 DAY)",
         " WHERE pp.del_flag = '0'",
         "   AND pp.tenant_id = '1001'",
         "   AND (pi.belong_type IS NULL OR pi.belong_type &lt;&gt; 'white_bar')",

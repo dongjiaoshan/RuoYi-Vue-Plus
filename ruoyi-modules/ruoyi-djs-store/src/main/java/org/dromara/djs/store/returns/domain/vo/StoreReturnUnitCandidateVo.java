@@ -32,6 +32,9 @@ public class StoreReturnUnitCandidateVo implements Serializable {
     /** 产品业务编码 product_info.product_id（字典里配的就是它）。 */
     private String productCode;
 
+    /** 自产/外购类型，供左侧产品类型搜索。 */
+    private Integer productType;
+
     /** 产品名称。 */
     private String productName;
 

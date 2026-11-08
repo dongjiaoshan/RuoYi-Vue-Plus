@@ -84,9 +84,11 @@ class DemandPrintServiceImplTest {
     void detailCategoryCountEqualsItemRows() {
         LocalDate day = LocalDate.of(2026, 10, 25);
         DemandPrintItemVo a = new DemandPrintItemVo();
+        a.setProductId(1L);
         a.setProductName("白条");
         a.setDemandQuantity(new BigDecimal("0.5"));
         DemandPrintItemVo b = new DemandPrintItemVo();
+        b.setProductId(2L);
         b.setProductName("刺黄瓜");
         b.setDemandQuantity(BigDecimal.ONE);
         when(demandPrintMapper.selectSheetItems(day, 7L)).thenReturn(List.of(a, b));
@@ -103,24 +105,16 @@ class DemandPrintServiceImplTest {
     // ---------------- SQL 口径契约（注解 SQL，mock 打不到，拿原文钉死） ----------------
 
     @Test
-    @DisplayName("长中文备注完整保留，按需求行顺序去重，备注内分号不拆开，产品间不串备注")
+    @DisplayName("备注拆行保留完整文字，品类总数仍按去重产品统计")
     void detailKeepsCompleteRemarks() {
         LocalDate day = LocalDate.of(2026, 10, 27);
-        DemandPrintItemVo a = remarkRow(1L, null);
-        DemandPrintItemVo b = remarkRow(2L, null);
-        DemandPrintItemVo c = remarkRow(3L, null);
         String longRemark = "备货要求".repeat(120) + "尾部标记";
-        when(demandPrintMapper.selectSheetItems(day, 7L)).thenReturn(List.of(a, b, c));
-        when(demandPrintMapper.selectSheetRemarks(day, 7L)).thenReturn(List.of(
-            remarkRow(1L, longRemark), remarkRow(1L, " 少盐；分装 "),
-            remarkRow(1L, longRemark), remarkRow(1L, "少盐"),
-            remarkRow(2L, "单独装箱"), remarkRow(3L, " "), remarkRow(3L, null)));
-
-        DemandPrintDetailVo vo = service.getSheetDetail(day, 7L);
-
-        assertThat(vo.getItems().get(0).getDemandRemark()).isEqualTo(longRemark + "；少盐；分装；少盐");
-        assertThat(vo.getItems().get(1).getDemandRemark()).isEqualTo("单独装箱");
-        assertThat(vo.getItems().get(2).getDemandRemark()).isNull();
+        var rows = List.of(remarkRow(1L, longRemark), remarkRow(1L, "少盐；分装"),
+            remarkRow(2L, "单独装箱"), remarkRow(3L, ""));
+        when(demandPrintMapper.selectSheetItems(day, 7L)).thenReturn(rows);
+        var vo = service.getSheetDetail(day, 7L);
+        assertThat(vo.getItems()).extracting(DemandPrintItemVo::getDemandRemark)
+            .containsExactly(longRemark, "少盐；分装", "单独装箱", "");
         assertThat(vo.getCategoryCount()).isEqualTo(3);
     }
 
@@ -147,12 +141,11 @@ class DemandPrintServiceImplTest {
         String list = sqlOf(DemandPrintMapper.class, "selectSheetPage",
             com.baomidou.mybatisplus.core.metadata.IPage.class, LocalDate.class, LocalDate.class, List.class);
         String detail = sqlOf(DemandPrintMapper.class, "selectSheetItems", LocalDate.class, Long.class);
-        String remarks = sqlOf(DemandPrintMapper.class, "selectSheetRemarks", LocalDate.class, Long.class);
         String predicate = DemandPrintMapper.EFFECTIVE_DEMAND_WHERE.replaceAll("\\s+", " ").trim().toLowerCase(Locale.ROOT);
 
         assertThat(list).contains(predicate);
         assertThat(detail).contains(predicate);
-        assertThat(remarks).contains(predicate).contains("order by dm.id asc").doesNotContain("group_concat");
+        assertThat(detail).doesNotContain("group_concat").contains("collate utf8mb4_bin");
         assertThat(predicate).contains("dm.demand_status = 'confirmed'", "dm.del_flag = '0'", "dm.tenant_id = '1001'");
         assertThat(list).contains("order by dm.demand_date desc");
 

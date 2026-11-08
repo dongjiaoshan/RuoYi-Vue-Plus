@@ -87,11 +87,11 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
                 这类记录不是一次真实采摘，不该出现在采摘明细里，也不该进导出。
                 同一个 UNION ALL 的采摘活动分支本来就带 a.daily_weight &gt; 0，这里补齐口径。 -->
            AND r.record_weight &gt; 0
-           <if test="q.pickDateBegin != null">
-             AND pr.harvest_date &gt;= #{q.pickDateBegin}
+           <if test="q.recordTimeBegin != null">
+             AND r.handle_time &gt;= #{q.recordTimeBegin}
            </if>
-           <if test="q.pickDateEnd != null">
-             AND pr.harvest_date &lt;= #{q.pickDateEnd}
+           <if test="q.recordTimeEnd != null">
+             AND r.handle_time &lt; DATE_ADD(#{q.recordTimeEnd}, INTERVAL 1 DAY)
            </if>
            <if test="q.cropName != null and q.cropName != ''">
              AND pr.crop_name LIKE CONCAT('%', #{q.cropName}, '%')
@@ -139,11 +139,11 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
            AND a.tenant_id = '1001'
            AND a.pick_dest IS NOT NULL
            AND a.daily_weight &gt; 0
-           <if test="q.pickDateBegin != null">
-             AND a.activity_date &gt;= #{q.pickDateBegin}
+           <if test="q.recordTimeBegin != null">
+             AND a.create_time &gt;= #{q.recordTimeBegin}
            </if>
-           <if test="q.pickDateEnd != null">
-             AND a.activity_date &lt;= #{q.pickDateEnd}
+           <if test="q.recordTimeEnd != null">
+             AND a.create_time &lt; DATE_ADD(#{q.recordTimeEnd}, INTERVAL 1 DAY)
            </if>
            <if test="q.cropName != null and q.cropName != ''">
              AND ci.crop_name LIKE CONCAT('%', #{q.cropName}, '%')

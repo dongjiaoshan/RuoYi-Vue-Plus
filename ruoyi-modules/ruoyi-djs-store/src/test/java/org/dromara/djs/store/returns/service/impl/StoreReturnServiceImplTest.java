@@ -19,6 +19,7 @@ import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
@@ -1622,5 +1623,84 @@ class StoreReturnServiceImplTest {
         var rows = service.listUnitCandidates();
 
         assertThat(rows).extracting(v -> v.getProductName()).containsExactly("黑毛猪里脊肉250g/份");
+    }
+
+    private StoreReturn operationPending() {
+        StoreReturn row = new StoreReturn(); row.setId(956L); row.setProductId(PRODUCT_ID);
+        row.setReturnDirection("store_to_warehouse"); row.setReturnType("store"); row.setReturnStatus("pending");
+        row.setReturnQuantity(new BigDecimal("10")); row.setGoodsWeight(new BigDecimal("10"));
+        ProductInfo raw = new ProductInfo(); raw.setId(PRODUCT_ID); raw.setProductAttr(2);
+        raw.setProductUnit("kg"); raw.setBelongType("pork"); raw.setProductStatus(0);
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(raw);
+        LocationInfo location = new LocationInfo(); location.setId(LOCATION_ID); location.setLocationStatus(1);
+        when(locationInfoMapper.selectById(LOCATION_ID)).thenReturn(location);
+        when(baseMapper.selectOne(any())).thenReturn(row);
+        when(baseMapper.selectById(row.getId())).thenReturn(row);
+        when(baseMapper.update(any(StoreReturn.class), any())).thenReturn(1);
+        return row;
+    }
+
+    private org.dromara.djs.store.returns.domain.bo.WarehouseReturnConfirmBo operationBo(String received, String discard) {
+        var bo = new org.dromara.djs.store.returns.domain.bo.WarehouseReturnConfirmBo();
+        bo.setId(956L); bo.setLocationId(LOCATION_ID); bo.setReceivedQty(new BigDecimal(received));
+        bo.setDiscardQty(new BigDecimal(discard)); bo.setWarehouseRemark("仓库独立记录"); return bo;
+    }
+
+    @Test void operationMixedQuantitiesOnlyInboundReceivedPart() {
+        operationPending();
+        assertThat(service.confirmOperation(operationBo("3.125", "0.875"))).isEqualTo(1);
+        verify(purchaseInService).inboundReturnBasket(eq(PRODUCT_ID), eq(LOCATION_ID),
+            eq(new BigDecimal("3.125")), eq(FLOW_RETURN_IN), any());
+        ArgumentCaptor<StoreReturn> cap = ArgumentCaptor.forClass(StoreReturn.class);
+        verify(baseMapper).updateById(cap.capture());
+        assertThat(cap.getValue().getWarehouseDiscardQty()).isEqualByComparingTo("0.875");
+        assertThat(cap.getValue().getWarehouseRemark()).isEqualTo("仓库独立记录");
+    }
+
+    @Test void operationDiscardOnlyDoesNotWriteStock() {
+        operationPending();
+        assertThat(service.confirmOperation(operationBo("0", "5.555"))).isEqualTo(1);
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
+        ArgumentCaptor<StoreReturn> cap = ArgumentCaptor.forClass(StoreReturn.class);
+        verify(baseMapper).update(cap.capture(), any());
+        assertThat(cap.getValue().getReceivedQty()).isZero();
+        assertThat(cap.getValue().getReceivedWeight()).isZero();
+        assertThat(cap.getValue().getReturnStatus()).isEqualTo("received");
+    }
+
+    @Test void operationZeroAndNegativeInputsLeavePendingUntouched() {
+        operationPending();
+        assertThatThrownBy(() -> service.confirmOperation(operationBo("0", "0"))).isInstanceOf(ServiceException.class);
+        assertThatThrownBy(() -> service.confirmOperation(operationBo("-1", "2"))).isInstanceOf(ServiceException.class);
+        verify(baseMapper, never()).update(any(StoreReturn.class), any());
+        verify(baseMapper, never()).updateById(any(StoreReturn.class));
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
+    }
+
+    @Test void operationRejectsExcessPrecisionAndRepeatConfirmation() {
+        StoreReturn row = operationPending();
+        assertThatThrownBy(() -> service.confirmOperation(operationBo("0.0001", "1"))).isInstanceOf(ServiceException.class);
+        row.setReturnStatus("received");
+        assertThatThrownBy(() -> service.confirmOperation(operationBo("1", "1"))).isInstanceOf(ServiceException.class);
+        verify(baseMapper, never()).update(any(StoreReturn.class), any());
+    }
+
+    @Test void operationInboundFailureDoesNotWriteDiscardMetadata() {
+        operationPending();
+        Mockito.doThrow(new ServiceException("库位无效")).when(purchaseInService)
+            .inboundReturnBasket(any(), any(), any(), anyString(), any());
+        assertThatThrownBy(() -> service.confirmOperation(operationBo("1", "2"))).isInstanceOf(ServiceException.class);
+        verify(baseMapper, never()).updateById(any(StoreReturn.class));
+    }
+
+    @Test void operationRejectsDisabledLocationBeforeWriting() {
+        operationPending();
+        LocationInfo disabled = new LocationInfo(); disabled.setId(LOCATION_ID); disabled.setLocationStatus(0);
+        when(locationInfoMapper.selectById(LOCATION_ID)).thenReturn(disabled);
+        assertThatThrownBy(() -> service.confirmOperation(operationBo("1", "2")))
+            .isInstanceOf(ServiceException.class).hasMessageContaining("启用");
+        verify(baseMapper, never()).update(any(StoreReturn.class), any());
+        verify(baseMapper, never()).updateById(any(StoreReturn.class));
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
     }
 }

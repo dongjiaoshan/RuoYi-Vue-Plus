@@ -29,7 +29,7 @@ class ProductProductionMapperSqlContractTest {
             .contains("coalesce(max(dm.demand_qty), 0) as demandqty")
             .contains("dm.tenant_id = pp.tenant_id")
             .contains("dm.product_id = pp.product_id")
-            .contains("dm.demand_day = date(pp.produce_date)")
+            .contains("dm.demand_day = date_add(date(pp.produce_date), interval 1 day)")
             .contains("demand_status not in ('cancelled', 'deleted')")
             .contains("where del_flag = '0'");
     }

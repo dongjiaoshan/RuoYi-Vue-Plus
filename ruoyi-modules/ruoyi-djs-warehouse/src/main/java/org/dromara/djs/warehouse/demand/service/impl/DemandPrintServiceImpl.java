@@ -13,11 +13,7 @@ import org.dromara.djs.warehouse.demand.service.IDemandPrintService;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
-import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
 /**
  * 需求单打印服务实现（V7-R8）。
@@ -44,24 +40,13 @@ public class DemandPrintServiceImpl implements IDemandPrintService {
     @Override
     public DemandPrintDetailVo getSheetDetail(LocalDate demandDate, Long storeId) {
         List<DemandPrintItemVo> items = demandPrintMapper.selectSheetItems(demandDate, storeId);
-        Map<Long, Set<String>> remarks = new HashMap<>();
-        for (DemandPrintItemVo row : demandPrintMapper.selectSheetRemarks(demandDate, storeId)) {
-            String remark = row.getDemandRemark();
-            if (remark != null && !remark.isBlank()) {
-                remarks.computeIfAbsent(row.getProductId(), key -> new LinkedHashSet<>()).add(remark.trim());
-            }
-        }
-        for (DemandPrintItemVo item : items) {
-            Set<String> productRemarks = remarks.get(item.getProductId());
-            item.setDemandRemark(productRemarks == null ? null : String.join("；", productRemarks));
-        }
         DemandPrintDetailVo vo = new DemandPrintDetailVo();
         vo.setDemandDate(demandDate);
         vo.setStoreId(storeId);
         vo.setStoreName(demandPrintMapper.selectStoreName(storeId));
         vo.setItems(items);
-        // 品类总数直接取明细行数：明细已按 product_id 合并，行数即去重产品数，与列表 COUNT(DISTINCT) 同口径
-        vo.setCategoryCount(items.size());
+        // 备注拆行不能使同一产品重复计为多个品类，与列表 COUNT(DISTINCT product_id) 一致。
+        vo.setCategoryCount((int) items.stream().map(DemandPrintItemVo::getProductId).distinct().count());
         return vo;
     }
 }

@@ -70,7 +70,7 @@ public interface DemandPrintMapper {
             <foreach collection="storeIds" item="sid" open="(" separator="," close=")">#{sid}</foreach>
           </if>
         GROUP BY dm.demand_date, dm.store_id
-        ORDER BY dm.demand_date DESC, MAX(s.store_name) ASC, dm.store_id ASC
+        ORDER BY dm.demand_date DESC, COUNT(DISTINCT dm.product_id) DESC, MAX(s.store_name) ASC, dm.store_id ASC
         </script>
         """)
     Page<DemandPrintSheetVo> selectSheetPage(IPage<DemandPrintSheetVo> page,
@@ -79,9 +79,9 @@ public interface DemandPrintMapper {
                                              @Param("storeIds") List<Long> storeIds);
 
     /**
-     * 某门店某日订货单明细：同产品多条需求合并成一行（需求量求和、备注去重拼接）。
+     * 某门店某日订货单明细：同产品同备注的需求合并成一行，备注不同分行（不拼接或截断备注）。
      *
-     * <p>合并键 = {@code product_id}，与需求管理汇总列表的分组键一致；名称 / 规格 / 单位取需求行定格的冗余列。</p>
+     * <p>合并键 = {@code product_id + TRIM(demand_remark)}（空备注同组）；名称 / 规格 / 单位取需求行定格的冗余列。</p>
      *
      * <p>排序按产品类别成组：白条 → 猪肉 → 鸡蛋 → 干货 → 礼盒 → 其他 → 果蔬，组内按产品编码升序
      * （甲方样张即此顺序：白条、猪下水在前，蔬菜在后），无编码再按产品名。</p>
@@ -96,14 +96,15 @@ public interface DemandPrintMapper {
                MAX(dm.product_spec)         AS productSpec,
                SUM(dm.demand_quantity)      AS demandQuantity,
                MAX(dm.product_unit)         AS productUnit,
-               MAX(pi.belong_type)          AS belongType
+               MAX(pi.belong_type)          AS belongType,
+               COALESCE(TRIM(dm.demand_remark), '') COLLATE utf8mb4_bin AS demandRemark
         FROM t_warehouse_demand_manage dm
         LEFT JOIN t_warehouse_product_info pi
                ON pi.id = dm.product_id AND pi.del_flag = '0' AND pi.tenant_id = '1001'
         WHERE dm.demand_date = #{demandDate}
           AND dm.store_id = #{storeId}
           AND """ + EFFECTIVE_DEMAND_WHERE + """
-        GROUP BY dm.product_id
+        GROUP BY dm.product_id, COALESCE(TRIM(dm.demand_remark), '') COLLATE utf8mb4_bin
         ORDER BY CASE MAX(pi.belong_type)
                    WHEN 'white_bar' THEN 1
                    WHEN 'pork'      THEN 2
@@ -113,23 +114,10 @@ public interface DemandPrintMapper {
                    WHEN 'vegetable' THEN 7
                    ELSE 6 END,
                  MAX(pi.product_id) ASC,
-                 MAX(dm.product_name) ASC
+                 MAX(dm.product_name) ASC, demandRemark ASC
         """)
     List<DemandPrintItemVo> selectSheetItems(@Param("demandDate") LocalDate demandDate,
                                              @Param("storeId") Long storeId);
-
-    /** 完整备注按需求行顺序读取，由服务层去重拼接，避免 GROUP_CONCAT 的字节上限截断备货要求。 */
-    @Select("""
-        SELECT dm.product_id AS productId, TRIM(dm.demand_remark) AS demandRemark
-        FROM t_warehouse_demand_manage dm
-        WHERE dm.demand_date = #{demandDate}
-          AND dm.store_id = #{storeId}
-          AND NULLIF(TRIM(dm.demand_remark), '') IS NOT NULL
-          AND """ + EFFECTIVE_DEMAND_WHERE + """
-        ORDER BY dm.id ASC
-        """)
-    List<DemandPrintItemVo> selectSheetRemarks(@Param("demandDate") LocalDate demandDate,
-                                               @Param("storeId") Long storeId);
 
     /**
      * 门店名（明细抬头用；门店已删也照取，单据上不能空着门店）。

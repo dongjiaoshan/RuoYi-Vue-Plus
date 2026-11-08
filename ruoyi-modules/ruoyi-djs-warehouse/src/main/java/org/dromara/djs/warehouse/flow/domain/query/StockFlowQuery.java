@@ -1,9 +1,7 @@
 package org.dromara.djs.warehouse.flow.domain.query;
 
-import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 
-import java.util.Date;
 import java.util.List;
 
 /**
@@ -151,15 +149,13 @@ public class StockFlowQuery {
     private Long supplierId;
 
     /**
-     * 业务时间起。
+     * 业务时间起：yyyy-MM-dd 按当天零点；带时分秒时精确过滤。
      */
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
-    private Date dateFrom;
+    private String dateFrom;
 
     /**
-     * 业务时间止。
+     * 业务时间止：yyyy-MM-dd 包含当天；带时分秒时保留精确上界。
      */
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
-    private Date dateTo;
+    private String dateTo;
 
 }

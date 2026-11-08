@@ -50,13 +50,13 @@ public class ProductProductionGroupVo implements Serializable {
     /** 产品类型（字典 {@code djs_product_type}：1=自产/2=外购，已废弃 3 礼盒；保留兼容，主列表不展示）。 */
     private Integer productType;
 
-    /** 该产品生产日的有效需求总量（取消/删除需求不计）。 */
+    /** 该产品生产日期下一自然日的有效需求总量（取消/删除需求不计）。 */
     private BigDecimal demandQty;
 
     /**
      * 需求满足率（客户验收口径）：{@code produceQty / demandQty * 100%}，保留 2 位小数。
      *
-     * <p>需求量为 0（当日该产品无需求行）时为 {@code null}，前端展示 {@code -}。</p>
+     * <p>需求量为 0（生产日次日该产品无需求行）时为 {@code null}，前端展示 {@code -}。</p>
      */
     private BigDecimal fulfillmentRate;
 

@@ -82,6 +82,10 @@ public interface InoutStatMapper {
         <if test="query.productName != null and query.productName != ''">
           AND pi.product_name LIKE CONCAT('%', #{query.productName}, '%')
         </if>
+        <if test="query.belongTypes != null and query.belongTypes.size() > 0">
+          AND pi.belong_type IN
+              <foreach collection="query.belongTypes" item="bt" open="(" separator="," close=")">#{bt}</foreach>
+        </if>
         <if test="query.productTypes != null and query.productTypes.size() > 0">
           AND pi.product_type IN
               <foreach collection="query.productTypes" item="pt" open="(" separator="," close=")">#{pt}</foreach>
@@ -146,6 +150,10 @@ public interface InoutStatMapper {
         <if test="query.productName != null and query.productName != ''">
           AND pi.product_name LIKE CONCAT('%', #{query.productName}, '%')
         </if>
+        <if test="query.belongTypes != null and query.belongTypes.size() > 0">
+          AND pi.belong_type IN
+              <foreach collection="query.belongTypes" item="bt" open="(" separator="," close=")">#{bt}</foreach>
+        </if>
         <if test="query.productTypes != null and query.productTypes.size() > 0">
           AND pi.product_type IN
               <foreach collection="query.productTypes" item="pt" open="(" separator="," close=")">#{pt}</foreach>
@@ -198,12 +206,13 @@ public interface InoutStatMapper {
      */
     String IN_STAT_SQL = "<script>"
         + """
-        SELECT g.productCode, g.productName, g.productType, g.productSpec, g.productUnit,
+        SELECT g.productCode, g.productName, g.productType, g.belongType, g.productSpec, g.productUnit,
                g.flowType, g.supplierName, g.supplierName AS supplierKey, g.inboundQty
         FROM (
             SELECT pi.product_id    AS productCode,
                    pi.product_name  AS productName,
                    pi.product_type  AS productType,
+                   pi.belong_type AS belongType,
                    COALESCE(pi.product_spec, '') AS productSpec,
                    COALESCE(pi.product_unit, '') AS productUnit,
                    f.flow_type      AS flowType,
@@ -213,10 +222,10 @@ public interface InoutStatMapper {
         + IN_FROM
         + IN_WHERE
         + """
-            GROUP BY pi.product_id, pi.product_name, pi.product_type, COALESCE(pi.product_spec, ''),
+            GROUP BY pi.product_id, pi.product_name, pi.product_type, pi.belong_type, COALESCE(pi.product_spec, ''),
                      COALESCE(pi.product_unit, ''), f.flow_type, COALESCE(sp.supplier_name, '')
         ) g
-        ORDER BY g.productName, g.productCode, g.productType, g.productSpec, g.productUnit,
+        ORDER BY g.productName, g.productCode, g.productType, g.belongType, g.productSpec, g.productUnit,
                  g.flowType, g.supplierName
         """
         + "</script>";
@@ -230,12 +239,13 @@ public interface InoutStatMapper {
      */
     String OUT_STAT_SQL = "<script>"
         + """
-        SELECT g.productCode, g.productName, g.productType, g.productSpec, g.productUnit,
+        SELECT g.productCode, g.productName, g.productType, g.belongType, g.productSpec, g.productUnit,
                g.stockOutDest, g.storeId, g.storeName, g.outboundQty
         FROM (
             SELECT pi.product_id   AS productCode,
                    pi.product_name AS productName,
                    pi.product_type AS productType,
+                   pi.belong_type AS belongType,
                    COALESCE(pi.product_spec, '') AS productSpec,
                    COALESCE(pi.product_unit, '') AS productUnit,
                    COALESCE(f.stock_out_dest, '') AS stockOutDest,
@@ -246,10 +256,10 @@ public interface InoutStatMapper {
         + OUT_FROM
         + OUT_WHERE
         + """
-            GROUP BY pi.product_id, pi.product_name, pi.product_type, COALESCE(pi.product_spec, ''),
+            GROUP BY pi.product_id, pi.product_name, pi.product_type, pi.belong_type, COALESCE(pi.product_spec, ''),
                      COALESCE(pi.product_unit, ''), COALESCE(f.stock_out_dest, ''), d.store_id, COALESCE(s.store_name, '')
         ) g
-        ORDER BY g.productName, g.productCode, g.productType, g.productSpec, g.productUnit,
+        ORDER BY g.productName, g.productCode, g.productType, g.belongType, g.productSpec, g.productUnit,
                  g.stockOutDest, g.storeId, g.storeName
         """
         + "</script>";
