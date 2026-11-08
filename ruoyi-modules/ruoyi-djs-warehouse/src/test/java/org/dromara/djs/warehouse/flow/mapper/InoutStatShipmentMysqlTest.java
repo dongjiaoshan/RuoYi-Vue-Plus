@@ -28,11 +28,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * 运行真实 MyBatis 查询；临时表仅存在于本机 MySQL 的当前连接，不改业务表。
- * 运行时显式提供 DJS_STAT_MYSQL_URL / USER / PASSWORD；URL 仅允许本机 3306。
+ * 运行时显式提供 DJS_STAT_MYSQL_URL / USER / PASSWORD；URL 仅允许本机 3306 或隔离测试库 3316。
  */
 @Tag("local")
 @Tag("dev")
-@EnabledIfEnvironmentVariable(named = "DJS_STAT_MYSQL_URL", matches = "jdbc:mysql://127\\.0\\.0\\.1:3306/.*")
+@EnabledIfEnvironmentVariable(named = "DJS_STAT_MYSQL_URL", matches = "jdbc:mysql://127\\.0\\.0\\.1:(3306|3316)/.*")
 class InoutStatShipmentMysqlTest {
 
     private static final List<String> EXCLUDED = FlowDisplayScope.OUT_EXCLUDED.stream()
@@ -49,7 +49,7 @@ class InoutStatShipmentMysqlTest {
             System.getenv("DJS_STAT_MYSQL_USER"), System.getenv("DJS_STAT_MYSQL_PASSWORD"));
         connection.setAutoCommit(false);
         execute("CREATE TEMPORARY TABLE t_warehouse_product_info (id BIGINT, tenant_id VARCHAR(20), "
-            + "del_flag CHAR(1), product_id VARCHAR(32), product_name VARCHAR(64), product_type INT, "
+            + "del_flag CHAR(1), product_id VARCHAR(32), product_name VARCHAR(64), product_type INT, belong_type VARCHAR(32), "
             + "product_spec VARCHAR(32), product_unit VARCHAR(16))");
         execute("CREATE TEMPORARY TABLE t_warehouse_stock_flow (id BIGINT, tenant_id VARCHAR(20), "
             + "del_flag CHAR(1), product_id BIGINT, inout_type VARCHAR(3), flow_type VARCHAR(32), "
@@ -61,10 +61,11 @@ class InoutStatShipmentMysqlTest {
         execute("CREATE TEMPORARY TABLE t_warehouse_demand_manage (id BIGINT, tenant_id VARCHAR(20), store_id BIGINT)");
         execute("CREATE TEMPORARY TABLE t_md_store (id BIGINT, tenant_id VARCHAR(20), del_flag CHAR(1), store_name VARCHAR(64))");
         execute("CREATE TEMPORARY TABLE sys_user (user_id BIGINT, del_flag CHAR(1), nick_name VARCHAR(64))");
-        execute("INSERT INTO t_warehouse_product_info VALUES "
-            + "(1,'1001','0','Y171','右半扇',1,NULL,'kg'),"
-            + "(2,'1001','0','Y170','左半扇',1,NULL,'kg'),"
-            + "(3,'1001','0','OTHER','其他发货',1,NULL,'kg')");
+        execute("INSERT INTO t_warehouse_product_info "
+            + "(id,tenant_id,del_flag,product_id,product_name,product_type,belong_type,product_spec,product_unit) VALUES "
+            + "(1,'1001','0','Y171','右半扇',1,'white_bar',NULL,'kg'),"
+            + "(2,'1001','0','Y170','左半扇',1,'white_bar',NULL,'kg'),"
+            + "(3,'1001','0','OTHER','其他发货',1,'vegetable',NULL,'kg')");
         execute("INSERT INTO t_md_store VALUES (11,'1001','0','二七店'),(12,'1001','0','锦绣门店')");
         execute("INSERT INTO t_warehouse_demand_manage VALUES (21,'1001',11),(22,'1001',12)");
         production(1, "BAR2611050001", 11L, null, "1001", "0");
@@ -108,6 +109,19 @@ class InoutStatShipmentMysqlTest {
                 .hasSize(1).allSatisfy(item -> assertThat(item.getOutboundQty())
                     .isEqualByComparingTo(row.getOutboundQty()));
         }
+    }
+
+    @Test
+    void categoryFilterRetainsWhiteBarShipmentDeduplication() {
+        InoutStatQuery query = query("2026-11-05", "2026-11-05");
+        query.setBelongTypes(List.of("white_bar"));
+        assertThat(mapper.selectOutStatList("1001", query, EXCLUDED)).hasSize(2);
+        assertThat(mapper.selectOutSummary("1001", query, EXCLUDED).getWeightQty())
+            .isEqualByComparingTo("122.750");
+        query.setBelongTypes(List.of("vegetable"));
+        assertThat(mapper.selectOutStatList("1001", query, EXCLUDED)).hasSize(1);
+        assertThat(mapper.selectOutSummary("1001", query, EXCLUDED).getWeightQty())
+            .isEqualByComparingTo("13.500");
     }
 
     @Test
