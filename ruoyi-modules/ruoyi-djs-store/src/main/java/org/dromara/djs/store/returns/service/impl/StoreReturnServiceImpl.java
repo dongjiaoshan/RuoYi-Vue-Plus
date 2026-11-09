@@ -2044,6 +2044,15 @@ public class StoreReturnServiceImpl
 
     @Override
     public List<StoreReturnOpsItemVo> listOperationItems(StoreReturnQuery query) {
+        return listOperationItems(query, false);
+    }
+
+    @Override
+    public List<StoreReturnOpsItemVo> listWarehouseOperationItems(StoreReturnQuery query) {
+        return listOperationItems(query, true);
+    }
+
+    private List<StoreReturnOpsItemVo> listOperationItems(StoreReturnQuery query, boolean warehouseOperation) {
         StoreReturnQuery q = query == null ? new StoreReturnQuery() : query;
         q.setReturnDirection(DIRECTION_STORE_TO_WAREHOUSE);
         boolean unitType = RETURN_TYPE_UNIT.equals(q.getReturnType());
@@ -2107,7 +2116,9 @@ public class StoreReturnServiceImpl
             vo.setOperatorId(r.getOperatorId());
             vo.setConfirmUserId(r.getConfirmUserId());
             vo.setConfirmTime(r.getConfirmTime());
-            LocationChoice choice = resolveConfirmLocationChoice(r, p, productById, enabledLocations);
+            LocationChoice choice = warehouseOperation && !STATUS_RECEIVED.equals(r.getReturnStatus())
+                ? resolveWarehouseLocationChoice(p, productById, enabledLocations)
+                : resolveConfirmLocationChoice(r, p, productById, enabledLocations);
             vo.setDefaultLocationId(choice.defaultLocationId());
             vo.setLocationOptions(choice.options());
             result.add(vo);
@@ -2140,20 +2151,20 @@ public class StoreReturnServiceImpl
         List<Long> ids = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
             .select(ProductInfo::getId).eq(ProductInfo::getProductAttr, 2)
             .eq(ProductInfo::getProductStatus, 0)).stream().map(ProductInfo::getId).toList();
-        return buildOperationCandidates(ids, false);
+        return buildOperationCandidates(ids, false, false, true);
     }
 
     @Override
     public List<StoreReturnUnitCandidateVo> listWarehouseSupplementCandidates() {
-        return buildOperationCandidates(resolveReturnListProductIds(), true, true);
+        return buildOperationCandidates(resolveReturnListProductIds(), true, true, true);
     }
 
     private List<StoreReturnUnitCandidateVo> buildOperationCandidates(List<Long> ids, boolean fromReturnList) {
-        return buildOperationCandidates(ids, fromReturnList, false);
+        return buildOperationCandidates(ids, fromReturnList, false, false);
     }
 
     private List<StoreReturnUnitCandidateVo> buildOperationCandidates(List<Long> ids, boolean fromReturnList,
-                                                                     boolean warehouseSupplement) {
+                                                                     boolean warehouseSupplement, boolean warehouseOperation) {
         if (ids.isEmpty()) return List.of();
         List<ProductInfo> products = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
             .select(ProductInfo::getId, ProductInfo::getProductId, ProductInfo::getProductName,
@@ -2207,7 +2218,8 @@ public class StoreReturnServiceImpl
             vo.setInReturnList(p.getId() != null && returnListIds.contains(p.getId()));
             vo.setCanInbound(canInbound(p));
             vo.setCanConvert(canConvert(p, metricUnit));
-            LocationChoice choice = resolveLocationChoice(p, productById, enabledLocations);
+            LocationChoice choice = warehouseOperation ? resolveWarehouseLocationChoice(p, productById, enabledLocations)
+                : resolveLocationChoice(p, productById, enabledLocations);
             vo.setDefaultLocationId(choice.defaultLocationId());
             vo.setLocationOptions(choice.options());
             result.add(vo);
@@ -2329,11 +2341,7 @@ public class StoreReturnServiceImpl
             StoreReturnConfirmBo inbound = new StoreReturnConfirmBo();
             inbound.setId(row.getId()); inbound.setReceivedQty(bo.getReceivedQty());
             inbound.setReceivedWeight(bo.getReceivedQty());
-            Long locationId = bo.getLocationId();
-            if (locationId == null) {
-                locationId = isVegetableStoreReturn(row, product) ? requireFreshVegReturnLocation().getId()
-                    : resolveDefaultLocation(resolveInboundProductId(product.getId()));
-            }
+            Long locationId = resolveWarehouseInboundLocation(product, bo.getLocationId());
             LocationInfo location = locationId == null ? null : locationInfoMapper.selectById(locationId);
             if (location == null || !Integer.valueOf(1).equals(location.getLocationStatus()))
                 throw new ServiceException("请选择启用的入库库位", 400);
@@ -2544,6 +2552,47 @@ public class StoreReturnServiceImpl
         }
         Long def = stockMost != null ? stockMost : (all.isEmpty() ? null : all.get(0).getId());
         return new LocationChoice(def, all);
+    }
+
+    /** D-0192：仅仓库新版操作使用类别库位；业务编码定位主键，保留库位档案名称。 */
+    private LocationChoice resolveWarehouseLocationChoice(ProductInfo product, Map<Long, ProductInfo> productById,
+                                                           Map<Long, LocationPickerVo> enabledLocations) {
+        List<String> codes;
+        String defaultCode;
+        if (product != null && BELONG_TYPE_VEGETABLE.equals(product.getBelongType())) {
+            // 毛菜处理间对应既有毛菜鲜品库 L0006，不是另建同名库位。
+            codes = List.of(FRESH_VEG_LOCATION_CODE, "L0003");
+            defaultCode = FRESH_VEG_LOCATION_CODE;
+        } else if (isPorkProduct(product)) {
+            codes = List.of("L0007", "L0002");
+            defaultCode = "L0002";
+        } else {
+            return resolveLocationChoice(product, productById, enabledLocations);
+        }
+        List<LocationPickerVo> options = new ArrayList<>();
+        for (String code : codes) {
+            enabledLocations.values().stream().filter(l -> code.equals(l.getLocationCode()))
+                .findFirst().ifPresent(options::add);
+        }
+        Long defaultId = options.stream().filter(l -> defaultCode.equals(l.getLocationCode()))
+            .map(LocationPickerVo::getId).findFirst().orElse(null);
+        if (defaultId == null) {
+            throw new ServiceException("默认退回入库库位（" + defaultCode + "）不存在或已停用，请先维护库位", 400);
+        }
+        return new LocationChoice(defaultId, options);
+    }
+
+    /** 确认时重新核对启用态及类别范围，拒绝绕过下拉提交其他库位。 */
+    private Long resolveWarehouseInboundLocation(ProductInfo product, Long requestedId) {
+        if (product != null && (BELONG_TYPE_VEGETABLE.equals(product.getBelongType()) || isPorkProduct(product))) {
+            LocationChoice choice = resolveWarehouseLocationChoice(product, Map.of(), allEnabledLocationMap());
+            Long id = requestedId == null ? choice.defaultLocationId() : requestedId;
+            if (choice.options().stream().noneMatch(l -> id.equals(l.getId()))) {
+                throw new ServiceException("入库库位不在该产品类别允许的启用库位中，请重新选择", 400);
+            }
+            return id;
+        }
+        return requestedId != null ? requestedId : resolveDefaultLocation(resolveInboundProductId(product.getId()));
     }
 
     /** 产品 {@code store_location_id}（逗号分隔）里仍然启用的库位，保持配置顺序。 */

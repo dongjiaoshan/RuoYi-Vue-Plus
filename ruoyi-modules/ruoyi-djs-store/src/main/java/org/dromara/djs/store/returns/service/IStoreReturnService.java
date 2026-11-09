@@ -160,6 +160,9 @@ public interface IStoreReturnService {
      */
     List<StoreReturnOpsItemVo> listOperationItems(StoreReturnQuery query);
 
+    /** 仓库新版退回明细：D-0192 类别库位策略，不影响旧门店入口。 */
+    List<StoreReturnOpsItemVo> listWarehouseOperationItems(StoreReturnQuery query);
+
     /**
      * 门店退回操作页「退回门店」筛选项（V6 row222）：现有退回记录里出现过的门店 / 退回单位，去重。
      *

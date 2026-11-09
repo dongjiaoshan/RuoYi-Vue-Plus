@@ -330,15 +330,44 @@ class StoreDemandServiceImplTest {
 
         assertThat(result).hasSize(3);
         assertThat(result.get(0).getStoreName()).isEqualTo("到店测试门店");
-        assertThat(result.get(0).getPendingDemandCount()).isEqualTo(1);
-        assertThat(result.get(0).getDemandDate()).isEqualTo(a.getDemandDate());
-        assertThat(result.get(0).getProductKindCount()).isEqualTo(1);
-        assertThat(result.get(1).getPendingDemandCount()).isEqualTo(2);
+        assertThat(result.get(0).getPendingDemandCount()).isEqualTo(2);
+        assertThat(result.get(0).getDemandDate()).isEqualTo(b.getDemandDate());
+        assertThat(result.get(0).getProductKindCount()).isEqualTo(2);
+        assertThat(result.get(2).getPendingDemandCount()).isEqualTo(1);
+        assertThat(result.get(2).getDemandDate()).isEqualTo(a.getDemandDate());
         ArgumentCaptor<Wrapper<DemandManage>> query = ArgumentCaptor.forClass(Wrapper.class);
         verify(demandManageMapper).selectList(query.capture());
         assertThat(query.getValue().getSqlSegment()).contains("received_time IS NULL", "is_delivery_check = 1", "EXISTS",
                 "NOT IN ('mail', 'gift', 'warehouse_out')", "pp.deliver_type <> 2")
             .doesNotContain("demand_date");
+    }
+
+    @Test
+    @DisplayName("到店确认跨店按需求日期降序，同日保持稳定顺序，缺失日期在最后")
+    void pendingArrivalsSortDatesGloballyWithoutMergingStoresOrDates() {
+        LocalDate day = LocalDate.of(2026, 11, 9);
+        DemandManage aOld = arrivalDemand(9010L, 5001L, 7001L);
+        aOld.setDemandDate(day.minusDays(3));
+        DemandManage bNew = arrivalDemand(9011L, 5002L, 7002L);
+        bNew.setDemandDate(day);
+        DemandManage aMid = arrivalDemand(9012L, 5001L, 7003L);
+        aMid.setDemandDate(day.minusDays(1));
+        DemandManage cNew = arrivalDemand(9013L, 5003L, 7002L);
+        cNew.setDemandDate(day);
+        DemandManage bNewDuplicate = arrivalDemand(9014L, 5002L, 7002L);
+        bNewDuplicate.setDemandDate(day);
+        DemandManage aUndated = arrivalDemand(9015L, 5001L, 7001L);
+        aUndated.setDemandDate(null);
+        when(demandManageMapper.selectList(any(Wrapper.class))).thenReturn(
+            List.of(aOld, bNew, aMid, cNew, bNewDuplicate, aUndated));
+
+        var result = service.listPendingArrivalStores();
+
+        assertThat(result).extracting(v -> v.getStoreId() + ":" + v.getDemandDate()).containsExactly(
+            "5002:2026-11-09", "5003:2026-11-09", "5001:2026-11-08", "5001:2026-11-06", "5001:null");
+        assertThat(result.get(0).getPendingDemandCount()).isEqualTo(2);
+        assertThat(result.get(0).getProductKindCount()).isEqualTo(1);
+        assertThat(result.get(1).getPendingDemandCount()).isEqualTo(1);
     }
 
     @Test
@@ -352,7 +381,12 @@ class StoreDemandServiceImplTest {
 
         ArgumentCaptor<Wrapper<DemandManage>> datedQuery = ArgumentCaptor.forClass(Wrapper.class);
         verify(demandManageMapper, times(2)).selectList(datedQuery.capture());
-        assertThat(datedQuery.getAllValues()).allSatisfy(q -> assertThat(q.getSqlSegment()).contains("demand_date =", "FOR UPDATE"));
+        assertThat(datedQuery.getAllValues()).allSatisfy(q -> {
+            assertThat(q.getSqlSegment()).contains("store_id =", "demand_date =", "ORDER BY id ASC", "FOR UPDATE");
+            var params = ((com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<DemandManage>) q)
+                .getParamNameValuePairs();
+            assertThat(params.values()).contains(5001L, LocalDate.now());
+        });
         assertThatThrownBy(() -> service.receiveStoreArrivals(5001L, null)).isInstanceOf(ServiceException.class);
         ArgumentCaptor<DemandManage> patches = ArgumentCaptor.forClass(DemandManage.class);
         verify(demandManageMapper, times(2)).update(patches.capture(), any(Wrapper.class));

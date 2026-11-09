@@ -117,14 +117,17 @@ class InoutWorkbenchServiceTest {
         assertThat(unknown.getAgeDays()).isNull();
         verify(pigReceptionMapper).selectReceptionAges(List.of(1L,4L));
     }
-    @Test void cutCardsSortByOldestInboundAcrossPickedAndUnpickedAndKeepMissingTimesLast() {
+    @Test void cutCardsSortByNewestInboundAcrossPickedAndUnpickedAndKeepMissingTimesLast() {
         var old = new CutWorkbenchBarVo(); old.setInhouseId(8L); old.setInTime(new Date(1000));
         var sameTime = new CutWorkbenchBarVo(); sameTime.setCutRecordId(9L); sameTime.setInTime(new Date(1000));
         var recent = new CutWorkbenchBarVo(); recent.setInhouseId(2L); recent.setInTime(new Date(2000));
+        var newestPicked = new CutWorkbenchBarVo(); newestPicked.setCutRecordId(12L); newestPicked.setInTime(new Date(3000));
+        newestPicked.setOperateTime(new Date(500));
         var unknown = new CutWorkbenchBarVo(); unknown.setInhouseId(1L);
+        var unknownPicked = new CutWorkbenchBarVo(); unknownPicked.setCutRecordId(3L);
         when(workbenchMapper.selectUnpickedBars()).thenReturn(List.of(recent,unknown,old));
-        when(workbenchMapper.selectPickedBars()).thenReturn(List.of(sameTime));
-        assertThat(service.cutBars()).containsExactly(old,sameTime,recent,unknown);
+        when(workbenchMapper.selectPickedBars()).thenReturn(List.of(sameTime,unknownPicked,newestPicked));
+        assertThat(service.cutBars()).containsExactly(newestPicked,recent,old,sameTime,unknown,unknownPicked);
     }
 
     @Test void sameKeyDifferentWeightRejectedBeforeAnyMutation() {

@@ -1634,6 +1634,7 @@ class StoreReturnServiceImplTest {
             .thenReturn(Map.of("Y00150", "猪皮肉", "G001", "礼盒"));
         when(productInfoMapper.selectList(any())).thenReturn(List.of(pork, gift));
         when(locationInfoMapper.selectList(any())).thenReturn(List.of());
+        when(locationInfoMapper.selectList(any())).thenReturn(warehouseReturnLocations());
         assertThat(service.listWarehouseSupplementCandidates()).extracting(v -> v.getProductId()).containsExactly(PRODUCT_ID);
         assertThat(service.listUnitCandidates()).isEmpty();
     }
@@ -1698,6 +1699,7 @@ class StoreReturnServiceImplTest {
         when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(raw);
         LocationInfo location = new LocationInfo(); location.setId(LOCATION_ID); location.setLocationStatus(1);
         when(locationInfoMapper.selectById(LOCATION_ID)).thenReturn(location);
+        when(locationInfoMapper.selectList(any())).thenReturn(warehouseReturnLocations());
         when(baseMapper.selectOne(any())).thenReturn(row);
         when(baseMapper.selectById(row.getId())).thenReturn(row);
         when(baseMapper.update(any(StoreReturn.class), any())).thenReturn(1);
@@ -1790,4 +1792,71 @@ class StoreReturnServiceImplTest {
         verify(baseMapper, never()).updateById(any(StoreReturn.class));
         verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
     }
+    private List<LocationInfo> warehouseReturnLocations() {
+        return List.of(returnLocation(LOCATION_ID, "L0007", "猪肉鲜品库"),
+            returnLocation(30002L, "L0002", "冻品库"), returnLocation(30003L, "L0003", "蔬菜保鲜库"),
+            returnLocation(30006L, "L0006", "毛菜鲜品库"), returnLocation(30005L, "L0005", "干货库"));
+    }
+
+    private LocationInfo returnLocation(Long id, String code, String name) {
+        LocationInfo location = new LocationInfo(); location.setId(id); location.setLocationCode(code);
+        location.setLocationName(name); location.setLocationStatus(1); return location;
+    }
+
+    @ParameterizedTest
+    @CsvSource({"vegetable,L0006,L0006,L0003", "pork,L0002,L0007,L0002"})
+    @DisplayName("V7 row89：同一产品仓库候选/明细使用类别默认，旧门店候选/明细保持预设库位")
+    void warehouseLocationPolicyIsSeparateFromLegacy(String belong, String expectedDefault, String first, String second) {
+        ProductInfo product = arrivedProduct(PRODUCT_ID, "Q9B2R89-P", "退回原料", belong, "kg");
+        product.setProductAttr(2); product.setProductStatus(0); product.setStoreLocationId(String.valueOf(LOCATION_ID));
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product);
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(product));
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST)).thenReturn(Map.of("Q9B2R89-P", "退回原料"));
+        when(locationInfoMapper.selectList(any())).thenReturn(warehouseReturnLocations());
+        var raw = service.listOperationRawCandidates().get(0);
+        assertThat(raw.getLocationOptions()).extracting(v -> v.getLocationCode()).containsExactly(first, second);
+        String defaultCode = raw.getLocationOptions().stream().filter(l -> l.getId().equals(raw.getDefaultLocationId()))
+            .findFirst().orElseThrow().getLocationCode();
+        assertThat(defaultCode).isEqualTo(expectedDefault);
+        assertThat(service.listUnitCandidates().get(0).getDefaultLocationId()).isEqualTo(LOCATION_ID);
+        StoreReturn row = new StoreReturn(); row.setId(956L); row.setProductId(PRODUCT_ID);
+        row.setReturnStatus("pending"); row.setReturnType("unit");
+        when(baseMapper.selectList(any())).thenReturn(List.of(row));
+        var legacy = service.listOperationItems(new StoreReturnQuery()).get(0);
+        var warehouse = service.listWarehouseOperationItems(new StoreReturnQuery()).get(0);
+        assertThat(legacy.getDefaultLocationId()).isEqualTo(LOCATION_ID);
+        assertThat(warehouse.getDefaultLocationId()).isEqualTo(raw.getDefaultLocationId());
+        row.setReturnStatus("received"); row.setLocationId(30005L);
+        var history = service.listWarehouseOperationItems(new StoreReturnQuery()).get(0);
+        assertThat(history.getLocationId()).isEqualTo(30005L);
+        assertThat(history.getDefaultLocationId()).isEqualTo(legacy.getDefaultLocationId());
+    }
+
+    @Test
+    @DisplayName("V7 row89：猪肉仓库省略库位入冻品，非法跨类别库位零写入；旧确认仍接受原显式库位")
+    void warehousePorkDefaultAndExplicitRangeGuard() {
+        operationPending();
+        when(locationInfoMapper.selectById(30002L)).thenReturn(returnLocation(30002L, "L0002", "冻品库"));
+        var bo = operationBo("1", "0.25"); bo.setLocationId(30003L);
+        assertThatThrownBy(() -> service.confirmOperation(bo)).hasMessageContaining("该产品类别允许");
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
+        verify(baseMapper, never()).update(any(StoreReturn.class), any());
+        bo.setLocationId(null); assertThat(service.confirmOperation(bo)).isEqualTo(1);
+        verify(purchaseInService).inboundReturnBasket(eq(PRODUCT_ID), eq(30002L), eq(new BigDecimal("1")), anyString(), any());
+        var legacy = new org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo();
+        legacy.setId(956L); legacy.setLocationId(30003L); legacy.setReceivedQty(BigDecimal.ONE);
+        assertThat(service.confirm(legacy)).isEqualTo(1);
+        verify(purchaseInService).inboundReturnBasket(eq(PRODUCT_ID), eq(30003L), eq(BigDecimal.ONE), anyString(), any());
+    }
+
+    @Test
+    @DisplayName("V7 row89：默认冻品库缺失或停用拒绝静默回落；纯丢弃仍不需要库位")
+    void warehouseMissingDefaultCannotFallback() {
+        operationPending();
+        when(locationInfoMapper.selectList(any())).thenReturn(List.of(returnLocation(LOCATION_ID, "L0007", "猪肉鲜品库")));
+        assertThatThrownBy(() -> service.confirmOperation(operationBo("1", "0"))).hasMessageContaining("L0002");
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
+        assertThat(service.confirmOperation(operationBo("0", "1"))).isEqualTo(1);
+    }
+
 }

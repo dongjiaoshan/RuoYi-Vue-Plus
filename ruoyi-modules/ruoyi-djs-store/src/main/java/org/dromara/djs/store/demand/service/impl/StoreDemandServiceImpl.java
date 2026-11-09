@@ -33,6 +33,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -183,7 +184,8 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
             vo.setProductKindCount((int) entry.getValue().stream().map(DemandManage::getProductId)
                 .filter(Objects::nonNull).distinct().count());
             return vo;
-        }).toList();
+        }).sorted(Comparator.comparing(StorePendingArrivalVo::getDemandDate,
+            Comparator.nullsLast(Comparator.reverseOrder()))).toList();
     }
 
     @Override

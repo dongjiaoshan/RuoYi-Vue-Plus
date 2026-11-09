@@ -42,7 +42,7 @@ public class WarehouseStoreReturnController extends BaseController {
     @SaCheckPermission(value = {"djs:warehouse:storeReturn:list", "djs:warehouse:storeReturn:query", "djs:warehouse:storeReturn:detail"}, mode = SaMode.OR)
     @GetMapping("/operation/items")
     public R<List<StoreReturnOpsItemVo>> items(StoreReturnQuery query) {
-        return R.ok(service.listOperationItems(query));
+        return R.ok(service.listWarehouseOperationItems(query));
     }
 
     /** 筛选门店/单位全量选项。 */
