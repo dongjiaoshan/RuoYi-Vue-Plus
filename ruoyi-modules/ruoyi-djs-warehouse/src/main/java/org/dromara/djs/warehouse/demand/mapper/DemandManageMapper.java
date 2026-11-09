@@ -215,12 +215,13 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
     List<DemandManage> selectUncompletedDemands(@Param("productId") Long productId,
                                                 @Param("storeId") Long storeId);
 
-    /** 白条出门店使用全部已确认未满足需求，按需求日先后履约，日期不设下界。 */
+    /** 白条出门店只使用今日及以后已确认未满足需求，按需求日先后履约。 */
     @Select("""
         SELECT dm.* FROM t_warehouse_demand_manage dm
         JOIN t_warehouse_product_info p ON p.id=dm.product_id AND p.tenant_id=dm.tenant_id
           AND p.del_flag='0' AND p.belong_type='white_bar'
         WHERE dm.product_id=#{productId} AND dm.store_id=#{storeId}
+          AND dm.demand_date >= CURDATE()
           AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')
           AND COALESCE(dm.shipped_count,0)<dm.demand_quantity
           AND dm.del_flag='0' AND dm.tenant_id='1001'
@@ -238,6 +239,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
           AND p.del_flag='0' AND p.belong_type='white_bar' AND p.product_status=0
         JOIN t_md_store s ON s.id=dm.store_id AND s.tenant_id=dm.tenant_id AND s.del_flag='0'
         WHERE dm.product_id=#{productId}
+          AND dm.demand_date >= CURDATE()
           AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')
           AND dm.del_flag='0' AND dm.tenant_id='1001'
         GROUP BY dm.store_id,s.store_name

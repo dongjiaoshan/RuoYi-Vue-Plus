@@ -59,6 +59,13 @@ public class WarehouseStoreReturnController extends BaseController {
         return R.ok(service.listUnitCandidates());
     }
 
+    /** 仓库补录按显式字典清单选品。 */
+    @SaCheckPermission("djs:warehouse:storeReturn:confirm")
+    @GetMapping("/operation/supplement-candidates")
+    public R<List<StoreReturnUnitCandidateVo>> supplementCandidates() {
+        return R.ok(service.listWarehouseSupplementCandidates());
+    }
+
     /** 仓库按既有规则确认退回。 */
     @SaCheckPermission("djs:warehouse:storeReturn:confirm")
     @RepeatSubmit

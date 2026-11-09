@@ -46,6 +46,12 @@ public class ShipDemandVo implements Serializable {
     /** 已发数量（累计）。 */
     private BigDecimal shippedCount;
 
+    /** 当前清单按唯一成品分配得到的已备货量，与需求同单位。 */
+    private BigDecimal preparedCount;
+
+    /** 该需求已实际出车的量，与需求同单位。 */
+    private BigDecimal deliveredCount;
+
     /** 需求单自身的产品 ID（snowflake→string）。用于「已确认需求但未生产」的产品也在门店货物里成卡展示（流程性问题 row6）。 */
     private Long productId;
 

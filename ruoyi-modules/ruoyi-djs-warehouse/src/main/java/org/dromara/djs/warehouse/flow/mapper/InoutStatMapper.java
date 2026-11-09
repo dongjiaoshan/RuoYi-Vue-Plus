@@ -71,6 +71,7 @@ public interface InoutStatMapper {
         WHERE f.del_flag = '0' AND f.tenant_id = #{tenantId}
           AND f.inout_type = 'IN'
           AND f.product_id IS NOT NULL AND f.product_id &lt;&gt; 0
+          AND (pi.product_attr IS NULL OR pi.product_attr &lt;&gt; 1)
           AND f.flow_type NOT IN
               <foreach collection="inExcluded" item="t" open="(" separator="," close=")">#{t}</foreach>
         <if test="query.dateFrom != null">
@@ -145,6 +146,7 @@ public interface InoutStatMapper {
         WHERE f.del_flag = '0' AND f.tenant_id = #{tenantId}
           AND f.inout_type = 'OT'
           AND f.product_id IS NOT NULL AND f.product_id &lt;&gt; 0
+          AND (pi.product_attr IS NULL OR pi.product_attr &lt;&gt; 1)
           AND f.flow_type NOT IN
               <foreach collection="outExcluded" item="t" open="(" separator="," close=")">#{t}</foreach>
           AND NOT (

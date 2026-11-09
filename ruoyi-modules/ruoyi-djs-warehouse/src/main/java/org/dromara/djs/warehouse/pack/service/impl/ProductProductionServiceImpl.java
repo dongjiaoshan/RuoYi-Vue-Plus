@@ -495,9 +495,9 @@ public class ProductProductionServiceImpl
                 throw new ServiceException("所选生产产品不支持该原材料外售，请刷新后重选");
             }
             todayDemands = demandManageMapper.selectUncompletedDemands(product.getId(), bo.getStoreId()).stream()
-                .filter(d -> LocalDate.now(PACK_TODAY_ZONE).equals(d.getDemandDate()) && rowRemain(d).signum() > 0).toList();
+                .filter(d -> d.getDemandDate() != null && !d.getDemandDate().isBefore(LocalDate.now(PACK_TODAY_ZONE)) && rowRemain(d).signum() > 0).toList();
             if (todayDemands.isEmpty()) {
-                throw new ServiceException("所选门店没有该产品的当天未满足需求，请刷新后重选");
+                throw new ServiceException("所选门店没有该产品今日及以后的未满足需求，请刷新后重选");
             }
         }
         // 实称对打包计量规则的校验（下限硬拒 / 超 3% 可确认继续）：肉品无条件套用；
@@ -506,7 +506,7 @@ public class ProductProductionServiceImpl
         if (cutStore && isKgUnit(product.getProductUnit())) {
             BigDecimal remainingWeight = todayDemands.stream().map(ProductProductionServiceImpl::rowRemain)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-            validateMeasuredWeight(remainingWeight, bo.getProductWeight(), bo.getAllowOverMeasure(), "门店当天剩余需求");
+            validateMeasuredWeight(remainingWeight, bo.getProductWeight(), bo.getAllowOverMeasure(), "门店今日及以后剩余需求");
         } else if (BELONG_TYPE_PORK.equals(product.getBelongType())
             || isOtherPackKgMeasureMode(product, src, bo)) {
             validatePackMeasureRule(product, bo.getProductWeight(), bo.getAllowOverMeasure());
@@ -1226,7 +1226,7 @@ public class ProductProductionServiceImpl
     }
 
     @Override
-    public TableDataInfo<ProductProductionGroupVo> queryGroupPageList(ProductProductionQuery query, PageQuery pageQuery) {
+    public List<ProductProductionGroupVo> queryGroupList(ProductProductionQuery query) {
         String produceNo = query == null ? null : query.getProduceNo();
         String productName = query == null ? null : query.getProductName();
         String belongType = query == null ? null : query.getBelongType();
@@ -1237,8 +1237,12 @@ public class ProductProductionServiceImpl
         Integer hasDamage = query == null ? null : query.getHasDamage();
         // belongType / belongTypes（产品品类多选，R70 优先 IN，product_info 维度）/ productType（组内同值）/
         // productName(LIKE) 下推 mapper WHERE；hasDamage（是否存在损坏）作用于组维度，下推 mapper HAVING（row50）
-        List<ProductProductionGroupVo> all =
-            baseMapper.selectProductionGroupList(produceNo, productName, belongType, belongTypes, productType, from, to, hasDamage);
+        return baseMapper.selectProductionGroupList(produceNo, productName, belongType, belongTypes, productType, from, to, hasDamage);
+    }
+
+    @Override
+    public TableDataInfo<ProductProductionGroupVo> queryGroupPageList(ProductProductionQuery query, PageQuery pageQuery) {
+        List<ProductProductionGroupVo> all = queryGroupList(query);
         // 聚合后内存分页（分组行数小，范式同 DemandManageServiceImpl.queryGroupList）
         int total = all.size();
         int pageNum = pageQuery == null || pageQuery.getPageNum() == null ? 1 : pageQuery.getPageNum();
@@ -2250,32 +2254,34 @@ public class ProductProductionServiceImpl
         if (candidates.isEmpty()) {
             return List.of();
         }
-        // candidates 已按 demand_date ASC, id ASC 排序 → 首行的需求日即最早需求日。
+        // 普通打包仍只规划最早需求日；门店分割传入已校验的今日及以后窗口，须逐行扣完同一窗口。
+        // candidates 已按 demand_date ASC, id ASC 排序。
+        boolean spanDates = suppliedRows != null;
         // demand_date 理论非空（DDL NOT NULL），防御性取到 null 时退化为「只认首行」。
         LocalDate targetDate = candidates.get(0).getDemandDate();
-        List<DemandManage> sameDay = new java.util.ArrayList<>();
+        List<DemandManage> eligibleRows = new java.util.ArrayList<>();
         for (DemandManage d : candidates) {
-            if (targetDate != null && !targetDate.equals(d.getDemandDate())) {
+            if (!spanDates && targetDate != null && !targetDate.equals(d.getDemandDate())) {
                 break;
             }
             if (rowRemain(d).signum() > 0) {
-                sameDay.add(d);
+                eligibleRows.add(d);
             }
-            if (targetDate == null) {
+            if (!spanDates && targetDate == null) {
                 break;
             }
         }
-        if (sameDay.isEmpty()) {
-            // 当天各行都已扣满（并发已履约）：不扣、不报错。
+        if (eligibleRows.isEmpty()) {
+            // 窗口各行都已扣满（并发已履约）：不扣、不报错。
             return List.of();
         }
-        if (weighedKg.compareTo(rowRemain(sameDay.get(0))) < 0) {
+        if (weighedKg.compareTo(rowRemain(eligibleRows.get(0))) < 0) {
             // 连第一行都填不满 —— 与改动前同一条下界、同一句报错。
             throw new ServiceException("重量未满足需求，请处理后再试");
         }
         List<DemandManage> planned = new java.util.ArrayList<>();
         BigDecimal left = weighedKg;
-        for (DemandManage d : sameDay) {
+        for (DemandManage d : eligibleRows) {
             BigDecimal remain = rowRemain(d);
             if (left.compareTo(remain) < 0) {
                 // 剩下的重量填不满这一行 —— KG 不做部分履约（填一半的行仍会卡住出车闸），到此为止。

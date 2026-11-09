@@ -640,9 +640,46 @@ class ProductProductionServiceImplTest {
         verify(productionMapper,never()).insert(any(ProductProduction.class));
     }
 
-    @Test void cutStorePackRejectsTomorrowOnlyAndWrongMaterialBeforeWriting() {
+    @Test void cutStorePackAcceptsFutureDemandAndDeductsTheSameRow() {
         var bo=cutStorePack("0.510",false);
-        assertThatThrownBy(() -> service.submitCutStorePack(bo)).hasMessageContaining("当天未满足");
+        when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
+        when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv->{((ProductProduction)inv.getArgument(0)).setId(801L);return 1;});
+        when(demandManageMapper.incrementShipped(eq(77L),any(),any())).thenReturn(1);
+        assertThat(service.submitCutStorePack(bo)).isEqualTo(801L);
+        verify(demandManageMapper).incrementShipped(eq(77L),any(),eq(new BigDecimal("0.500")));
+    }
+
+    @Test void cutStoreKgDeductsTodayAndPartiallyPackedFutureDemandTogether() {
+        var bo = cutStorePack("3.000", true);
+        var today = demandManageMapper.selectUncompletedDemands(60010L, 7L).getFirst();
+        today.setDemandQuantity(new BigDecimal("1.000"));
+        var future = new org.dromara.djs.warehouse.demand.domain.DemandManage();
+        future.setId(78L); future.setStoreId(7L); future.setProductId(60010L);
+        future.setDemandDate(today.getDemandDate().plusDays(1));
+        future.setDemandQuantity(new BigDecimal("3.000"));
+        future.setShippedCount(new BigDecimal("1.000"));
+        future.setDemandStatus("PARTIAL_SHIPPED");
+        when(demandManageMapper.selectUncompletedDemands(60010L, 7L)).thenReturn(List.of(today, future));
+        when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
+        when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
+            ((ProductProduction) inv.getArgument(0)).setId(801L); return 1;
+        });
+        when(demandManageMapper.incrementShipped(anyLong(), any(), any())).thenReturn(1);
+
+        assertThat(service.submitCutStorePack(bo)).isEqualTo(801L);
+
+        verify(demandManageMapper).incrementShipped(eq(77L), any(), eq(new BigDecimal("1.000")));
+        verify(demandManageMapper).incrementShipped(eq(78L), any(), eq(new BigDecimal("2.000")));
+        var saved = ArgumentCaptor.forClass(ProductProduction.class);
+        verify(productionMapper, times(2)).insert(saved.capture());
+        assertThat(saved.getAllValues()).extracting(ProductProduction::getProductWeight)
+            .containsExactly(new BigDecimal("1.000"), new BigDecimal("2.000"));
+    }
+
+    @Test void cutStorePackRejectsPastOnlyAndWrongMaterialBeforeWriting() {
+        var bo=cutStorePack("0.510",false);
+        demandManageMapper.selectUncompletedDemands(60010L,7L).getFirst().setDemandDate(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).minusDays(1));
+        assertThatThrownBy(() -> service.submitCutStorePack(bo)).hasMessageContaining("今日及以后");
         var invalid=cutStorePack("0.510",true); var p=productInfoMapper.selectById(60010L); p.setProductMaterial(999L);
         assertThatThrownBy(() -> service.submitCutStorePack(invalid)).hasMessageContaining("不支持");
         verify(productionMapper,never()).insert(any(ProductProduction.class));

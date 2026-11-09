@@ -105,6 +105,9 @@ class PigCutRecordServiceImplTest {
     @Mock
     private org.dromara.djs.breed.core.service.IPigQueryService pigQueryService;
 
+    @Mock
+    private org.dromara.djs.warehouse.cross.mapper.PigReceptionMapper pigReceptionMapper;
+
     private TestablePigCutRecordServiceImpl service;
 
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -163,8 +166,14 @@ class PigCutRecordServiceImplTest {
         when(barInfoMapper.selectList(any())).thenReturn(List.of(olderPig,newerPig));
         when(productInhouseMapper.selectList(any())).thenReturn(List.of(earlierHalf,latestHalf));
         when(productInfoMapper.selectList(any())).thenReturn(List.of(left,right));
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "pigReceptionMapper", pigReceptionMapper);
+        var age = new org.dromara.djs.warehouse.cross.domain.vo.PigReceptionAgeVo();
+        age.setBarInfoId(1L); age.setAgeDays(311);
+        when(pigReceptionMapper.selectReceptionAges(any())).thenReturn(List.of(age));
         var items=service.queryBarOutItems();
         assertThat(items).extracting(org.dromara.djs.warehouse.cut.domain.vo.BarPickupItemVo::getInhouseId).containsExactly(11L,12L);
+        assertThat(items.getFirst().getAgeDays()).isEqualTo(311);
+        assertThat(items.get(1).getAgeDays()).isNull();
         assertThat(items.getFirst().getProductId()).isEqualTo(101L);
         assertThat(items.getFirst().getProductName()).isEqualTo("左半扇");
         var query=ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.Wrapper.class);

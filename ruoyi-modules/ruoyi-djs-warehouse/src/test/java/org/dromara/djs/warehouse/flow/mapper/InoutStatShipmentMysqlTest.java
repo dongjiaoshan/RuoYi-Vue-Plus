@@ -50,7 +50,7 @@ class InoutStatShipmentMysqlTest {
         connection.setAutoCommit(false);
         execute("CREATE TEMPORARY TABLE t_warehouse_product_info (id BIGINT, tenant_id VARCHAR(20), "
             + "del_flag CHAR(1), product_id VARCHAR(32), product_name VARCHAR(64), product_type INT, belong_type VARCHAR(32), "
-            + "product_spec VARCHAR(32), product_unit VARCHAR(16))");
+            + "product_spec VARCHAR(32), product_unit VARCHAR(16), product_attr INT DEFAULT 2)");
         execute("CREATE TEMPORARY TABLE t_warehouse_stock_flow (id BIGINT, tenant_id VARCHAR(20), "
             + "del_flag CHAR(1), product_id BIGINT, inout_type VARCHAR(3), flow_type VARCHAR(32), "
             + "stock_out_dest VARCHAR(32), change_quantity DECIMAL(16,3), demand_id BIGINT, "
@@ -195,6 +195,24 @@ class InoutStatShipmentMysqlTest {
             assertThat(result.getInt(1)).isEqualTo(6);
             assertThat(result.getBigDecimal(2)).isEqualByComparingTo("263.000");
         }
+    }
+
+    @Test
+    void excludesProductionProductsFromAllOutboundViewsWithoutChangingWhiteBarDeduplication() throws SQLException {
+        execute("INSERT INTO t_warehouse_product_info (id,tenant_id,del_flag,product_id,product_name,product_type,belong_type,product_unit,product_attr) "
+            + "VALUES (4,'1001','0','P400','玉白菜400g',1,'vegetable','份',1),"
+            + "(5,'1001','0','LEGACY','未知属性',2,'vegetable','kg',NULL)");
+        flow(4,"ship_out","ship_dock","999",21L,null,"2026-11-05");
+        flow(5,"backstage_out","kitchen","2",null,null,"2026-11-05");
+        var query=query("2026-11-05","2026-11-05");
+        assertThat(mapper.selectOutStatList("1001",query,EXCLUDED)).noneMatch(r -> "P400".equals(r.getProductCode()));
+        assertThat(mapper.selectOutSummary("1001",query,EXCLUDED).getWeightQty()).isEqualByComparingTo("138.250");
+        var detail=new InoutStatDetailQuery();
+        detail.setDateFrom(query.getDateFrom());detail.setDateTo(query.getDateTo());detail.setProductCode("P400");
+        detail.setOutDest("ship_dock");detail.setStoreId(11L);
+        assertThat(mapper.selectOutDetailList("1001",detail,EXCLUDED)).isEmpty();
+        query.setBelongTypes(List.of("white_bar"));
+        assertThat(mapper.selectOutSummary("1001",query,EXCLUDED).getWeightQty()).isEqualByComparingTo("122.750");
     }
 
     private void assertWeight(String from, String to, String expected) {

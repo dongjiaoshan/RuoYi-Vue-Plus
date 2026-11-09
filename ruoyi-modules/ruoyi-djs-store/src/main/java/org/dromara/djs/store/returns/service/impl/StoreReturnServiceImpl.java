@@ -1371,6 +1371,10 @@ public class StoreReturnServiceImpl
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int confirm(StoreReturnConfirmBo bo) {
+        return confirmInternal(bo, false);
+    }
+
+    private int confirmInternal(StoreReturnConfirmBo bo, boolean warehouseOperation) {
         StoreReturn existing = baseMapper.selectById(bo.getId());
         if (existing == null) {
             throw new ServiceException("退回记录不存在：" + bo.getId(), 404);
@@ -1380,7 +1384,10 @@ public class StoreReturnServiceImpl
         }
 
         ProductInfo returnProduct = productInfoMapper.selectById(existing.getProductId());
-        assertWithinConfirmLimit(existing, returnProduct, bo);
+        // 仓库分列操作的非KG上限已按原退回数量校验；其他入口继续使用既有折料上限。
+        if (!warehouseOperation || returnProduct == null || isKgUnit(resolveMetricUnit(returnProduct))) {
+            assertWithinConfirmLimit(existing, returnProduct, bo);
+        }
 
         // row24 第 2 点：生产产品没配原材料 → 只能丢弃，不能退回仓库（仓库只存原材料，无从确定入哪个料的库存）
         if (!DISCARD_YES.equals(bo.getIsDiscard()) && !canInbound(returnProduct)) {
@@ -1801,12 +1808,13 @@ public class StoreReturnServiceImpl
         // 直接读字段，光靠注解「确认人」整列是空的。STR-RETURN-OPS-001 的「退回操作人」同理会空。
         fillConfirmUserNames(all);
         fillOperatorNames(all);
-        // 排序：退回日期倒序 → 门店 id 倒序（单位退回 storeId 为 null，用 MIN_VALUE 排到最后，
-        // 不做 null 处理 Comparator.comparing 会直接 NPE）。
+        // 按实际退回时间倒序；同一时刻按完整分组维度排序，分页顺序不依赖数据库返回顺序。
         all.sort(Comparator
-            .comparing(StoreReturnStoreDailyVo::getReturnDate, Comparator.reverseOrder())
-            .thenComparing(v -> v.getStoreId() == null ? Long.MIN_VALUE : v.getStoreId(),
-                Comparator.reverseOrder()));
+            .comparing(StoreReturnStoreDailyVo::getReturnTime, Comparator.nullsLast(Comparator.reverseOrder()))
+            .thenComparing(StoreReturnStoreDailyVo::getReturnDate, Comparator.nullsLast(Comparator.reverseOrder()))
+            .thenComparing(StoreReturnStoreDailyVo::getReturnType, Comparator.nullsLast(Comparator.naturalOrder()))
+            .thenComparing(StoreReturnStoreDailyVo::getStoreId, Comparator.nullsLast(Comparator.reverseOrder()))
+            .thenComparing(StoreReturnStoreDailyVo::getReturnUnit, Comparator.nullsLast(Comparator.naturalOrder())));
         return all;
     }
 
@@ -2135,7 +2143,17 @@ public class StoreReturnServiceImpl
         return buildOperationCandidates(ids, false);
     }
 
+    @Override
+    public List<StoreReturnUnitCandidateVo> listWarehouseSupplementCandidates() {
+        return buildOperationCandidates(resolveReturnListProductIds(), true, true);
+    }
+
     private List<StoreReturnUnitCandidateVo> buildOperationCandidates(List<Long> ids, boolean fromReturnList) {
+        return buildOperationCandidates(ids, fromReturnList, false);
+    }
+
+    private List<StoreReturnUnitCandidateVo> buildOperationCandidates(List<Long> ids, boolean fromReturnList,
+                                                                     boolean warehouseSupplement) {
         if (ids.isEmpty()) return List.of();
         List<ProductInfo> products = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
             .select(ProductInfo::getId, ProductInfo::getProductId, ProductInfo::getProductName,
@@ -2160,12 +2178,8 @@ public class StoreReturnServiceImpl
         Map<Long, String> metricUnits = resolveMetricUnits(new ArrayList<>(productById.values()));
         Set<Long> returnListIds = fromReturnList ? new HashSet<>(ids) : returnListAllowedIds();
         Map<Long, LocationPickerVo> enabledLocations = allEnabledLocationMap();
-        // V6 row226 对「退回管理」菜单下的两个入口一视同仁：门店退回那一页剔掉了，单位退回这边也剔。
-        // 剔的理由（猪肉侧没有成品→原材料的自动折叠，列出来分不清退的是哪一个）与从哪个入口进来无关；
-        // 只在门店那页剔，同一个菜单下就会出现两套口径。
-        // ⚠️ 判据下在**产出行的这个循环**上，不下在上面的 id 列表上：行是另一次查询的结果，
-        // 过滤 id 却放过行，等于没过滤（改的时候被单测当场抓到过一次）。
-        Set<Long> excluded = porkMaterialSoldIds(
+        // 仓库补录以显式清单为准；门店端继续剔除按原材料售卖的猪肉生产产品。
+        Set<Long> excluded = warehouseSupplement ? Set.of() : porkMaterialSoldIds(
             products.stream().map(ProductInfo::getId).filter(Objects::nonNull).collect(Collectors.toList()));
         List<StoreReturnUnitCandidateVo> result = new ArrayList<>(products.size());
         for (ProductInfo p : products) {
@@ -2304,6 +2318,12 @@ public class StoreReturnServiceImpl
         ProductInfo product = productInfoMapper.selectById(row.getProductId());
         if (product == null) throw new ServiceException("退回产品不存在", 400);
         validateOperationAmounts(product, bo.getReceivedQty(), bo.getDiscardQty());
+        if (!Integer.valueOf(1).equals(row.getWarehouseAdded()) && !isKgUnit(resolveMetricUnit(product))) {
+            BigDecimal cap = row.getReturnQuantity();
+            if (cap != null && cap.signum() > 0 && bo.getReceivedQty().add(bo.getDiscardQty()).compareTo(cap) > 0) {
+                throw new ServiceException("仓库确认量与丢弃量合计不能超过原退回量(" + cap.stripTrailingZeros().toPlainString() + ")", 400);
+            }
+        }
         int affected;
         if (bo.getReceivedQty().signum() > 0) {
             StoreReturnConfirmBo inbound = new StoreReturnConfirmBo();
@@ -2319,7 +2339,7 @@ public class StoreReturnServiceImpl
                 throw new ServiceException("请选择启用的入库库位", 400);
             inbound.setLocationId(locationId);
             inbound.setIsDiscard(DISCARD_NO);
-            affected = confirm(inbound); // 共用原入库库位、原材料解析、原有上限及库存流水事务。
+            affected = confirmInternal(inbound, true); // 共用入库库位、原材料解析及库存流水事务。
         } else {
             StoreReturn patch = new StoreReturn(); patch.setId(row.getId());
             patch.setReceivedQty(BigDecimal.ZERO); patch.setReceivedWeight(BigDecimal.ZERO);
@@ -2354,7 +2374,8 @@ public class StoreReturnServiceImpl
         if (anchor == null || STATUS_RECEIVED.equals(anchor.getReturnStatus())
             || !DIRECTION_STORE_TO_WAREHOUSE.equals(anchor.getReturnDirection()))
             throw new ServiceException("请选择待处理退回单", 400);
-        Set<Long> allowed = returnListAllowedIds();
+        // 补录候选与提交共用显式配置的产品ID；不改变门店端可退成员集合。
+        Set<Long> allowed = new HashSet<>(resolveReturnListProductIds());
         StoreReturnQuery query = new StoreReturnQuery();
         query.setReturnDirection(DIRECTION_STORE_TO_WAREHOUSE);
         query.setReturnType(anchor.getReturnType()); query.setReturnUnit(anchor.getReturnUnit());

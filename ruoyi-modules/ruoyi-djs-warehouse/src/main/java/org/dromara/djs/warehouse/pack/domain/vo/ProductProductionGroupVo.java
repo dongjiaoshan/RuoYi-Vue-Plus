@@ -2,6 +2,12 @@ package org.dromara.djs.warehouse.pack.domain.vo;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
+import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
+import cn.idev.excel.annotation.ExcelProperty;
+import cn.idev.excel.annotation.format.DateTimeFormat;
+import cn.idev.excel.annotation.format.NumberFormat;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 
 import java.io.Serial;
 import java.io.Serializable;
@@ -23,6 +29,7 @@ import java.util.Date;
  * @since WMS-PACK-001
  */
 @Data
+@ExcelIgnoreUnannotated
 public class ProductProductionGroupVo implements Serializable {
 
     @Serial
@@ -30,27 +37,34 @@ public class ProductProductionGroupVo implements Serializable {
 
     /** 生产日期（DATE(produce_date)）。 */
     @JsonFormat(pattern = "yyyy-MM-dd")
+    @ExcelProperty(value = "生产日期", index = 0)
+    @DateTimeFormat("yyyy-MM-dd")
     private Date produceDate;
 
     /** 产品 ID（string 输出避雪花精度）。 */
     private Long productId;
 
     /** 产品名称（组内取任一，冗余字段同组通常一致）。 */
+    @ExcelProperty(value = "产品名称", index = 2)
     private String productName;
 
     /** 单位（组内取任一）。 */
+    @ExcelProperty(value = "产品单位", index = 6)
     private String productUnit;
 
     /** 规格（组内取任一）。 */
     private String productSpec;
 
     /** 产品品类（字典 {@code djs_belong_type}；JOIN product_info 取 belong_type，前端 dict-tag 渲染）。 */
+    @ExcelProperty(value = "产品类别", index = 3, converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_belong_type")
     private String belongType;
 
     /** 产品类型（字典 {@code djs_product_type}：1=自产/2=外购，已废弃 3 礼盒；保留兼容，主列表不展示）。 */
     private Integer productType;
 
     /** 该产品生产日期下一自然日的有效需求总量（取消/删除需求不计）。 */
+    @ExcelProperty(value = "明日需求量", index = 4)
     private BigDecimal demandQty;
 
     /**
@@ -58,6 +72,8 @@ public class ProductProductionGroupVo implements Serializable {
      *
      * <p>需求量为 0（生产日次日该产品无需求行）时为 {@code null}，前端展示 {@code -}。</p>
      */
+    @ExcelProperty(value = "需求满足率", index = 1)
+    @NumberFormat("0.00\"%\"")
     private BigDecimal fulfillmentRate;
 
     /**
@@ -69,6 +85,7 @@ public class ProductProductionGroupVo implements Serializable {
      * </ul>
      * 与 {@link #demandQty}（同样按该单位下单）同量纲，{@link #fulfillmentRate} 才成立。
      */
+    @ExcelProperty(value = "生产量", index = 5)
     private BigDecimal produceQty;
 
     /** 件数（组内行数 COUNT(*)）。 */
@@ -80,6 +97,7 @@ public class ProductProductionGroupVo implements Serializable {
      * <p>每条打包记录的 {@code material_consume} = 本次打包消耗的来源原材料重量；组内求和即该产品当日
      * 累计原材料消耗。无配料（{@code material_id} 空）的记录 material_consume 为 NULL，SUM 跳过 → 该组可能为 0。</p>
      */
+    @ExcelProperty(value = "原材料消耗量", index = 9)
     private BigDecimal materialConsume;
 
     /**
@@ -87,6 +105,7 @@ public class ProductProductionGroupVo implements Serializable {
      *
      * <p>SQL 经 {@code material_id} LEFT JOIN product_info 取 {@code MAX(product_name)} 兜底；无配料则空，前端展示 -。</p>
      */
+    @ExcelProperty(value = "原材料", index = 8)
     private String materialName;
 
     /**
@@ -94,6 +113,7 @@ public class ProductProductionGroupVo implements Serializable {
      *
      * <p>SQL 经 {@code material_id} LEFT JOIN product_info 取 {@code MAX(unit)} 兜底；无配料则空。</p>
      */
+    @ExcelProperty(value = "原材料单位", index = 10)
     private String materialUnit;
 
     /**
@@ -103,6 +123,7 @@ public class ProductProductionGroupVo implements Serializable {
      * 同 product_id 下，非取消单（{@code demand_status <> 'CANCELLED'}）、有门店，且该门店剩余
      * 需求量 {@code SUM(demand_quantity - shipped_count) > 0} 的去重门店家数。无需求则 0。</p>
      */
+    @ExcelProperty(value = "需求门店数", index = 11)
     private Integer storeDemandCount;
 
     /**
@@ -110,5 +131,6 @@ public class ProductProductionGroupVo implements Serializable {
      *
      * <p>前端 row50「件数」后展示，&gt;0 红色提示。无标损则 0。</p>
      */
+    @ExcelProperty(value = "损坏量", index = 7)
     private Integer damageCount;
 }

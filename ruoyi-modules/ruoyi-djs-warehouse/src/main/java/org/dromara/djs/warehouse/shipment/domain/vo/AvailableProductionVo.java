@@ -41,6 +41,9 @@ public class AvailableProductionVo implements Serializable {
 
     private BigDecimal produceQuantity;
 
+    /** 本条生产记录抵扣的需求量（礼盒/非KG按实际份数）。 */
+    private BigDecimal demandDeductQty;
+
     /** 生产产品规格（打包时快照 product_production.product_spec）：mp 发货清单「规格」行展示此值，非库位名。 */
     private String productSpec;
 

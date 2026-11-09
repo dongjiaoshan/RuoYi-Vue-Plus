@@ -35,8 +35,8 @@ class InoutMapperSqlTest {
     }
     @Test void cutDemandCteExposesTenantAndUsesOnlyTodayEligibleProduction() throws Exception {
         String sql=String.join(" ",InoutWorkbenchMapper.class.getMethod("selectCutStoreDemands",Long.class,java.time.LocalDate.class).getAnnotation(Select.class).value());
-        assertThat(sql).contains("SELECT p.tenant_id,", "dm.demand_date=#{today}", "p.product_material=#{materialProductId}",
+        assertThat(sql).contains("SELECT p.tenant_id,", "dm.demand_date>=#{today}", "p.product_material=#{materialProductId}",
             "p.is_material_sold=1", "p.product_attr=1", "p.product_status=0", "p.is_delivery=1");
-        assertThat(sql).doesNotContain("dm.demand_date>=", "'COMPLETED'");
+        assertThat(sql).doesNotContain("dm.demand_date=#{today}", "'COMPLETED'");
     }
 }

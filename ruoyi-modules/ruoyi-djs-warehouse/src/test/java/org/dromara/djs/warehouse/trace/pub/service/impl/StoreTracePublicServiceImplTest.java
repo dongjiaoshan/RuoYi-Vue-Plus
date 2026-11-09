@@ -36,6 +36,7 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -124,6 +125,7 @@ class StoreTracePublicServiceImplTest {
 
         when(productInfoMapper.selectList(any(Wrapper.class))).thenReturn(List.of(
             product(WHITE_BAR_PRODUCT, "white_bar"), product(PORK_PRODUCT, "pork"), product(VEG_PRODUCT, "vegetable")));
+        givenDirectTraceCodes();
         when(tracePublicService.getByProduceCode(anyString())).thenAnswer(inv -> porkVo(inv.getArgument(0), true, true));
     }
 
@@ -178,6 +180,79 @@ class StoreTracePublicServiceImplTest {
     }
 
     @Test
+    @DisplayName("row77真实11/8收货：同重白条按同耳号最晚收货时间，新猪002胜；清缓存后仍胜")
+    void realNovember8ReceiptsPreferLatestArrivalWhenWeightsTie() {
+        doReturn(LocalDate.of(2026, 11, 8)).when(service).today();
+        long oldLeft = 2104820103464394754L;
+        long oldRight = 2104827638657359874L;
+        long newLeft = 2119385406978502658L;
+        long newRight = 2119397465145323521L;
+        when(demandManageMapper.selectList(any(Wrapper.class))).thenReturn(List.of(
+            receivedDemand(oldLeft, "2026-11-08T19:40:19"),
+            receivedDemand(oldRight, "2026-11-08T19:40:19"),
+            receivedDemand(newLeft, "2026-11-08T19:40:19"),
+            receivedDemand(newRight, "2026-11-08T19:53:03")));
+        givenRows(
+            receivedRow(1L, WHITE_BAR_PRODUCT, "01-01-1-251109-005", "50", "T20260929PG000728", oldLeft),
+            receivedRow(2L, WHITE_BAR_PRODUCT, "01-01-1-251109-005", "50", "T20260929PG000727", oldRight),
+            receivedRow(3L, WHITE_BAR_PRODUCT, "01-01-1-251206-002", "50", "T20261108PG000765", newLeft),
+            receivedRow(4L, WHITE_BAR_PRODUCT, "01-01-1-251206-002", "50", "T20261108PG000766", newRight));
+
+        assertThat(service.getByStoreKey(STORE_CODE).getProduct().getProduceCode()).isEqualTo("T20261108PG000766");
+        cache.clear();
+        assertThat(service.getByStoreKey(STORE_CODE).getProduct().getProduceCode()).isEqualTo("T20261108PG000766");
+    }
+
+    @Test
+    @DisplayName("同重最近到店只作次级排序：白条重量优先，同重同到店时间按耳号稳定兜底")
+    void arrivalTieBreakPreservesWeightAndEarOrder() {
+        var early = LocalDateTime.parse("2026-11-08T19:40:19");
+        var late = LocalDateTime.parse("2026-11-08T19:53:03");
+        Map<Long, LocalDateTime> received = Map.of(11L, early, 12L, late);
+        Map<Long, String> products = Map.of(WHITE_BAR_PRODUCT, "white_bar", PORK_PRODUCT, "pork");
+        var heavy = receivedRow(1L, WHITE_BAR_PRODUCT, "EAR-A", "101", "PG-A", 11L);
+        var recent = receivedRow(2L, WHITE_BAR_PRODUCT, "EAR-Z", "100", "PG-Z", 12L);
+        var tied = receivedRow(3L, WHITE_BAR_PRODUCT, "EAR-M", "100", "PG-M", 12L);
+        var pork = receivedRow(4L, PORK_PRODUCT, "EAR-P", "999", "PG-P", 12L);
+        assertThat(StoreTracePublicServiceImpl.rank(List.of(recent, tied, pork, heavy), products, received))
+            .extracting(StoreTracePublicServiceImpl.Candidate::earNo)
+            .containsExactly("EAR-A", "EAR-M", "EAR-Z", "EAR-P");
+    }
+
+    @Test
+    @DisplayName("白条到店时间取全体有效半扇MAX，与代表追溯码选自哪半扇无关")
+    void latestReceiptIsIndependentOfRepresentativeCode() {
+        Map<Long, LocalDateTime> received = Map.of(
+            11L, LocalDateTime.parse("2026-11-08T10:00:00"),
+            12L, LocalDateTime.parse("2026-11-08T12:00:00"),
+            13L, LocalDateTime.parse("2026-11-08T11:00:00"));
+        var ranked = StoreTracePublicServiceImpl.rank(List.of(
+            receivedRow(1L, WHITE_BAR_PRODUCT, "EAR-Z", "60", "PG-Z-EARLY", 11L),
+            receivedRow(2L, WHITE_BAR_PRODUCT, "EAR-Z", "40", "PG-Z-LATE", 12L),
+            receivedRow(3L, WHITE_BAR_PRODUCT, "EAR-A", "100", "PG-A", 13L)),
+            Map.of(WHITE_BAR_PRODUCT, "white_bar"), received);
+        assertThat(ranked).extracting(StoreTracePublicServiceImpl.Candidate::earNo).containsExactly("EAR-Z", "EAR-A");
+        assertThat(ranked.getFirst().traceCode()).isEqualTo("PG-Z-EARLY");
+        assertThat(ranked.getFirst().receivedAt()).isEqualTo(received.get(12L));
+    }
+
+    @Test
+    @DisplayName("没有白条：猪肉仍按单件重量，同重才按最近到店，最终耳号兜底")
+    void porkUsesLatestReceiptOnlyAfterSingleItemWeight() {
+        var early = LocalDateTime.parse("2026-11-08T19:40:19");
+        var late = LocalDateTime.parse("2026-11-08T19:53:03");
+        Map<Long, LocalDateTime> received = Map.of(11L, early, 12L, late);
+        var rows = List.of(
+            receivedRow(1L, PORK_PRODUCT, "EAR-A", "2", "PG-A", 11L),
+            receivedRow(2L, PORK_PRODUCT, "EAR-Z", "2", "PG-Z", 12L),
+            receivedRow(3L, PORK_PRODUCT, "EAR-M", "2", "PG-M", 12L),
+            receivedRow(4L, PORK_PRODUCT, "EAR-B", "3", "PG-B", 11L));
+        assertThat(StoreTracePublicServiceImpl.rank(rows, Map.of(PORK_PRODUCT, "pork"), received))
+            .extracting(StoreTracePublicServiceImpl.Candidate::earNo)
+            .containsExactly("EAR-B", "EAR-M", "EAR-Z", "EAR-A");
+    }
+
+    @Test
     @DisplayName("没有白条只有猪肉产品：取单件最重的猪肉产品的耳号（果蔬等其他业态不算）")
     void noWhiteBarUsesHeaviestPorkProduct() {
         givenRows(
@@ -229,7 +304,7 @@ class StoreTracePublicServiceImplTest {
         assertThat(vo.getPedigree()).isNull();
         assertThat(vo.getTimeline()).isEmpty();
         assertThat(vo.getStore().getName()).isEqualTo("东角山测试门店");
-        assertThat(cache).containsEntry("trace:public-store:" + STORE_ID + ":20261105", StoreTracePublicServiceImpl.NONE);
+        assertThat(cache).containsEntry("trace:public-store:arrival-v2:" + STORE_ID + ":20261105", StoreTracePublicServiceImpl.NONE);
         verify(tracePublicService, never()).getByProduceCode(anyString());
     }
 
@@ -283,7 +358,7 @@ class StoreTracePublicServiceImplTest {
         ArgumentCaptor<LambdaQueryWrapper<ProductProduction>> pq = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
         verify(productProductionMapper).selectList(pq.capture());
         String prodSql = pq.getValue().getTargetSql();
-        assertThat(prodSql).contains("demand_id IN").contains("is_delivery_check =").contains("is_damaged =");
+        assertThat(prodSql).contains("tenant_id =", "store_id =").contains("demand_id IN").contains("is_delivery_check =").contains("is_damaged =");
         assertThat(pq.getValue().getParamNameValuePairs().values()).contains(9311051000000201L);
     }
 
@@ -297,7 +372,7 @@ class StoreTracePublicServiceImplTest {
         assertThat(service.getByStoreKey(STORE_CODE).getProduct().getProduceCode()).isEqualTo("PG-A-LATEST");
 
         cache.clear();
-        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        givenDirectTraceCodes();
         givenRows(
             row(1L, WHITE_BAR_PRODUCT, "EAR-A", "70.000", null),
             row(2L, PORK_PRODUCT, "EAR-B", "1.000", "PG-B"));
@@ -307,7 +382,7 @@ class StoreTracePublicServiceImplTest {
     @Test
     @DisplayName("缓存命中：直接用缓存里的追溯码，不再查库选猪")
     void cacheHitSkipsSelection() {
-        cache.put("trace:public-store:" + STORE_ID + ":20261105", "PG-CACHED");
+        cache.put("trace:public-store:arrival-v2:" + STORE_ID + ":20261105", "PG-CACHED");
 
         PublicTraceVo vo = service.getByStoreKey(STORE_CODE);
 
@@ -353,6 +428,19 @@ class StoreTracePublicServiceImplTest {
 
     // ============================ helpers ============================
 
+    /** Direct codes are separate persisted trace rows; a missing row must use the scoped fallback. */
+    private void givenDirectTraceCodes() {
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenAnswer(inv -> {
+            LambdaQueryWrapper<TraceCode> scope = inv.getArgument(0);
+            String sql = scope.getSqlSegment();
+            var match = java.util.regex.Pattern.compile("produce_code = #\\{ew.paramNameValuePairs.([A-Z0-9]+)\\}").matcher(sql);
+            if (!match.find()) return null;
+            TraceCode code = new TraceCode();
+            code.setProduceCode(String.valueOf(scope.getParamNameValuePairs().get(match.group(1))));
+            return code;
+        });
+    }
+
     private void givenRows(ProductProduction... rows) {
         when(productProductionMapper.selectList(any(Wrapper.class))).thenReturn(new ArrayList<>(List.of(rows)));
     }
@@ -371,6 +459,20 @@ class StoreTracePublicServiceImplTest {
         ProductInfo p = new ProductInfo();
         p.setId(id);
         p.setBelongType(belongType);
+        return p;
+    }
+
+    private static DemandManage receivedDemand(long id, String receivedAt) {
+        DemandManage demand = new DemandManage();
+        demand.setId(id);
+        demand.setReceivedTime(LocalDateTime.parse(receivedAt));
+        return demand;
+    }
+
+    private static ProductProduction receivedRow(Long id, Long productId, String ear, String weight,
+                                                  String code, long demandId) {
+        ProductProduction p = row(id, productId, ear, weight, code);
+        p.setDemandId(demandId);
         return p;
     }
 

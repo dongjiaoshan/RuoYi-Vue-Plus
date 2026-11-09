@@ -117,6 +117,16 @@ class InoutWorkbenchServiceTest {
         assertThat(unknown.getAgeDays()).isNull();
         verify(pigReceptionMapper).selectReceptionAges(List.of(1L,4L));
     }
+    @Test void cutCardsSortByOldestInboundAcrossPickedAndUnpickedAndKeepMissingTimesLast() {
+        var old = new CutWorkbenchBarVo(); old.setInhouseId(8L); old.setInTime(new Date(1000));
+        var sameTime = new CutWorkbenchBarVo(); sameTime.setCutRecordId(9L); sameTime.setInTime(new Date(1000));
+        var recent = new CutWorkbenchBarVo(); recent.setInhouseId(2L); recent.setInTime(new Date(2000));
+        var unknown = new CutWorkbenchBarVo(); unknown.setInhouseId(1L);
+        when(workbenchMapper.selectUnpickedBars()).thenReturn(List.of(recent,unknown,old));
+        when(workbenchMapper.selectPickedBars()).thenReturn(List.of(sameTime));
+        assertThat(service.cutBars()).containsExactly(old,sameTime,recent,unknown);
+    }
+
     @Test void sameKeyDifferentWeightRejectedBeforeAnyMutation() {
         when(flowMapper.selectOne(any())).thenReturn(receipt(burnHash()));
         var bo=burnBo(); bo.setWeight(new BigDecimal("6"));

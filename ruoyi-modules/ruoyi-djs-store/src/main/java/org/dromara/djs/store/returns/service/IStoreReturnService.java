@@ -195,6 +195,8 @@ public interface IStoreReturnService {
     int confirmOperation(org.dromara.djs.store.returns.domain.bo.WarehouseReturnConfirmBo bo);
     /** 仓库新增原材料单位退回。 */
     int createOperationUnitReturns(org.dromara.djs.store.returns.domain.bo.WarehouseReturnUnitBo bo);
+    /** 仓库补录候选：显式配置的退回清单产品。 */
+    List<StoreReturnUnitCandidateVo> listWarehouseSupplementCandidates();
     /** 仓库原材料候选。 */
     java.util.List<org.dromara.djs.store.returns.domain.vo.StoreReturnUnitCandidateVo> listOperationRawCandidates();
     /** 在原退回单中增加字典清单产品。 */

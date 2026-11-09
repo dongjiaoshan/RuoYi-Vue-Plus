@@ -170,13 +170,14 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
 
     @Override
     public List<StorePendingArrivalVo> listPendingArrivalStores() {
-        List<DemandManage> demands = demandManageMapper.selectList(pendingArrivalQuery(null));
-        Map<Long, List<DemandManage>> byStore = demands.stream().collect(java.util.stream.Collectors.groupingBy(
-            DemandManage::getStoreId, LinkedHashMap::new, java.util.stream.Collectors.toList()));
+        List<DemandManage> demands = demandManageMapper.selectList(pendingArrivalQuery(null, null));
+        Map<ArrivalKey, List<DemandManage>> byStore = demands.stream().collect(java.util.stream.Collectors.groupingBy(
+            d -> new ArrivalKey(d.getStoreId(), d.getDemandDate()), LinkedHashMap::new, java.util.stream.Collectors.toList()));
         return byStore.entrySet().stream().map(entry -> {
             StorePendingArrivalVo vo = new StorePendingArrivalVo();
-            vo.setStoreId(entry.getKey());
-            StoreVo store = storeService.queryById(entry.getKey());
+            vo.setStoreId(entry.getKey().storeId());
+            vo.setDemandDate(entry.getKey().demandDate());
+            StoreVo store = storeService.queryById(entry.getKey().storeId());
             vo.setStoreName(store == null ? null : store.getStoreName());
             vo.setPendingDemandCount(entry.getValue().size());
             vo.setProductKindCount((int) entry.getValue().stream().map(DemandManage::getProductId)
@@ -187,21 +188,27 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public int receiveStoreArrivals(Long storeId) {
+    public int receiveStoreArrivals(Long storeId, LocalDate demandDate) {
         if (storeId == null) {
             throw new ServiceException("请选择门店", 400);
         }
-        // 按主键顺序锁定本店当前待收货行，整店确认与其他收货操作不会重复记录到店事件。
-        List<DemandManage> demands = demandManageMapper.selectList(pendingArrivalQuery(storeId).last("FOR UPDATE"));
+        if (demandDate == null) {
+            throw new ServiceException("请选择需求日期", 400);
+        }
+        // 按主键顺序锁定本店同一需求日期当前待收货行，整店确认与其他收货操作不会重复记录到店事件。
+        List<DemandManage> demands = demandManageMapper.selectList(pendingArrivalQuery(storeId, demandDate).last("FOR UPDATE"));
         for (DemandManage demand : demands) {
             receiveDemand(demand);
         }
         return demands.size();
     }
 
-    private LambdaQueryWrapper<DemandManage> pendingArrivalQuery(Long storeId) {
+    private record ArrivalKey(Long storeId, LocalDate demandDate) {}
+
+    private LambdaQueryWrapper<DemandManage> pendingArrivalQuery(Long storeId, LocalDate demandDate) {
         return new LambdaQueryWrapper<DemandManage>()
             .eq(storeId != null, DemandManage::getStoreId, storeId)
+            .eq(demandDate != null, DemandManage::getDemandDate, demandDate)
             .isNotNull(DemandManage::getStoreId)
             .eq(DemandManage::getDemandType, DEMAND_TYPE_STORE)
             .isNull(DemandManage::getReceivedTime)

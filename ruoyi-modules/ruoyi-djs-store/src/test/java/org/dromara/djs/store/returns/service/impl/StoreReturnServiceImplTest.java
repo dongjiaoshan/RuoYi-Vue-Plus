@@ -1625,6 +1625,70 @@ class StoreReturnServiceImplTest {
         assertThat(rows).extracting(v -> v.getProductName()).containsExactly("黑毛猪里脊肉250g/份");
     }
 
+    @Test
+    @DisplayName("V7 row80：仓库补录保留清单猪肉原材售卖产品，门店仍剔除且礼盒仍拒")
+    void warehouseSupplementKeepsExplicitPorkMaterialSoldButNotGift() {
+        ProductInfo pork = porkMaterialSold(PRODUCT_ID, "Y00150", "猪皮肉", 7777L);
+        ProductInfo gift = arrivedProduct(7002L, "G001", "礼盒", "gift_box", "份");
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST))
+            .thenReturn(Map.of("Y00150", "猪皮肉", "G001", "礼盒"));
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(pork, gift));
+        when(locationInfoMapper.selectList(any())).thenReturn(List.of());
+        assertThat(service.listWarehouseSupplementCandidates()).extracting(v -> v.getProductId()).containsExactly(PRODUCT_ID);
+        assertThat(service.listUnitCandidates()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("V7 row80：补录提交与显式清单同源，礼盒/清单外产品仍拒")
+    void warehouseSupplementSubmissionUsesExplicitConfiguredIds() {
+        ProductInfo pork = porkMaterialSold(PRODUCT_ID, "Y00150", "猪皮肉", 7777L);
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST)).thenReturn(Map.of("Y00150", "猪皮肉"));
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(pork));
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(pork);
+        StoreReturn anchor = new StoreReturn(); anchor.setId(400L); anchor.setStoreId(STORE_ID);
+        anchor.setReturnType("store"); anchor.setReturnStatus("pending");
+        anchor.setReturnDirection("store_to_warehouse"); anchor.setReturnDate(LocalDateTime.of(2026, 11, 8, 12, 0));
+        when(baseMapper.selectById(400L)).thenReturn(anchor);
+        when(baseMapper.selectOne(any())).thenReturn(anchor);
+        when(baseMapper.selectList(any())).thenReturn(List.of(anchor));
+        var bo = new org.dromara.djs.store.returns.domain.bo.WarehouseReturnExtraBo();
+        bo.setAnchorId(400L); bo.setProductIds(List.of(PRODUCT_ID));
+        assertThat(service.addOperationProducts(bo)).isEqualTo(1);
+        ArgumentCaptor<StoreReturn> inserted = ArgumentCaptor.forClass(StoreReturn.class);
+        verify(baseMapper).insert(inserted.capture());
+        assertThat(inserted.getValue().getWarehouseAdded()).isEqualTo(1);
+        assertThat(inserted.getValue().getReturnQuantity()).isEqualByComparingTo("0");
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(arrivedProduct(PRODUCT_ID, "Y00150", "礼盒", "gift_box", "份"));
+        assertThatThrownBy(() -> service.addOperationProducts(bo)).hasMessageContaining("礼盒");
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(pork);
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST)).thenReturn(Map.of());
+        assertThatThrownBy(() -> service.addOperationProducts(bo)).hasMessageContaining("不在");
+    }
+
+    @Test
+    @DisplayName("V7 row84：退回时间倒序，同时间不依赖数据库行序且保持日分组")
+    void storeDailySortsReturnTimeWithStableGroupTies() {
+        LocalDateTime time = LocalDateTime.of(2026, 11, 8, 20, 12, 5);
+        StoreReturn early = dailyRow(P_LOIN, "1", "1"); early.setId(1L); early.setOperatorId(USER_ID);
+        early.setReturnType("store"); early.setReturnDate(time.minusHours(1));
+        StoreReturn unitB = dailyRow(P_LOIN, "1", "1"); unitB.setId(2L); unitB.setOperatorId(USER_ID);
+        unitB.setStoreId(null); unitB.setReturnType("unit"); unitB.setReturnUnit("b"); unitB.setReturnDate(time);
+        StoreReturn unitA = dailyRow(P_LOIN, "1", "1"); unitA.setId(3L); unitA.setOperatorId(USER_ID);
+        unitA.setStoreId(null); unitA.setReturnType("unit"); unitA.setReturnUnit("a"); unitA.setReturnDate(time);
+        StoreReturn sameGroup = dailyRow(P_LOIN, "1", "1"); sameGroup.setId(4L); sameGroup.setOperatorId(USER_ID);
+        sameGroup.setReturnType("unit"); sameGroup.setStoreId(null); sameGroup.setReturnUnit("a");
+        sameGroup.setReturnDate(time.plusSeconds(1));
+        prepareStoreDaily(List.of(early, unitB, sameGroup, unitA),
+            List.of(productWithBelong(P_LOIN, "肉", "kg", null, "pork")), List.of());
+        var rows = service.queryStoreDailyList(new StoreReturnQuery());
+        assertThat(rows).hasSize(3);
+        assertThat(rows).extracting(StoreReturnStoreDailyVo::getReturnUnit).containsExactly("a", "b", null);
+        assertThat(rows.get(0).getTotalCount()).isEqualTo(2);
+        when(baseMapper.selectList(any())).thenReturn(List.of(unitA, sameGroup, unitB, early));
+        assertThat(service.queryStoreDailyList(new StoreReturnQuery()))
+            .extracting(StoreReturnStoreDailyVo::getReturnUnit).containsExactly("a", "b", null);
+    }
+
     private StoreReturn operationPending() {
         StoreReturn row = new StoreReturn(); row.setId(956L); row.setProductId(PRODUCT_ID);
         row.setReturnDirection("store_to_warehouse"); row.setReturnType("store"); row.setReturnStatus("pending");
@@ -1644,6 +1708,29 @@ class StoreReturnServiceImplTest {
         var bo = new org.dromara.djs.store.returns.domain.bo.WarehouseReturnConfirmBo();
         bo.setId(956L); bo.setLocationId(LOCATION_ID); bo.setReceivedQty(new BigDecimal(received));
         bo.setDiscardQty(new BigDecimal(discard)); bo.setWarehouseRemark("仓库独立记录"); return bo;
+    }
+
+    @ParameterizedTest
+    @CsvSource({"0.5", "30"})
+    @DisplayName("V7 row79：仓库非KG按原退回量确认，不被计量规则缩小或放大上限")
+    void operationNonKgUsesOriginalQuantityLimit(String ratio) {
+        StoreReturn row = operationPending();
+        row.setReturnQuantity(new BigDecimal("2"));
+        ProductInfo product = new ProductInfo(); product.setId(PRODUCT_ID); product.setProductAttr(2);
+        product.setProductUnit("份"); product.setBelongType("pork"); product.setMaterialNum(new BigDecimal(ratio));
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product);
+        assertThat(service.confirmOperation(operationBo("2", "0"))).isEqualTo(1);
+        assertThat(service.confirmOperation(operationBo("1.5", "0.5"))).isEqualTo(1);
+        assertThatThrownBy(() -> service.confirmOperation(operationBo("2", "0.1"))).hasMessageContaining("合计不能超过原退回量");
+        assertThatThrownBy(() -> service.confirmOperation(operationBo("0", "2.1"))).hasMessageContaining("合计不能超过原退回量");
+        row.setWarehouseAdded(1);
+        assertThat(service.confirmOperation(operationBo("3", "0.1"))).isEqualTo(1);
+        row.setWarehouseAdded(0);
+        var legacy = new org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo();
+        legacy.setId(row.getId()); legacy.setLocationId(LOCATION_ID); legacy.setIsDiscard(0);
+        legacy.setReceivedQty(new BigDecimal("0.5".equals(ratio) ? "2" : "61"));
+        legacy.setReceivedWeight(legacy.getReceivedQty());
+        assertThatThrownBy(() -> service.confirm(legacy)).hasMessageContaining("不能超过可退上限");
     }
 
     @Test void operationMixedQuantitiesOnlyInboundReceivedPart() {

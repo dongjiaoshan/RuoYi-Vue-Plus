@@ -189,6 +189,9 @@ public class PigCutRecordServiceImpl
     /** 跨域只读薄壳：白条卡取出栏当时冻结日龄（V6 row145）。养殖域契约要求跨模块只走本接口，不反查 PigMapper。 */
     private final IPigQueryService pigQueryService;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.dromara.djs.warehouse.cross.mapper.PigReceptionMapper pigReceptionMapper;
+
     public PigCutRecordServiceImpl(PigCutRecordMapper baseMapper,
                                    BarInfoMapper barInfoMapper,
                                    StockFlowMapper stockFlowMapper,
@@ -1147,6 +1150,11 @@ public class PigCutRecordServiceImpl
             }
         }
         if (newestFirst) {
+            // V7-R64 / D-0162：白条出库展示真实首次接收日减生日，不回退为今天或冻结出栏日龄。
+            Map<Long, Integer> receptionAges = new HashMap<>();
+            pigReceptionMapper.selectReceptionAges(barIds).forEach(age ->
+                receptionAges.put(age.getBarInfoId(), age.getAgeDays()));
+            result.forEach(item -> item.setAgeDays(receptionAges.get(item.getBarInfoId())));
             // 先按每条产出真实入库时间排序再截断，避免整猪完成时间提前截掉最新入库的半扇。
             result.sort(java.util.Comparator.comparing(BarPickupItemVo::getInTime,
                 java.util.Comparator.nullsLast(java.util.Comparator.reverseOrder()))

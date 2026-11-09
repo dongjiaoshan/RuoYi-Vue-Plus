@@ -314,7 +314,7 @@ class StoreDemandServiceImplTest {
     }
 
     @Test
-    @DisplayName("到店确认门店卡：跨日期聚合，重复产品仅计一种")
+    @DisplayName("到店确认门店卡：同门店按需求日期拆开，重复产品仅计一种")
     void pendingArrivalsGroupByStoreAndProduct() {
         DemandManage a = arrivalDemand(9010L, 5001L, 7001L);
         a.setDemandDate(LocalDate.now().minusDays(3));
@@ -328,11 +328,12 @@ class StoreDemandServiceImplTest {
 
         var result = service.listPendingArrivalStores();
 
-        assertThat(result).hasSize(2);
+        assertThat(result).hasSize(3);
         assertThat(result.get(0).getStoreName()).isEqualTo("到店测试门店");
-        assertThat(result.get(0).getPendingDemandCount()).isEqualTo(3);
-        assertThat(result.get(0).getProductKindCount()).isEqualTo(2);
-        assertThat(result.get(1).getPendingDemandCount()).isEqualTo(1);
+        assertThat(result.get(0).getPendingDemandCount()).isEqualTo(1);
+        assertThat(result.get(0).getDemandDate()).isEqualTo(a.getDemandDate());
+        assertThat(result.get(0).getProductKindCount()).isEqualTo(1);
+        assertThat(result.get(1).getPendingDemandCount()).isEqualTo(2);
         ArgumentCaptor<Wrapper<DemandManage>> query = ArgumentCaptor.forClass(Wrapper.class);
         verify(demandManageMapper).selectList(query.capture());
         assertThat(query.getValue().getSqlSegment()).contains("received_time IS NULL", "is_delivery_check = 1", "EXISTS",
@@ -346,9 +347,13 @@ class StoreDemandServiceImplTest {
         when(demandManageMapper.selectList(any(Wrapper.class))).thenReturn(
             List.of(arrivalDemand(9010L, 5001L, 7001L), arrivalDemand(9011L, 5001L, 7002L)), List.of());
 
-        assertThat(service.receiveStoreArrivals(5001L)).isEqualTo(2);
-        assertThat(service.receiveStoreArrivals(5001L)).isZero();
+        assertThat(service.receiveStoreArrivals(5001L, LocalDate.now())).isEqualTo(2);
+        assertThat(service.receiveStoreArrivals(5001L, LocalDate.now())).isZero();
 
+        ArgumentCaptor<Wrapper<DemandManage>> datedQuery = ArgumentCaptor.forClass(Wrapper.class);
+        verify(demandManageMapper, times(2)).selectList(datedQuery.capture());
+        assertThat(datedQuery.getAllValues()).allSatisfy(q -> assertThat(q.getSqlSegment()).contains("demand_date =", "FOR UPDATE"));
+        assertThatThrownBy(() -> service.receiveStoreArrivals(5001L, null)).isInstanceOf(ServiceException.class);
         ArgumentCaptor<DemandManage> patches = ArgumentCaptor.forClass(DemandManage.class);
         verify(demandManageMapper, times(2)).update(patches.capture(), any(Wrapper.class));
         assertThat(patches.getAllValues()).extracting(DemandManage::getId).containsExactly(9010L, 9011L);
@@ -387,6 +392,7 @@ class StoreDemandServiceImplTest {
         DemandManage demand = new DemandManage();
         demand.setId(id);
         demand.setStoreId(storeId);
+        demand.setDemandDate(LocalDate.now());
         demand.setProductId(productId);
         demand.setDemandStatus(DemandStatus.COMPLETED.name());
         demand.setDemandType("store");

@@ -88,8 +88,8 @@ public class InoutWorkbenchService {
             pigReceptionMapper.selectReceptionAges(barIds).forEach(age -> ages.put(age.getBarInfoId(), age.getAgeDays()));
             rows.forEach(row -> row.setAgeDays(ages.get(row.getBarInfoId())));
         }
-        rows.sort(Comparator.comparing(CutWorkbenchBarVo::getInTime, Comparator.nullsLast(Comparator.reverseOrder()))
-            .thenComparing(v -> v.getCutRecordId() == null ? v.getInhouseId() : v.getCutRecordId(), Comparator.reverseOrder()));
+        rows.sort(Comparator.comparing(CutWorkbenchBarVo::getInTime, Comparator.nullsLast(Comparator.naturalOrder()))
+            .thenComparing(v -> v.getCutRecordId() == null ? v.getInhouseId() : v.getCutRecordId(), Comparator.nullsLast(Comparator.naturalOrder())));
         return rows;
     }
 

@@ -21,7 +21,7 @@ public interface InoutWorkbenchMapper {
           WHERE p.product_material=#{materialProductId} AND p.product_attr=1
             AND p.is_material_sold=1 AND p.is_delivery=1 AND p.product_status=0
             AND p.belong_type='pork' AND p.del_flag='0' AND p.tenant_id='1001'
-            AND dm.demand_date=#{today} AND dm.del_flag='0'
+            AND dm.demand_date>=#{today} AND dm.del_flag='0'
             AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')
             AND dm.demand_quantity>COALESCE(dm.shipped_count,0)
         )
@@ -64,7 +64,7 @@ public interface InoutWorkbenchMapper {
         + "AND b.status IN ('in_stock','pending_cut','cutting') AND EXISTS "
         + "(SELECT 1 FROM t_warehouse_location_stock s WHERE s.white_bar_no=i.white_bar_no "
         + "AND s.product_id=i.product_id AND s.location_id=i.location_id AND s.tenant_id=i.tenant_id "
-        + "AND s.del_flag='0' AND s.product_stock>0) ORDER BY in_time DESC, i.id DESC")
+        + "AND s.del_flag='0' AND s.product_stock>0) ORDER BY in_time ASC, i.id ASC")
     List<CutWorkbenchBarVo> selectUnpickedBars();
 
     @Select("SELECT c.white_bar_id AS bar_info_id, c.id AS cut_record_id, c.white_bar_no, c.ear_no, "
@@ -79,7 +79,7 @@ public interface InoutWorkbenchMapper {
         + "LEFT JOIN t_warehouse_product_inhouse i ON i.white_bar_no=c.white_bar_no AND i.tenant_id=c.tenant_id "
         + "AND i.white_bar_id=c.white_bar_id AND i.material_id IS NULL "
         + "WHERE c.del_flag='0' AND c.out_type='cut' AND c.cut_status IN ('picked','cutting') "
-        + "ORDER BY in_time DESC, c.id DESC")
+        + "ORDER BY in_time ASC, c.id ASC")
     List<CutWorkbenchBarVo> selectPickedBars();
 
     @Select("SELECT stock_out_dest AS value, COUNT(*) AS count FROM t_warehouse_stock_flow "

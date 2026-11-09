@@ -28,6 +28,7 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -54,7 +55,7 @@ import java.util.stream.Collectors;
  *       白条按耳号（一头猪）合计——同一头猪分两个半只到店时算这头猪的白条总重；
  *       猪肉产品按单件比较（「所有猪肉产品里重量最大的那个」）。</li>
  *   <li>有白条 → 取白条总重最大的那头猪；没有白条 → 取单件最重的猪肉产品的耳号。
- *       同重按耳号字典序取小者（再同则产出行 id 大者），结果确定。</li>
+ *       同重优先最近到店（D-0190：白条取同一耳号有效半扇的最晚确认收货时间），再按耳号字典序取小者。</li>
  *   <li>选中耳号后的展示数据：优先用当天这批货自己的追溯码（产出行 {@code trace_code}），
  *       缺码的历史行回落该耳号最新的猪肉追溯码；都没有就顺延下一名（白条都取不到码时顺延到猪肉产品）。</li>
  * </ul>
@@ -77,7 +78,7 @@ import java.util.stream.Collectors;
 public class StoreTracePublicServiceImpl implements IStoreTracePublicService {
 
     /** 选中追溯码缓存前缀（与按码缓存 {@code trace:public:<code>} 分开，避免与追溯码撞键）。 */
-    private static final String CACHE_PREFIX = "trace:public-store:";
+    private static final String CACHE_PREFIX = "trace:public-store:arrival-v2:";
 
     /** 选中结果缓存 TTL。 */
     private static final Duration CACHE_TTL = Duration.ofMinutes(3);
@@ -115,7 +116,7 @@ public class StoreTracePublicServiceImpl implements IStoreTracePublicService {
         String code = storeKey.trim();
         // @SaIgnore 无登录 → 无租户上下文，查库一律 ignore（V1 单租户 '1001'）
         Store store = TenantHelper.ignore(() -> storeMapper.selectOne(
-            new LambdaQueryWrapper<Store>().eq(Store::getStoreCode, code).last("limit 1")));
+            new LambdaQueryWrapper<Store>().eq(Store::getTenantId, "1001").eq(Store::getStoreCode, code).last("limit 1")));
         if (store == null) {
             return null;
         }
@@ -137,6 +138,7 @@ public class StoreTracePublicServiceImpl implements IStoreTracePublicService {
         if (vo.getPig() == null) {
             TracePageConfig config = TenantHelper.ignore(() -> tracePageConfigMapper.selectOne(
                 new LambdaQueryWrapper<TracePageConfig>()
+                    .eq(TracePageConfig::getTenantId, "1001")
                     .eq(TracePageConfig::getCodeType, TraceCodeTypeConst.PORK).last("limit 1")));
             if (config != null && StringUtils.isNotBlank(config.getBaseIntroImageOssId())) {
                 vo.setBaseIntroImageUrl(firstOssUrl(config.getBaseIntroImageOssId()));
@@ -166,24 +168,31 @@ public class StoreTracePublicServiceImpl implements IStoreTracePublicService {
      * 选出门店当天最重那头猪的追溯码；当天没有可追溯的猪肉货品返 null。
      */
     String pickProduceCode(Long storeId, LocalDate day) {
-        List<Long> demandIds = demandManageMapper.selectList(
+        List<DemandManage> demands = demandManageMapper.selectList(
                 new LambdaQueryWrapper<DemandManage>()
+                    .eq(DemandManage::getTenantId, "1001")
                     .eq(DemandManage::getStoreId, storeId)
                     .ge(DemandManage::getReceivedTime, day.atStartOfDay())
                     .lt(DemandManage::getReceivedTime, day.plusDays(1).atStartOfDay())
-                    .select(DemandManage::getId))
-            .stream().map(DemandManage::getId).filter(Objects::nonNull).distinct().toList();
+                    .select(DemandManage::getId, DemandManage::getReceivedTime));
+        List<Long> demandIds = demands.stream().map(DemandManage::getId).filter(Objects::nonNull).distinct().toList();
         if (demandIds.isEmpty()) {
             return null;
         }
+        Map<Long, LocalDateTime> receivedByDemand = demands.stream()
+            .filter(d -> d.getId() != null && d.getReceivedTime() != null)
+            .collect(Collectors.toMap(DemandManage::getId, DemandManage::getReceivedTime, (a, b) -> a.isAfter(b) ? a : b));
         List<ProductProduction> rows = productProductionMapper.selectList(
             new LambdaQueryWrapper<ProductProduction>()
+                .eq(ProductProduction::getTenantId, "1001")
+                .eq(ProductProduction::getStoreId, storeId)
                 .in(ProductProduction::getDemandId, demandIds)
                 .eq(ProductProduction::getIsDeliveryCheck, DELIVERY_CHECKED)
                 .eq(ProductProduction::getIsDamaged, NOT_DAMAGED)
                 .isNotNull(ProductProduction::getEarNo)
                 .ne(ProductProduction::getEarNo, "")
-                .select(ProductProduction::getId, ProductProduction::getProductId, ProductProduction::getEarNo,
+                .select(ProductProduction::getId, ProductProduction::getDemandId,
+                    ProductProduction::getProductId, ProductProduction::getEarNo,
                     ProductProduction::getProductWeight, ProductProduction::getTraceCode));
         if (rows.isEmpty()) {
             return null;
@@ -192,13 +201,14 @@ public class StoreTracePublicServiceImpl implements IStoreTracePublicService {
             .filter(Objects::nonNull).distinct().toList();
         Map<Long, String> belongById = productIds.isEmpty() ? Map.of()
             : productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                    .eq(ProductInfo::getTenantId, "1001")
                     .in(ProductInfo::getId, productIds)
                     .select(ProductInfo::getId, ProductInfo::getBelongType, ProductInfo::getProductName))
                 .stream().filter(p -> p.getId() != null && p.getBelongType() != null)
                 .collect(Collectors.toMap(ProductInfo::getId, StoreTracePublicServiceImpl::selectionClass, (a, b) -> a));
 
-        for (Candidate c : rank(rows, belongById)) {
-            String code = StringUtils.isNotBlank(c.traceCode()) ? c.traceCode() : latestPorkCodeByEar(c.earNo());
+        for (Candidate c : rank(rows, belongById, receivedByDemand)) {
+            String code = resolvePorkCode(c.traceCode(), c.earNo(), storeId);
             if (StringUtils.isNotBlank(code)) {
                 log.debug("[trace-store] store={} day={} 选中 {} 耳号={} 重量={} code={}",
                     storeId, day, c.source(), c.earNo(), c.weight(), code);
@@ -226,10 +236,12 @@ public class StoreTracePublicServiceImpl implements IStoreTracePublicService {
 
     /**
      * 候选排序（纯函数，单测直接覆盖）：白条候选（按耳号合计重量）在前，猪肉产品候选（单件重量）在后；
-     * 组内重量降序 → 耳号升序。同一耳号只出现一次（白条组优先）。
+     * 组内重量降序 → 确认收货时间降序 → 耳号升序。同一耳号只出现一次（白条组优先）。
      */
-    static List<Candidate> rank(List<ProductProduction> rows, Map<Long, String> belongById) {
+    static List<Candidate> rank(List<ProductProduction> rows, Map<Long, String> belongById,
+                                Map<Long, LocalDateTime> receivedByDemand) {
         Map<String, BigDecimal> barWeightByEar = new LinkedHashMap<>();
+        Map<String, LocalDateTime> barReceivedByEar = new LinkedHashMap<>();
         Map<String, ProductProduction> barCodeRowByEar = new LinkedHashMap<>();
         List<ProductProduction> porkRows = new ArrayList<>();
         for (ProductProduction r : rows) {
@@ -240,6 +252,10 @@ public class StoreTracePublicServiceImpl implements IStoreTracePublicService {
             if (BELONG_TYPE_WHITE_BAR.equals(belong)) {
                 String ear = r.getEarNo().trim();
                 barWeightByEar.merge(ear, weightOf(r), BigDecimal::add);
+                LocalDateTime received = receivedByDemand.get(r.getDemandId());
+                if (received != null) {
+                    barReceivedByEar.merge(ear, received, (a, b) -> a.isAfter(b) ? a : b);
+                }
                 barCodeRowByEar.merge(ear, r, StoreTracePublicServiceImpl::preferCodeRow);
             } else if (BELONG_TYPE_PORK.equals(belong)) {
                 porkRows.add(r);
@@ -247,14 +263,16 @@ public class StoreTracePublicServiceImpl implements IStoreTracePublicService {
         }
         List<Candidate> bars = barWeightByEar.entrySet().stream()
             .map(e -> new Candidate(BELONG_TYPE_WHITE_BAR, e.getKey(), e.getValue(),
-                traceCodeOf(barCodeRowByEar.get(e.getKey()))))
+                traceCodeOf(barCodeRowByEar.get(e.getKey())), barReceivedByEar.get(e.getKey())))
             .sorted(CANDIDATE_ORDER)
             .toList();
         List<Candidate> porks = porkRows.stream()
             .sorted(Comparator.comparing(StoreTracePublicServiceImpl::weightOf, Comparator.reverseOrder())
+                .thenComparing(r -> receivedByDemand.get(r.getDemandId()), RECEIVED_ORDER)
                 .thenComparing(r -> r.getEarNo().trim())
                 .thenComparing(ProductProduction::getId, Comparator.nullsLast(Comparator.reverseOrder())))
-            .map(r -> new Candidate(BELONG_TYPE_PORK, r.getEarNo().trim(), weightOf(r), traceCodeOf(r)))
+            .map(r -> new Candidate(BELONG_TYPE_PORK, r.getEarNo().trim(), weightOf(r), traceCodeOf(r),
+                receivedByDemand.get(r.getDemandId())))
             .toList();
         List<Candidate> out = new ArrayList<>(bars.size() + porks.size());
         Set<String> seenEars = new LinkedHashSet<>();
@@ -274,8 +292,11 @@ public class StoreTracePublicServiceImpl implements IStoreTracePublicService {
         return out;
     }
 
+    private static final Comparator<LocalDateTime> RECEIVED_ORDER = Comparator.nullsLast(Comparator.reverseOrder());
+
     private static final Comparator<Candidate> CANDIDATE_ORDER =
-        Comparator.comparing(Candidate::weight, Comparator.reverseOrder()).thenComparing(Candidate::earNo);
+        Comparator.comparing(Candidate::weight, Comparator.reverseOrder())
+            .thenComparing(Candidate::receivedAt, RECEIVED_ORDER).thenComparing(Candidate::earNo);
 
     private static void fillMissingCode(List<Candidate> out, Candidate extra) {
         if (StringUtils.isBlank(extra.traceCode())) {
@@ -284,7 +305,7 @@ public class StoreTracePublicServiceImpl implements IStoreTracePublicService {
         for (int i = 0; i < out.size(); i++) {
             Candidate c = out.get(i);
             if (c.earNo().equals(extra.earNo()) && StringUtils.isBlank(c.traceCode())) {
-                out.set(i, new Candidate(c.source(), c.earNo(), c.weight(), extra.traceCode()));
+                out.set(i, new Candidate(c.source(), c.earNo(), c.weight(), extra.traceCode(), c.receivedAt()));
                 return;
             }
         }
@@ -314,19 +335,31 @@ public class StoreTracePublicServiceImpl implements IStoreTracePublicService {
         return r == null || StringUtils.isBlank(r.getTraceCode()) ? null : r.getTraceCode().trim();
     }
 
-    /** 产出行没带追溯码时，回落该耳号最新一个猪肉追溯码（走 idx_pig_ear）。 */
-    private String latestPorkCodeByEar(String earNo) {
-        TraceCode code = traceCodeMapper.selectOne(new LambdaQueryWrapper<TraceCode>()
+    /** 仅接受同租户、同耳号、本店或未绑店的仓库基础码；坏关联不能把其他店的追溯带入本店。 */
+    private String resolvePorkCode(String directCode, String earNo, Long storeId) {
+        if (StringUtils.isNotBlank(directCode)) {
+            TraceCode direct = traceCodeMapper.selectOne(porkCodeScope(earNo, storeId)
+                .eq(TraceCode::getProduceCode, directCode.trim()).last("limit 1"));
+            if (direct != null) {
+                return direct.getProduceCode();
+            }
+        }
+        TraceCode latest = traceCodeMapper.selectOne(porkCodeScope(earNo, storeId)
+            .orderByDesc(TraceCode::getId).last("limit 1"));
+        return latest == null ? null : latest.getProduceCode();
+    }
+
+    private LambdaQueryWrapper<TraceCode> porkCodeScope(String earNo, Long storeId) {
+        return new LambdaQueryWrapper<TraceCode>()
+            .eq(TraceCode::getTenantId, "1001")
             .eq(TraceCode::getPigEarNo, earNo)
             .eq(TraceCode::getCodeType, TraceCodeTypeConst.PORK)
-            .orderByDesc(TraceCode::getId)
-            .select(TraceCode::getProduceCode)
-            .last("limit 1"));
-        return code == null ? null : code.getProduceCode();
+            .and(q -> q.eq(TraceCode::getStoreId, storeId).or().isNull(TraceCode::getStoreId))
+            .select(TraceCode::getProduceCode);
     }
 
     /** 选猪候选：来源（white_bar / pork）、耳号、比较用重量 kg、可用追溯码（可空）。 */
-    record Candidate(String source, String earNo, BigDecimal weight, String traceCode) {
+    record Candidate(String source, String earNo, BigDecimal weight, String traceCode, LocalDateTime receivedAt) {
     }
 
     // ============================ 组装 ============================

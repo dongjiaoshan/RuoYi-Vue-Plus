@@ -37,6 +37,7 @@ import org.dromara.djs.warehouse.shipment.domain.vo.ShipmentVo;
 import org.dromara.djs.warehouse.shipment.event.ShipmentConfirmedEvent;
 import org.dromara.djs.warehouse.shipment.mapper.ShipmentMapper;
 import org.dromara.djs.warehouse.shipment.service.IShipmentService;
+import org.dromara.djs.warehouse.shipment.service.ShipmentQuantities;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -208,7 +209,7 @@ public class ShipmentServiceImpl
         int closed = 0;
         for (Long demandId : demandIds) {
             DemandManage demand = demandMapper.selectById(demandId);
-            // 重读一遍再判：出车那几条 confirmCheck 刚把 shipped_count 推上去，
+            // 重读一遍再判：出车那几条 confirmCheck 刚落真实发货归属，
             // 不重读会拿到调用方发来的陈旧快照，把已经发满的也一起关掉。
             if (demand == null || !storeId.equals(demand.getStoreId())) {
                 continue;
@@ -217,7 +218,7 @@ public class ShipmentServiceImpl
             if (status == null || status.isTerminal()) {
                 continue;
             }
-            BigDecimal shipped = demand.getShippedCount() == null ? BigDecimal.ZERO : demand.getShippedCount();
+            BigDecimal shipped = deliveredQuantity(demandId);
             BigDecimal need = demand.getDemandQuantity() == null ? BigDecimal.ZERO : demand.getDemandQuantity();
             if (need.signum() <= 0 || shipped.compareTo(need) >= 0) {
                 continue;
@@ -248,19 +249,8 @@ public class ShipmentServiceImpl
                 I18nMessages.t("shipment.demand.status_invalid", demand.getDemandStatus()), 400);
         }
 
-        // 1b. 出车发货默认「全有或全无」：已打包量不足需求量时拒发（Kevin 2026-06-25「杜绝部分发货」）。
-        //     需求扣减在打包时完成，shipped_count = 已备货量。
-        //     V6-row160 起，调用方显式传 force=true 才放行缺量发车——mp 会先弹二次确认再传。
-        //     默认值保持拒发：不给任何直调接口留「悄悄发半车」的口子。
-        BigDecimal shipped = demand.getShippedCount() == null ? BigDecimal.ZERO : demand.getShippedCount();
         BigDecimal need = demand.getDemandQuantity() == null ? BigDecimal.ZERO : demand.getDemandQuantity();
         boolean forceShort = Boolean.TRUE.equals(bo.getForce());
-        if (need.signum() > 0 && shipped.compareTo(need) < 0 && !forceShort) {
-            throw new ServiceException(I18nMessages.t("shipment.demand.not_fully_satisfied",
-                demand.getDemandNo(),
-                shipped.stripTrailingZeros().toPlainString(),
-                need.stripTrailingZeros().toPlainString()), 400);
-        }
 
         // 2. 校验 product_production 行存在 + 未清点
         List<ProductProduction> productions = productProductionMapper.selectList(
@@ -282,6 +272,24 @@ public class ShipmentServiceImpl
             }
         }
 
+        // 真实发货事实作为出车守门依据；先生产后建需求时shipped_count可能为0，不能冒充未备货。
+        for (ProductProduction p : productions) {
+            if ((p.getStoreId() != null && !Objects.equals(p.getStoreId(), demand.getStoreId()))
+                || (demand.getProductId() != null && !Objects.equals(p.getProductId(), demand.getProductId()))
+                || Integer.valueOf(1).equals(p.getIsDamaged())
+                || Set.of("mail", "gift", "warehouse_out").contains(p.getDeliverDest() == null ? "" : p.getDeliverDest())
+                || Integer.valueOf(2).equals(p.getDeliverType())) {
+                throw new ServiceException(I18nMessages.t("shipment.production.demand_mismatch", p.getProduceNo()), 400);
+            }
+        }
+        BigDecimal selected = productions.stream().map(p -> ShipmentQuantities.of(demand, p))
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal shipped = deliveredQuantity(demand.getId()).add(selected);
+        if (need.signum() > 0 && shipped.compareTo(need) < 0 && !forceShort) {
+            throw new ServiceException(I18nMessages.t("shipment.demand.not_fully_satisfied",
+                demand.getDemandNo(), shipped.stripTrailingZeros().toPlainString(), need.stripTrailingZeros().toPlainString()), 400);
+        }
+
         // 3. UPDATE product_production：标清点 + 回写 demand_id（一次原子 UPDATE，乐观锁）
         Date now = new Date();
         int affected = productProductionMapper.markDeliveryChecked(
@@ -289,6 +297,12 @@ public class ShipmentServiceImpl
         if (affected != bo.getProductionIds().size()) {
             throw new ServiceException(I18nMessages.t("shipment.production.concurrent_conflict"), 409);
         }
+
+        // 通用库存首次发给门店时同时落真实门店归属，到店查询与发货事实使用同一维度。
+        productProductionMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<ProductProduction>()
+            .in(ProductProduction::getId, bo.getProductionIds())
+            .eq(ProductProduction::getDemandId, demand.getId())
+            .set(ProductProduction::getStoreId, demand.getStoreId()));
 
         // 4. INSERT shipment 主表
         //    发货重量 serverTotal = Σ 本次清点 production 的实际成品量(kg)，仅用于发货记录 ship_quantity。
@@ -300,10 +314,8 @@ public class ShipmentServiceImpl
             log.warn("[WMS-SHIP-001] confirmCheck 前端自报量 {} 与服务端清点合计 {} 不一致，按服务端量记账",
                 bo.getTotalQuantity().toPlainString(), serverTotal.toPlainString());
         }
-        // 需求履约份数 = 本次清点的成品「件数」（每件打包=1 份，对齐门店按份下单）。demand.shipped_count
-        // 累加这个份数（整数），与 demand_quantity 同量纲——绝不能用 serverTotal(kg)：份与 kg 串味会让
-        // 需求量(=demand_quantity-shipped_count) 算出碎值（如 3.292），且 kg≥份 时状态机误判「完成」。
-        BigDecimal shippedCopies = BigDecimal.valueOf(productions.size());
+        // 事件中的履约量按需求单位折算；shipped_count保留生产时扣减含义，本次发车不重复累加。
+        BigDecimal shippedCopies = selected;
         Shipment shipment = new Shipment();
         shipment.setShipmentNo(bizCodeGenerator.generate(BizCodeType.SHIP_NO, Map.of()));
         shipment.setDemandId(demand.getId());
@@ -351,8 +363,7 @@ public class ShipmentServiceImpl
             stockFlowMapper.insert(flow);
         }
 
-        // 6. publishEvent — D14 CROSS-FLOW-003 listener 消费触发 demand.shipped_count 累加 + transition
-        //    传 shippedCopies（份数，非 kg）：demand 按份履约，shipped_count 与 demand_quantity 同量纲。
+        // 6. listener 重读本需求真实已发成品量推进状态，不累加生产扣减字段。
         //    带 userId（=checkerId 发货确认人）：AFTER_COMMIT 阶段 listener 无 sa-token 上下文，
         //    需显式传 operator 给 demand transition 做审计，否则 resolveOperator(null) 抛 demand.operator.required
         eventPublisher.publishEvent(new ShipmentConfirmedEvent(
@@ -484,6 +495,7 @@ public class ShipmentServiceImpl
         // 放开集合按「该门店整批在途需求」算一次，全部需求行共用：门店货物页是一屏，同一产品的清单
         // 不能因为挂在不同需求行下就一半开窗一半不开窗。与页头满足率（queryStoreSummary）同口径。
         Map<Long, BigDecimal> openedNeed = fullyPackedNeedByProduct(demands);
+        Set<Long> assignedProductionIds = new java.util.HashSet<>();
         return demands.stream().map(d -> {
             ShipDemandVo vo = new ShipDemandVo();
             vo.setDemandId(d.getId());
@@ -499,10 +511,47 @@ public class ShipmentServiceImpl
             vo.setProductName(d.getProductName());
             vo.setProductSpec(d.getProductSpec());
             vo.setProductUnit(d.getProductUnit());
-            vo.setAvailableProductions(
-                toAvailableProductionVos(findAvailableProductionsForDemand(d, openedNeed)));
+            BigDecimal delivered = deliveredQuantity(d.getId());
+            vo.setDeliveredCount(delivered);
+            BigDecimal remaining = d.getDemandQuantity() == null ? BigDecimal.ZERO
+                : d.getDemandQuantity().subtract(delivered).max(BigDecimal.ZERO);
+            List<ProductProduction> assigned = new ArrayList<>();
+            BigDecimal prepared = BigDecimal.ZERO;
+            for (ProductProduction p : findAvailableProductionsForDemand(d, openedNeed)) {
+                if (prepared.compareTo(remaining) >= 0 || assignedProductionIds.contains(p.getId())) {
+                    continue;
+                }
+                assignedProductionIds.add(p.getId());
+                assigned.add(p);
+                prepared = prepared.add(ShipmentQuantities.of(d, p));
+            }
+            vo.setPreparedCount(prepared);
+            vo.setAvailableProductions(toAvailableProductionVos(assigned));
             return vo;
         }).toList();
+    }
+
+    @Override
+    public BigDecimal deliveredQuantity(Long demandId) {
+        DemandManage demand = demandMapper.selectById(demandId);
+        if (demand == null) {
+            return BigDecimal.ZERO;
+        }
+        return productProductionMapper.selectList(new LambdaQueryWrapper<ProductProduction>()
+                .eq(ProductProduction::getDemandId, demandId)
+                .eq(ProductProduction::getStoreId, demand.getStoreId())
+                .eq(ProductProduction::getProductId, demand.getProductId())
+                .eq(ProductProduction::getIsDeliveryCheck, 1)
+                .eq(ProductProduction::getIsDamaged, 0)
+                .and(w -> w.isNull(ProductProduction::getDeliverDest)
+                    .or().notIn(ProductProduction::getDeliverDest, "mail", "gift", "warehouse_out"))
+                .and(w -> w.isNull(ProductProduction::getDeliverType).or().ne(ProductProduction::getDeliverType, 2)))
+            .stream().filter(p -> Objects.equals(p.getDemandId(), demandId)
+                && Objects.equals(p.getStoreId(), demand.getStoreId())
+                && Objects.equals(p.getProductId(), demand.getProductId())
+                && Integer.valueOf(1).equals(p.getIsDeliveryCheck())
+                && !Integer.valueOf(1).equals(p.getIsDamaged()))
+            .map(p -> ShipmentQuantities.of(demand, p)).reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     // ---------- private helpers ----------
@@ -706,6 +755,7 @@ public class ShipmentServiceImpl
         LambdaQueryWrapper<ProductProduction> wrapper = new LambdaQueryWrapper<ProductProduction>()
             .isNull(ProductProduction::getDemandId)
             .eq(ProductProduction::getIsDeliveryCheck, 0)
+            .eq(ProductProduction::getIsDamaged, 0)
             // 上界无条件：打包日晚于今天的成品是录入错误，任何情况下都不该出现在可发清单里。
             // 放开只放下界 —— 「需求已备齐」解释得了「货是前几天打的」，解释不了「货是明天打的」。
             .apply("DATE(produce_date) <= {0}", today.toString());
@@ -727,10 +777,11 @@ public class ShipmentServiceImpl
             // 发送位置=后台出库的成品是矿山/厨房/劲牌等直接从仓库拿走的货，拿走即终态，同样不进发货月台
             // （V6 row115：它 store_id 为空，被下面那条「同门店 OR 未绑门店」当通用件捞进门店可发清单 →
             //  门店卡上「生产量」凭空多一件、需求满足率虚高，甚至能被出车发货发给门店）。
-            // deliver_dest 为 NULL（默认发货月台）或非这两个值才可直接发货。
+            // 邮寄目的地及邮寄方式同样不能参与门店出车，与 confirmCheck / deliveredQuantity 资格一致。
             .and(w -> w.isNull(ProductProduction::getDeliverDest)
                        .or().notIn(ProductProduction::getDeliverDest,
-                                   DELIVER_DEST_GIFT, DELIVER_DEST_WAREHOUSE_OUT));
+                                   DELIVER_DEST_GIFT, DELIVER_DEST_WAREHOUSE_OUT, "mail"))
+            .and(w -> w.isNull(ProductProduction::getDeliverType).or().ne(ProductProduction::getDeliverType, 2));
         if (storeIds != null && !storeIds.isEmpty()) {
             wrapper.and(w -> w.in(ProductProduction::getStoreId, storeIds)
                               .or().isNull(ProductProduction::getStoreId));
@@ -916,10 +967,13 @@ public class ShipmentServiceImpl
      * 两处必须一起改，否则 admin 与发货月台的满足率会对不上。</p>
      */
     private BigDecimal producedCopies(ProductProduction p, ProductInfo info) {
+        if (info != null && "white_bar".equals(info.getBelongType())) {
+            return BigDecimal.ONE;
+        }
         if (info != null && isWeightUnit(info.getProductUnit())) {
             return p.getProduceQuantity() == null ? BigDecimal.ZERO : p.getProduceQuantity();
         }
-        return BigDecimal.ONE;
+        return p.getDemandDeductQty() == null ? BigDecimal.ONE : p.getDemandDeductQty().max(BigDecimal.ZERO);
     }
 
     /**
@@ -957,6 +1011,7 @@ public class ShipmentServiceImpl
             vo.setMaterialUnit(resolveMaterialUnit(info, materialMap));
             vo.setMaterialNum(info == null ? null : info.getMaterialNum());
             vo.setProduceQuantity(p.getProduceQuantity());
+            vo.setDemandDeductQty(p.getDemandDeductQty());
             vo.setProductSpec(p.getProductSpec());
             vo.setProduceLocation(p.getProduceLocation());
             vo.setProduceLocationName(p.getProduceLocation() == null

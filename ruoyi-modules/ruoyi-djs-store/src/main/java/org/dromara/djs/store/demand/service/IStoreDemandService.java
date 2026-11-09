@@ -80,5 +80,5 @@ public interface IStoreDemandService {
     List<StorePendingArrivalVo> listPendingArrivalStores();
 
     /** 在一个事务中确认门店全部待到店需求；重复调用返回 0。 */
-    int receiveStoreArrivals(Long storeId);
+    int receiveStoreArrivals(Long storeId, java.time.LocalDate demandDate);
 }
