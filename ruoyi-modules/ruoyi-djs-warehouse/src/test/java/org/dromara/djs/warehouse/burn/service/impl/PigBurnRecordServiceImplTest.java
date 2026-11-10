@@ -99,6 +99,7 @@ class PigBurnRecordServiceImplTest {
 
     @Mock private org.dromara.common.core.service.DictService dictService;
     @Mock private org.dromara.djs.breed.core.service.IPigQueryService pigQueryService;
+    @Mock private org.dromara.djs.warehouse.cut.service.IPigCutRecordService pigCutService;
     private TestablePigBurnRecordServiceImpl service;
 
     private static final Long BAR_ID = 5001L;
@@ -132,8 +133,9 @@ class PigBurnRecordServiceImplTest {
                                          org.dromara.djs.common.image.service.ImageUrlResolver ir,
                                          org.dromara.djs.warehouse.loss.service.ILossFlowService lfs,
                                          org.dromara.djs.warehouse.inout.service.WeightCompletionPolicy policy,
-                                         org.dromara.djs.breed.core.service.IPigQueryService pq) {
-            super(b, f, bi, ih, ls, l, pm, g, cs, ts, ir, lfs, policy, pq);
+                                         org.dromara.djs.breed.core.service.IPigQueryService pq,
+                                         org.dromara.djs.warehouse.cut.service.IPigCutRecordService cut) {
+            super(b, f, bi, ih, ls, l, pm, g, cs, ts, ir, lfs, policy, pq, cut);
         }
 
         @Override
@@ -160,7 +162,7 @@ class PigBurnRecordServiceImplTest {
         service = new TestablePigBurnRecordServiceImpl(
             burnMapper, flowMapper, barInfoMapper, productInhouseMapper, locationStockMapper,
             locationInfoMapper, productInfoMapper, bizCodeGenerator, stockCheckService, traceService, imageUrlResolver,
-            lossFlowService, new org.dromara.djs.warehouse.inout.service.WeightCompletionPolicy(dictService), pigQueryService);
+            lossFlowService, new org.dromara.djs.warehouse.inout.service.WeightCompletionPolicy(dictService), pigQueryService, pigCutService);
         var threshold = new org.dromara.common.core.domain.dto.DictDataDTO();
         threshold.setDictValue("50"); threshold.setIsDefault("Y");
         when(dictService.getDictData(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(threshold));
@@ -809,6 +811,25 @@ class PigBurnRecordServiceImplTest {
             .hasMessageContaining("请录入正确的入库重量");
 
         verify(barInfoMapper, never()).updateStatusToSinging(any(), any(), any());
+    }
+
+    @Test void burnFinishHandsExistingHalfCutsToProgressReconciliationBeforeDirectShippingCheck() {
+        readyToFinish("35");
+        when(barInfoMapper.fullyDirectShippedWeight(BAR_ID)).thenReturn(null);
+        service.finishBurn(BAR_ID, OPERATOR_ID, false);
+        var order = org.mockito.Mockito.inOrder(barInfoMapper, pigCutService);
+        order.verify(barInfoMapper).selectForUpdate(BAR_ID);
+        order.verify(barInfoMapper).updateStatusToInStock(eq(BAR_ID), any(), any(), eq(OPERATOR_ID));
+        order.verify(pigCutService).finalizeBarPickupIfComplete(BAR_ID, OPERATOR_ID);
+        order.verify(barInfoMapper).fullyDirectShippedWeight(BAR_ID);
+    }
+
+    @Test void allDirectShippedHalvesStillFinishAsShipOut() {
+        readyToFinish("35");
+        when(barInfoMapper.fullyDirectShippedWeight(BAR_ID)).thenReturn(new BigDecimal("70"));
+        service.finishBurn(BAR_ID, OPERATOR_ID, false);
+        verify(pigCutService).finalizeBarPickupIfComplete(BAR_ID, OPERATOR_ID);
+        verify(barInfoMapper).updateStatusToShipOut(eq(BAR_ID), any(), eq(new BigDecimal("70")), eq(OPERATOR_ID));
     }
 
 }

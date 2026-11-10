@@ -9,6 +9,9 @@ import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -71,6 +74,8 @@ public class BizCodeGeneratorImpl implements IBizCodeGenerator {
 
     private final RedissonClient redissonClient;
 
+    private final PlatformTransactionManager transactionManager;
+
     @Override
     public String generate(BizCodeType type, Map<String, Object> context) {
         List<String> batch = doGenerate(type, context, 1, LOCK_WAIT_SECONDS);
@@ -103,7 +108,7 @@ public class BizCodeGeneratorImpl implements IBizCodeGenerator {
             if (!locked) {
                 throw new ServiceException("业务编码生成器抢锁超时：" + lockKey);
             }
-            long endSeq = allocateSequence(rule, seqDate, count);
+            long endSeq = allocateCommittedSequence(rule, seqDate, count);
             long startSeq = endSeq - count + 1;
             List<String> codes = new ArrayList<>(count);
             for (int i = 0; i < count; i++) {
@@ -118,6 +123,21 @@ public class BizCodeGeneratorImpl implements IBizCodeGenerator {
                 lock.unlock();
             }
         }
+    }
+
+    /**
+     * 序号在持有分布式锁时独立提交，不能把序号行锁留给调用方的长业务事务。
+     * 已分配号段不随外层业务回滚而复用；保证唯一和批内连续，不承诺跨业务无间隙。
+     */
+    private long allocateCommittedSequence(BizCodeRule rule, String seqDate, int count) {
+        TransactionTemplate allocation = new TransactionTemplate(transactionManager);
+        allocation.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        allocation.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+        Long endSeq = allocation.execute(status -> allocateSequence(rule, seqDate, count));
+        if (endSeq == null) {
+            throw new ServiceException("业务编码序号分配未返回结果：" + rule.getCodeType());
+        }
+        return endSeq;
     }
 
     /**

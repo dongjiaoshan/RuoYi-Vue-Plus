@@ -5,6 +5,7 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.djs.warehouse.cross.domain.BarInfo;
@@ -47,6 +48,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -380,6 +382,77 @@ class PigCutRecordServiceImplTest {
         verify(barInfoMapper, times(1)).updateStatusToCutting(eq(70001L), eq(9001L));
     }
 
+    private PigCutOutBo onePartCutWithExistingBasket(List<LocationStock> baskets) {
+        when(cutMapper.selectById(80001L)).thenReturn(sampleRecord("cutting"));
+        LocationInfo loc = new LocationInfo();
+        loc.setId(90002L);
+        when(locationInfoMapper.selectById(90002L)).thenReturn(loc);
+        when(locationStockMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(baskets);
+        PigCutOutBo bo = sampleCutOutBo();
+        bo.setPartItems(List.of(bo.getPartItems().getFirst()));
+        return bo;
+    }
+
+    @Test
+    @DisplayName("已有分割篮二次入库：仅按已发现主键累加，不再按product宽锁扫其他耳号")
+    void existingCutBasketMergesByGuardedPrimaryKeyOnly() {
+        LocationStock basket = new LocationStock();
+        basket.setId(111L);
+        PigCutOutBo bo = onePartCutWithExistingBasket(List.of(basket));
+        when(locationStockMapper.addCutBasketById(anyLong(), anyLong(), anyLong(), anyString(), any(), anyLong()))
+            .thenReturn(1);
+        service.submitCutOut(bo);
+        verify(locationStockMapper).addCutBasketById(111L, 90002L, 100000000000000101L,
+            "TEST-EAR-001", new BigDecimal("30.000"), 9001L);
+        verify(locationStockMapper, never()).addByProductLocationEarNo(any(), any(), any(), any(), any());
+        verify(locationStockMapper, never()).selectOne(any());
+        verify(locationStockMapper, never()).insert(any(LocationStock.class));
+        var ordered = org.mockito.Mockito.inOrder(barInfoMapper, locationStockMapper);
+        ordered.verify(barInfoMapper).selectForUpdate(70001L);
+        var found = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        ordered.verify(locationStockMapper).selectList(found.capture());
+        assertThat(found.getValue().getSqlSegment()).doesNotContain("FOR UPDATE");
+        ordered.verify(locationStockMapper).addCutBasketById(anyLong(), anyLong(), anyLong(), anyString(), any(), anyLong());
+    }
+
+    @Test
+    @DisplayName("无耳号外购分割仍一次一篮，不发现或合并其他库存篮")
+    void anonymousCutOutputStillInsertsOneBasket() {
+        PigCutOutBo bo = onePartCutWithExistingBasket(List.of());
+        PigCutRecord record = sampleRecord("cutting");
+        record.setEarNo(null);
+        when(cutMapper.selectById(80001L)).thenReturn(record);
+        service.submitCutOut(bo);
+        verify(locationStockMapper, never()).selectList(any(LambdaQueryWrapper.class));
+        verify(locationStockMapper, never()).addCutBasketById(any(), any(), any(), any(), any(), any());
+        verify(locationStockMapper).insert(any(LocationStock.class));
+    }
+
+    @Test
+    @DisplayName("发现重复分割篮：拒绝，不更新任一篮、不写产出流水")
+    void duplicateCutBasketsRejectBeforeStockOrOutputFlowWrite() {
+        LocationStock first = new LocationStock(); first.setId(111L);
+        LocationStock second = new LocationStock(); second.setId(222L);
+        PigCutOutBo bo = onePartCutWithExistingBasket(List.of(first, second));
+        assertThatThrownBy(() -> service.submitCutOut(bo)).isInstanceOf(ServiceException.class)
+            .hasMessageContaining("重复分割库存篮");
+        verify(locationStockMapper, never()).addCutBasketById(any(), any(), any(), any(), any(), any());
+        verify(locationStockMapper, never()).insert(any(LocationStock.class));
+        verify(flowMapper, never()).insert(any(StockFlow.class));
+    }
+
+    @Test
+    @DisplayName("发现后分割篮形状已变：主键守卫0行即拒绝，不另建篮、不写流水")
+    void changedCutBasketDoesNotFallBackToInsert() {
+        LocationStock basket = new LocationStock(); basket.setId(111L);
+        PigCutOutBo bo = onePartCutWithExistingBasket(List.of(basket));
+        when(locationStockMapper.addCutBasketById(any(), any(), any(), any(), any(), any())).thenReturn(0);
+        assertThatThrownBy(() -> service.submitCutOut(bo)).isInstanceOf(ServiceException.class)
+            .hasMessageContaining("库存篮已变更");
+        verify(locationStockMapper, never()).insert(any(LocationStock.class));
+        verify(flowMapper, never()).insert(any(StockFlow.class));
+    }
+
     @Test
     @DisplayName("submitCutOut: cut_status='done' → 抛 + 任何 mapper 写入不调用")
     void testCutOut_StatusInvalid() {
@@ -404,6 +477,10 @@ class PigCutRecordServiceImplTest {
         BarInfo bar = sampleBar();
         bar.setInWeight(new BigDecimal("81.500"));
         when(barInfoMapper.selectForUpdate(70001L)).thenReturn(bar);
+        bar.setStatus("cutting");
+        PigCutRecord completed = sampleRecord("done");
+        when(cutMapper.selectList(any())).thenReturn(List.of(completed));
+        when(productInhouseMapper.selectList(any())).thenReturn(List.of());
         when(cutMapper.updateStatusToDone(eq(80001L), any(Date.class), any(BigDecimal.class),
             any(), any(), eq(9001L))).thenReturn(1);
         when(barInfoMapper.updateStatusToCutDone(eq(70001L), any(Date.class), any(BigDecimal.class),
@@ -412,7 +489,7 @@ class PigCutRecordServiceImplTest {
         // → outWeight=80、整猪 dripLoss = in(81.5) − 80 = 1.5。
         ProductInhouse pickedRow = new ProductInhouse();
         pickedRow.setPickupWeight(new BigDecimal("80.000"));
-        when(productInhouseMapper.selectList(any())).thenReturn(java.util.List.of(pickedRow));
+        when(productInhouseMapper.selectList(any())).thenReturn(java.util.List.of());
 
         PigCutDoneBo bo = new PigCutDoneBo();
         bo.setCutRecordId(80001L);
@@ -862,4 +939,99 @@ class PigCutRecordServiceImplTest {
         verify(barInfoMapper, never()).selectBatchIds(any());
         verify(flowMapper, never()).selectFirstBurnInboundTimes(any());
     }
+    @Test void burningPigAllowsOnlyARealHalfRowAndDoesNotAdvanceWholePig() {
+        BarInfo bar = sampleBar(); bar.setStatus("singing");
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(bar);
+        ProductInhouse row = inhouseRowA();
+        ProductInfo half = new ProductInfo(); half.setId(row.getProductId());
+        half.setProductName("左半扇"); half.setBelongType("white_bar");
+        when(productInfoMapper.selectById(row.getProductId())).thenReturn(half);
+        when(productInhouseMapper.selectById(60001L)).thenReturn(row);
+        when(productInhouseMapper.selectList(any())).thenReturn(List.of());
+        when(productInhouseMapper.update(any(), any())).thenReturn(1);
+        when(locationStockMapper.selectOne(any())).thenReturn(barStockRowA());
+        when(locationStockMapper.deductStockById(eq(111L), any(), eq(9001L))).thenReturn(1);
+        when(cutMapper.insert(any(PigCutRecord.class))).thenAnswer(i -> { ((PigCutRecord)i.getArgument(0)).setId(80002L); return 1; });
+        assertThat(service.submitPickup(pickupRowBo())).isEqualTo(80002L);
+        verify(barInfoMapper, never()).updateStatusToPendingCut(any(), any());
+        verify(locationStockMapper).deductStockById(eq(111L), eq(new BigDecimal("42.000")), eq(9001L));
+        assertThat(bar.getStatus()).isEqualTo("singing");
+        assertThatThrownBy(() -> service.submitPickup(samplePickupBo())).hasMessageContaining("白条状态不符");
+    }
+
+    @Test void burningPigRejectsMissingStockAndNonWhiteBarRowBeforeCreatingCut() {
+        BarInfo bar = sampleBar(); bar.setStatus("singing");
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(bar);
+        ProductInhouse row = inhouseRowA();
+        ProductInfo product = new ProductInfo(); product.setId(row.getProductId()); product.setProductName("左半扇"); product.setBelongType("white_bar");
+        when(productInfoMapper.selectById(row.getProductId())).thenReturn(product);
+        when(productInhouseMapper.selectById(60001L)).thenReturn(row);
+        when(productInhouseMapper.update(any(), any())).thenReturn(1);
+        when(locationStockMapper.selectOne(any())).thenReturn(null);
+        assertThatThrownBy(() -> service.submitPickup(pickupRowBo())).hasMessageContaining("库存不存在或已出库");
+        product.setBelongType("pork");
+        assertThatThrownBy(() -> service.submitPickup(pickupRowBo())).hasMessageContaining("仅可领用已真实入库");
+        verify(cutMapper, never()).insert(any(PigCutRecord.class));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+        "singing,picked,0,singing", "singing,cutting,0,singing", "singing,done,0,singing",
+        "in_stock,picked,1,pending_cut", "in_stock,cutting,1,cutting", "in_stock,done,1,cutting",
+        "in_stock,done,0,cut_done", "pending_cut,done,0,cut_done", "cutting,done,0,cut_done",
+        "cut_done,done,0,cut_done", "ship_out,done,0,ship_out"
+    })
+    void finishedBurnReconcilesExistingHalfProgressWithoutPrematureClosure(String state, String cutState, int pendingRows, String expected) {
+        BarInfo bar = sampleBar(); bar.setStatus(state);
+        PigCutRecord cut = sampleRecord(cutState); cut.setOutType("cut"); cut.setCutDoneTime(new Date());
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(bar);
+        when(cutMapper.selectList(any())).thenReturn(List.of(cut));
+        when(productInhouseMapper.selectList(any())).thenReturn(pendingRows == 0 ? List.of() : List.of(inhouseRowA()));
+        when(barInfoMapper.updateStatusToPendingCut(any(), any())).thenAnswer(i -> { if (!"in_stock".equals(bar.getStatus())) return 0; bar.setStatus("pending_cut"); return 1; });
+        when(barInfoMapper.updateStatusToCutting(any(), any())).thenAnswer(i -> { if (!"pending_cut".equals(bar.getStatus())) return 0; bar.setStatus("cutting"); return 1; });
+        when(barInfoMapper.updateStatusToCutDone(any(), any(), any(), any(), any(), any())).thenAnswer(i -> { if (!"cutting".equals(bar.getStatus())) return 0; bar.setStatus("cut_done"); return 1; });
+        assertThat(service.finalizeBarPickupIfComplete(70001L, 9001L)).isEqualTo(70001L);
+        assertThat(bar.getStatus()).isEqualTo(expected);
+        if (!"cut_done".equals(expected) || "cut_done".equals(state)) {
+            verify(barInfoMapper, never()).updateCutResult(any(), any(), any(), any());
+        }
+        // Converged state is idempotent; reconciling twice never creates duplicate trace/rollup.
+        if ("cut_done".equals(expected) && !"cut_done".equals(state)) {
+            service.finalizeBarPickupIfComplete(70001L, 9001L);
+            verify(barInfoMapper, times(1)).updateCutResult(any(), any(), any(), any());
+        }
+        verify(lossFlowService, never()).record(any());
+    }
+
+    @Test void halfCanFinishWhilePigBurnsThenOtherHalfShipsWithoutInflatingCutLoss() {
+        BarInfo bar = sampleBar(); bar.setStatus("singing"); bar.setInWeight(new BigDecimal("160"));
+        PigCutRecord cut = sampleRecord("cutting"); cut.setOutType("cut");
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(bar);
+        when(cutMapper.selectById(80001L)).thenReturn(cut);
+        when(cutMapper.selectList(any())).thenReturn(List.of(cut));
+        when(cutMapper.updateStatusToDone(eq(80001L), any(), any(), any(), any(), eq(9001L))).thenAnswer(i -> { cut.setCutStatus("done"); return 1; });
+        PigCutDoneBo done = new PigCutDoneBo(); done.setCutRecordId(80001L);
+        service.submitCutDone(done);
+        assertThat(cut.getCutStatus()).isEqualTo("done"); assertThat(bar.getStatus()).isEqualTo("singing");
+        verify(barInfoMapper, never()).updateStatusToCutDone(any(), any(), any(), any(), any(), any());
+        bar.setStatus("in_stock"); // A later burn finish resumes whole-pig progress after the other half is shipped.
+        when(productInhouseMapper.selectList(any())).thenReturn(List.of());
+        when(barInfoMapper.updateStatusToPendingCut(any(), any())).thenReturn(1);
+        when(barInfoMapper.updateStatusToCutting(any(), any())).thenReturn(1);
+        when(barInfoMapper.updateStatusToCutDone(any(), any(), any(), any(), any(), any())).thenAnswer(i -> { bar.setStatus("cut_done"); return 1; });
+        service.finalizeBarPickupIfComplete(70001L, 9001L);
+        verify(barInfoMapper).updateStatusToCutDone(eq(70001L), any(), eq(new BigDecimal("80.000")), eq(75), eq(new BigDecimal("1.500")), eq(9001L));
+        assertThatThrownBy(() -> service.submitCutDone(done)).hasMessageContaining("分割单状态不符");
+        verify(lossFlowService, times(1)).record(any());
+        verify(barInfoMapper, times(1)).updateCutResult(any(), any(), any(), any());
+    }
+
+    @Test void noCutRowsLeavesFullyDirectShippedPigToBurnShippingFinalizer() {
+        BarInfo bar = sampleBar(); when(barInfoMapper.selectForUpdate(70001L)).thenReturn(bar);
+        when(cutMapper.selectList(any())).thenReturn(List.of());
+        assertThat(service.finalizeBarPickupIfComplete(70001L, 9001L)).isNull();
+        verify(barInfoMapper, never()).updateStatusToPendingCut(any(), any());
+        verify(barInfoMapper, never()).updateStatusToCutDone(any(), any(), any(), any(), any(), any());
+    }
+
 }

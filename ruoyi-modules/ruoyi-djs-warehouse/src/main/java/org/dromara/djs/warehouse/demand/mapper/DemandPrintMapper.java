@@ -7,25 +7,12 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPrintItemVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPrintSheetVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandPrintSummaryItemVo;
 
 import java.time.LocalDate;
 import java.util.List;
 
-/**
- * 需求单打印 Mapper（V7-R8，admin 仓库 › 需求管理 › 需求单打印）。
- *
- * <p><b>哪些需求行算数</b>：需求管理中的已确认行——
-     * 门店需求（{@code store_id} 非空）且挂了产品（{@code product_id} 非空），仅已确认（CONFIRMED）且未删除。
-     * 打印单用于仓库按已确认需求备货，线下勾「是否已备完货」（D-0151）。</p>
- *
- * <p><b>列表与明细共用 {@link #EFFECTIVE_DEMAND_WHERE}</b>：列表的「需求品类数」= 明细行数，
- * 两处 WHERE 只要漂一边，弹框里写 21 个品类、打出来却是 20 行。</p>
- *
- * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与 {@link DemandManageMapper} 范式一致）。</p>
- *
- * @author djs
- * @since V7-R8
- */
+/** 需求单打印：列表列出已提交的门店需求，普通明细与汇总只读取已确认及其后续履约状态。 */
 @Mapper
 public interface DemandPrintMapper {
 
@@ -33,7 +20,16 @@ public interface DemandPrintMapper {
     String EFFECTIVE_DEMAND_WHERE = """
           dm.product_id IS NOT NULL
           AND dm.store_id IS NOT NULL
-          AND dm.demand_status = 'CONFIRMED'
+          AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+          AND dm.del_flag = '0'
+          AND dm.tenant_id = '1001'
+        """;
+
+    /** 已提交或已确认并继续履约的有效门店需求，排除草稿/取消/删除。 */
+    String SUBMITTED_DEMAND_WHERE = """
+          dm.product_id IS NOT NULL
+          AND dm.store_id IS NOT NULL
+          AND dm.demand_status IN ('SUBMITTED','CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
           AND dm.del_flag = '0'
           AND dm.tenant_id = '1001'
         """;
@@ -44,8 +40,7 @@ public interface DemandPrintMapper {
      * <p>排序：需求日期降序，同日按门店名、门店 ID 升序。</p>
      *
      * @param page      分页（MP 对 GROUP BY 查询自动包 COUNT 子查询求总数）
-     * @param beginDate 需求日期起（含，null 不过滤）
-     * @param endDate   需求日期止（含，null 不过滤）
+     * @param demandDate 所选需求日期
      * @param storeIds  门店多选（空不过滤）
      * @return 订货单分页
      */
@@ -58,13 +53,8 @@ public interface DemandPrintMapper {
         FROM t_warehouse_demand_manage dm
         LEFT JOIN t_md_store s
                ON s.id = dm.store_id AND s.tenant_id = '1001'
-        WHERE """ + EFFECTIVE_DEMAND_WHERE + """
-          <if test="beginDate != null">
-            AND dm.demand_date &gt;= #{beginDate}
-          </if>
-          <if test="endDate != null">
-            AND dm.demand_date &lt;= #{endDate}
-          </if>
+        WHERE """ + SUBMITTED_DEMAND_WHERE + """
+          AND dm.demand_date = #{demandDate}
           <if test="storeIds != null and storeIds.size() > 0">
             AND dm.store_id IN
             <foreach collection="storeIds" item="sid" open="(" separator="," close=")">#{sid}</foreach>
@@ -74,8 +64,7 @@ public interface DemandPrintMapper {
         </script>
         """)
     Page<DemandPrintSheetVo> selectSheetPage(IPage<DemandPrintSheetVo> page,
-                                             @Param("beginDate") LocalDate beginDate,
-                                             @Param("endDate") LocalDate endDate,
+                                             @Param("demandDate") LocalDate demandDate,
                                              @Param("storeIds") List<Long> storeIds);
 
     /**
@@ -118,6 +107,32 @@ public interface DemandPrintMapper {
         """)
     List<DemandPrintItemVo> selectSheetItems(@Param("demandDate") LocalDate demandDate,
                                              @Param("storeId") Long storeId);
+
+    /** 汇总数据保留名称/规格/单位/原料分量，服务层按名称合并并校验计量单位一致。 */
+    @Select("""
+        <script>
+        SELECT COALESCE(NULLIF(TRIM(dm.product_name), ''), pi.product_name, '') AS productName,
+               dm.product_spec AS productSpec,
+               dm.demand_quantity AS demandQuantity,
+               dm.product_unit AS productUnit,
+               pi.belong_type AS belongType,
+               pm.product_name AS rawMaterialName
+        FROM t_warehouse_demand_manage dm
+        LEFT JOIN t_warehouse_product_info pi
+               ON pi.id = dm.product_id AND pi.del_flag = '0' AND pi.tenant_id = '1001'
+        LEFT JOIN t_warehouse_product_info pm
+               ON pm.id = pi.product_material AND pm.del_flag = '0' AND pm.tenant_id = '1001'
+        WHERE dm.demand_date = #{demandDate}
+          AND """ + EFFECTIVE_DEMAND_WHERE + """
+          <if test="storeIds != null and storeIds.size() > 0">
+            AND dm.store_id IN
+            <foreach collection="storeIds" item="sid" open="(" separator="," close=")">#{sid}</foreach>
+          </if>
+        ORDER BY productName ASC, dm.id ASC
+        </script>
+        """)
+    List<DemandPrintSummaryItemVo> selectSummaryItems(@Param("demandDate") LocalDate demandDate,
+                                                      @Param("storeIds") List<Long> storeIds);
 
     /**
      * 门店名（明细抬头用；门店已删也照取，单据上不能空着门店）。

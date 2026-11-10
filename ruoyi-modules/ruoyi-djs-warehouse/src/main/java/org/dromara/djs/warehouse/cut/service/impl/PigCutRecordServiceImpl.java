@@ -234,14 +234,15 @@ public class PigCutRecordServiceImpl
 
         // Step 1：SELECT bar_info。邓博 row14 按半只领用：一头猪可分多次领（领一个半只后 bar 已转
         // pending_cut/cutting），故允许从 in_stock / pending_cut / cutting 继续领剩余产出行；
-        // 仅拒已收尾（cut_done/ship_out）或未入库（pending_singe/singing）。
+        // singing 只开放带真实已入库半扇的逐行路径；整猪兜底仍须完成燎毛。
         BarInfo bar = barInfoMapper.selectForUpdate(bo.getBarInfoId());
         if (bar == null) {
             throw new ServiceException("白条不存在：" + bo.getBarInfoId());
         }
         if (!BAR_STATUS_IN_STOCK.equals(bar.getStatus())
             && !BAR_STATUS_PENDING_CUT.equals(bar.getStatus())
-            && !BAR_STATUS_CUTTING.equals(bar.getStatus())) {
+            && !BAR_STATUS_CUTTING.equals(bar.getStatus())
+            && !("singing".equals(bar.getStatus()) && bo.getInhouseId() != null)) {
             throw new ServiceException("白条状态不符（当前：" + bar.getStatus() + "，需在库/待分割/分割中）");
         }
 
@@ -320,6 +321,15 @@ public class PigCutRecordServiceImpl
         if (row == null || !bar.getId().equals(row.getWhiteBarId())) {
             throw new ServiceException("燎毛产出行不存在或不属于该白条：" + bo.getInhouseId());
         }
+        if ("singing".equals(bar.getStatus())) {
+            ProductInfo product = productInfoMapper.selectById(row.getProductId());
+            if (product == null || !"white_bar".equals(product.getBelongType())
+                || !("左半扇".equals(product.getProductName()) || "右半扇".equals(product.getProductName()))
+                || StringUtils.isBlank(row.getWhiteBarNo()) || row.getProductWeight() == null
+                || row.getProductWeight().signum() <= 0) {
+                throw new ServiceException("燎毛处理中仅可领用已真实入库的左半扇或右半扇");
+            }
+        }
         if (row.getPickupStatus() != null && row.getPickupStatus() == 1) {
             throw new ServiceException("该产出行已领用，请刷新重试");
         }
@@ -362,7 +372,9 @@ public class PigCutRecordServiceImpl
         // 邓博 row14 修复：按半只 surface —— 每领一个产出行即建独立 cut_record（picked）+ 推 bar pending_cut，
         // 立即在白条分割车间可见可分割，不再等整头猪所有产出行领完才建 cut_record（原 finalize 逻辑=「领半只后分割车间看不到」根因）。
         // bar → pending_cut 幂等（已 pending_cut/cutting → affected=0 不抛）；剩余未领行仍可继续领（picker 含 pending_cut/cutting）。
-        barInfoMapper.updateStatusToPendingCut(bar.getId(), userId);
+        if (!"singing".equals(bar.getStatus())) {
+            barInfoMapper.updateStatusToPendingCut(bar.getId(), userId);
+        }
         int isHalf = bo.getIsHalf() != null ? bo.getIsHalf()
             : (row.getProductName() != null && row.getProductName().contains("半") ? 1 : 2);
         // 结算/超量/剩余/损耗仍按整猪 white_bar_id 汇总（dashboards 读 by white_bar_id 不变，Kevin 定）。
@@ -493,27 +505,51 @@ public class PigCutRecordServiceImpl
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Long finalizeBarPickupIfComplete(Long barInfoId, Long userId) {
-        // 邓博 row14 按半只 surface 后：cut_record 已在 pickupByInhouseRow 按产出行建好、bar 已 pending_cut。
-        // 本方法保留给发货路径（ProductProductionServiceImpl.submitWhiteBarOut）幂等收口用：不再建整猪
-        // cut_record（避免与领用时的按半只 cut_record 重复），仅在有分割领用行时确保 bar 处于 pending_cut，
-        // 返非空信号（调用方仅日志用，据自身 cutRows 分支决定不转 ship_out）。
-        BarInfo bar = barInfoMapper.selectById(barInfoId);
-        if (bar == null) {
-            return null;
-        }
-        Long cutRows = productInhouseMapper.selectCount(
-            new LambdaQueryWrapper<ProductInhouse>()
-                .eq(ProductInhouse::getWhiteBarId, barInfoId)
-                .eq(ProductInhouse::getPickupStatus, 1));
-        if (cutRows == null || cutRows == 0) {
-            return null;  // 无分割领用行 → 全发货 → 调用方转 ship_out
-        }
+        // 所有衔接先锁整猪，再锁半扇记录/库存来源，和燎毛录入、完成及分割操作保持同一锁序。
+        BarInfo bar = barInfoMapper.selectForUpdate(barInfoId);
+        if (bar == null) { return null; }
+        List<PigCutRecord> cuts = baseMapper.selectList(new LambdaQueryWrapper<PigCutRecord>()
+            .eq(PigCutRecord::getWhiteBarId, barInfoId)
+            .and(w -> w.eq(PigCutRecord::getOutType, "cut").or().isNull(PigCutRecord::getOutType))
+            .orderByAsc(PigCutRecord::getId).last("FOR UPDATE"));
+        if (cuts.isEmpty()) { return null; }
+        // 一半先领/先切完时，整猪仍需允许另一半燎毛入库；整猪只在燎毛完成后衔接分割状态。
+        if ("singing".equals(bar.getStatus())) { return barInfoId; }
+        if (!BAR_STATUS_IN_STOCK.equals(bar.getStatus()) && !BAR_STATUS_PENDING_CUT.equals(bar.getStatus())
+            && !BAR_STATUS_CUTTING.equals(bar.getStatus())) { return barInfoId; }
         if (BAR_STATUS_IN_STOCK.equals(bar.getStatus())) {
-            barInfoMapper.updateStatusToPendingCut(barInfoId, userId);
+            if (barInfoMapper.updateStatusToPendingCut(barInfoId, userId) == 0) { return barInfoId; }
+            bar.setStatus(BAR_STATUS_PENDING_CUT);
         }
-        return barInfoId;  // 非空信号（分割路径接管此 bar，调用方不转 ship_out）
+        boolean started = cuts.stream().anyMatch(c -> CUT_STATUS_CUTTING.equals(c.getCutStatus())
+            || CUT_STATUS_DONE.equals(c.getCutStatus()));
+        if (started && BAR_STATUS_PENDING_CUT.equals(bar.getStatus())) {
+            if (barInfoMapper.updateStatusToCutting(barInfoId, userId) == 0) { return barInfoId; }
+            bar.setStatus(BAR_STATUS_CUTTING);
+        }
+        if (cuts.stream().anyMatch(c -> !CUT_STATUS_DONE.equals(c.getCutStatus()))) { return barInfoId; }
+        // 锁定读避免发货事务早先的一致性快照遗漏刚提交的另一半/分割完成记录。
+        List<ProductInhouse> pending = productInhouseMapper.selectList(new LambdaQueryWrapper<ProductInhouse>()
+            .select(ProductInhouse::getId).eq(ProductInhouse::getWhiteBarId, barInfoId)
+            .and(w -> w.eq(ProductInhouse::getPickupStatus, 0).or().isNull(ProductInhouse::getPickupStatus))
+            .last("FOR UPDATE"));
+        if (!pending.isEmpty()) { return barInfoId; }
+        PigCutRecord last = cuts.stream().max(java.util.Comparator.comparing(PigCutRecord::getCutDoneTime,
+            java.util.Comparator.nullsFirst(java.util.Comparator.naturalOrder()))).orElseThrow();
+        BigDecimal outWeight = cuts.stream().map(PigCutRecord::getPickupWeight).filter(java.util.Objects::nonNull)
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        // 只累计被分割半扇的预冷值；另一半直发的重量、预冷损耗不掺入分割结算。
+        BigDecimal dripLoss = cuts.stream().map(PigCutRecord::getDripLoss).filter(java.util.Objects::nonNull)
+            .map(v -> v.max(BigDecimal.ZERO)).reduce(BigDecimal.ZERO, BigDecimal::add);
+        Date now = new Date();
+        if (barInfoMapper.updateStatusToCutDone(barInfoId, now, outWeight, last.getAcidRemoveMinutes(),
+            dripLoss, userId) == 0) { return barInfoId; }
+        traceService.recordEventByEarNo(last.getEarNo(), TraceContentConst.SLAUGHTER, outWeight);
+        traceService.recordEventByEarNo(last.getEarNo(), TraceContentConst.ACID, outWeight);
+        writeCutRollup(last, outWeight, userId);
+        return barInfoId;
     }
 
     /** 该白条已领产出行 pickup_weight 之和（pickup_status=1）。 */
@@ -699,7 +735,7 @@ public class PigCutRecordServiceImpl
         if (record == null) {
             throw new ServiceException("分割单不存在：" + bo.getCutRecordId());
         }
-        barInfoMapper.selectForUpdate(record.getWhiteBarId());
+        BarInfo cutBar = barInfoMapper.selectForUpdate(record.getWhiteBarId());
         record = baseMapper.selectForUpdate(record.getId());
         if (record == null) {
             throw new ServiceException("分割单已删除，请刷新重试");
@@ -744,7 +780,9 @@ public class PigCutRecordServiceImpl
                 throw new ServiceException("分割单状态已变更，请刷新重试");
             }
             // bar_info pending_cut → cutting（已是 cutting 则跳过，affectedRows==0 不抛）
-            barInfoMapper.updateStatusToCutting(record.getWhiteBarId(), userId);
+            if (cutBar == null || !"singing".equals(cutBar.getStatus())) {
+                barInfoMapper.updateStatusToCutting(record.getWhiteBarId(), userId);
+            }
         }
 
         // P4 库位兜底：前端未传 locationId 时按所选分割产品配置的 store_location_id 解析（参 ProductProductionServiceImpl.resolveLocationId）
@@ -786,20 +824,20 @@ public class PigCutRecordServiceImpl
             // 分割部位入冷库 = 一个「篮子」（doc/14 §1：分割→入库，不直接产待打包 WIP）：
             // 每头猪每部位一行 location_stock，ear_no 作篮子标签（追溯键）。mp 物资领用按产品聚合展示这些篮子；
             // 据门店需求领用时按篮子 FIFO 扣减并产出 product_inhouse（带 ear_no）→ 肉品打包来源。
-            // row157（撤销 SPLIT-001 拆分）：同一耳号整猪两半只产出同一部位合并到一行篮子——先按
-            // (location, product, ear_no, white_bar_no IS NULL, is_end=0) UPSERT 累加，命中 0 行才 insert 新篮，
-            // 避免库存查询同耳号同产品出现两行。外购无耳号（earNo 空）→ 不合并（避免跨猪串账），保持一行一次。
-            int merged = 0;
-            Long outputStockId;
-            if (StringUtils.isNotBlank(record.getEarNo())) {
-                merged = locationStockMapper.addByProductLocationEarNo(
-                    effectiveLocationId, productId, record.getEarNo(),
-                    part.getProductWeight(), userId);
-                if (merged > 1) {
-                    throw new ServiceException("存在重复分割库存篮，请先核对库存");
-                }
+            // row157：同耳号两半只的同部位仍合并。调用已持整猪 bar 锁，先用一致读发现篮子，
+            // 再按唯一主键原子累加；不能用 product 索引宽 UPDATE/FOR UPDATE 锁住其他猪的篮子。
+            // 无耳号外购白条仍不合并，保持一次一篮。
+            List<LocationStock> outputs = StringUtils.isNotBlank(record.getEarNo())
+                ? locationStockMapper.selectList(new LambdaQueryWrapper<LocationStock>()
+                    .eq(LocationStock::getLocationId, effectiveLocationId).eq(LocationStock::getProductId, productId)
+                    .eq(LocationStock::getEarNo, record.getEarNo()).isNull(LocationStock::getWhiteBarNo)
+                    .eq(LocationStock::getIsEnd, 0))
+                : List.of();
+            if (outputs.size() > 1) {
+                throw new ServiceException("存在重复分割库存篮，请先核对库存");
             }
-            if (merged == 0) {
+            Long outputStockId;
+            if (outputs.isEmpty()) {
                 LocationStock basket = new LocationStock();
                 basket.setLocationId(effectiveLocationId);
                 basket.setProductId(productId);
@@ -812,14 +850,11 @@ public class PigCutRecordServiceImpl
                 locationStockMapper.insert(basket);
                 outputStockId = basket.getId();
             } else {
-                LocationStock output = locationStockMapper.selectOne(new LambdaQueryWrapper<LocationStock>()
-                    .eq(LocationStock::getLocationId, effectiveLocationId).eq(LocationStock::getProductId, productId)
-                    .eq(LocationStock::getEarNo, record.getEarNo()).isNull(LocationStock::getWhiteBarNo)
-                    .eq(LocationStock::getIsEnd, 0).last("FOR UPDATE"));
-                if (output == null) {
-                    throw new ServiceException("分割库存篮已变更，请重试");
+                outputStockId = outputs.getFirst().getId();
+                if (locationStockMapper.addCutBasketById(outputStockId, effectiveLocationId, productId,
+                    record.getEarNo(), part.getProductWeight(), userId) != 1) {
+                    throw new ServiceException("分割库存篮已变更，请刷新后重试");
                 }
-                outputStockId = output.getId();
             }
 
             // 分割品入冻品库流水
@@ -930,46 +965,7 @@ public class PigCutRecordServiceImpl
         // 整猪收口不再写 cut_loss，避免双算；各半只 loss_flow 之和 = 整猪分割损耗（分区互不重叠）。
         writeHalfCutLossFlow(record, now, userId);
 
-        // 该白条是否全部半只都分割完（无 cut_status!=done 的 cut_record）且无未领产出行 → 才整猪收口
-        Long pendingCuts = baseMapper.selectCount(
-            new LambdaQueryWrapper<PigCutRecord>()
-                .eq(PigCutRecord::getWhiteBarId, record.getWhiteBarId())
-                .ne(PigCutRecord::getCutStatus, CUT_STATUS_DONE));
-        Long pendingRows = productInhouseMapper.selectCount(
-            new LambdaQueryWrapper<ProductInhouse>()
-                .eq(ProductInhouse::getWhiteBarId, record.getWhiteBarId())
-                .and(w -> w.eq(ProductInhouse::getPickupStatus, 0).or().isNull(ProductInhouse::getPickupStatus)));
-        if ((pendingCuts != null && pendingCuts > 0) || (pendingRows != null && pendingRows > 0)) {
-            return;  // 还有半只未分割完 / 未领产出行 → 不整猪收口，bar 留 cutting
-        }
-
-        // 整猪收口：滴水损耗 = 白条入库重 − 领用总重（Σ pickup_weight = 各半只之和）；结算按整猪 white_bar_id。
-        // 入库重缺失（外购/旧数据 in_weight=NULL）或差值为负钳到 0（损耗不可为负）。
-        BarInfo bar = barInfoMapper.selectById(record.getWhiteBarId());
-        BigDecimal inWeight = bar == null ? null : bar.getInWeight();
-        BigDecimal totalPicked = sumPickedRowWeight(record.getWhiteBarId());
-        BigDecimal dripLoss = inWeight == null
-            ? BigDecimal.ZERO
-            : inWeight.subtract(totalPicked).max(BigDecimal.ZERO);
-        BigDecimal outWeight = totalPicked;
-
-        // bar_info cutting → cut_done（整猪出库重 / 滴水损耗回写）。并发已收口 → affected=0 幂等跳过，不抛。
-        // row204：bar_info 排酸时长与 cut_record 同口径（领用出库 − 入库），取本收口半只领用时已写定的 acid。
-        int barAffected = barInfoMapper.updateStatusToCutDone(
-            record.getWhiteBarId(), now, outWeight, record.getAcidRemoveMinutes(), dripLoss, userId);
-        if (barAffected == 0) {
-            return;  // bar 已被并发的另一半只收口，幂等
-        }
-
-        // TRC-CORE-001：屠宰分割 + 排酸追溯事件（整猪出库重；按耳号反查 trace_code，无生码 → warn 跳过）
-        traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.SLAUGHTER, outWeight);
-        traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.ACID, outWeight);
-
-        // WMS-LOSS-001：整猪收口只做分割结果 rollup 到白条表（cut_product_weight / cut_loss 按整猪聚合）。
-        // 预冷损耗 loss_flow 已在各白条领用时按白条即时写（writePickupPrecoolLoss，r148）、分割损耗已在各半只
-        // done 时即时写（writeHalfCutLossFlow，row150），此处都不再写以免双算 / 跨天错配。
-        // 由 bar cutting→cut_done 乐观锁保证整猪收口只走一次，不重复。
-        writeCutRollup(record, outWeight, userId);
+        finalizeBarPickupIfComplete(record.getWhiteBarId(), userId);
     }
 
     /**

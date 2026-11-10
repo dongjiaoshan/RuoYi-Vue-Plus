@@ -61,7 +61,9 @@ public interface InoutWorkbenchMapper {
         + "ON p.id=i.product_id AND p.tenant_id=i.tenant_id AND p.del_flag='0' AND p.belong_type='white_bar' "
         + "JOIN t_warehouse_bar_info b ON b.id=i.white_bar_id AND b.tenant_id=i.tenant_id AND b.del_flag='0' "
         + "WHERE i.del_flag='0' AND i.product_weight>0 AND COALESCE(i.pickup_status,0)=0 "
-        + "AND b.status IN ('in_stock','pending_cut','cutting') AND EXISTS "
+        + "AND b.status IN ('singing','in_stock','pending_cut','cutting') "
+        + "AND (b.status<>'singing' OR (p.product_name IN ('左半扇','右半扇') AND i.white_bar_no IS NOT NULL AND i.white_bar_no<>'')) "
+        + "AND EXISTS "
         + "(SELECT 1 FROM t_warehouse_location_stock s WHERE s.white_bar_no=i.white_bar_no "
         + "AND s.product_id=i.product_id AND s.location_id=i.location_id AND s.tenant_id=i.tenant_id "
         + "AND s.del_flag='0' AND s.product_stock>0) ORDER BY in_time DESC, i.id ASC")

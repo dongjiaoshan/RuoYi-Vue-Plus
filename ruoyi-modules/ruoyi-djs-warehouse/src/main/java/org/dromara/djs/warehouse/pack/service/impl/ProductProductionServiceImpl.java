@@ -832,14 +832,14 @@ public class ProductProductionServiceImpl
      * 流水、不进 location_stock，发货 ship_out 才出账）。</p>
      */
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Long submitWhiteBarOut(WhiteBarOutBo bo) {
         Long userId = currentUserIdSafe();
         Date now = new Date();
         // D-0147 ③：领用称重页另带秤读数（成对 + 称重 − 去皮 = 出库重量），先于任何写库校验
         ScaleReading reading = ScaleReading.of(bo.getGrossWeight(), bo.getTareWeight(), bo.getProductWeight());
 
-        ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
+        ProductInhouse src = requireLockedWhiteBarOutSource(bo.getSourceInhouseId());
         ProductInfo product = productInfoMapper.selectById(src.getProductId());
         if (product == null) {
             throw new ServiceException("来源产品主数据不存在：" + src.getProductId());
@@ -981,14 +981,14 @@ public class ProductProductionServiceImpl
      * （bar 状态机转态口径待邓博确认，见 report 待确认项③）。</p>
      */
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Long submitWarehouseOut(WarehouseOutBo bo) {
         Long userId = currentUserIdSafe();
         Date now = new Date();
         // D-0147 ③：领用称重页另带秤读数（成对 + 称重 − 去皮 = 出库重量），先于任何写库校验
         ScaleReading reading = ScaleReading.of(bo.getGrossWeight(), bo.getTareWeight(), bo.getProductWeight());
 
-        ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
+        ProductInhouse src = requireLockedWhiteBarOutSource(bo.getSourceInhouseId());
         ProductInfo product = productInfoMapper.selectById(src.getProductId());
         if (product == null) {
             throw new ServiceException("来源产品主数据不存在：" + src.getProductId());
@@ -1669,6 +1669,21 @@ public class ProductProductionServiceImpl
      * <p>P1-2：仓库打包/出库只认仓库分割产（{@code source='warehouse'}），拒绝门店现场分割
      * （{@code source='store'}，STR-SPLIT-001）；防前端绕过 picker 直接传 store 行 id 跨域取库存。</p>
      */
+    private ProductInhouse requireLockedWhiteBarOutSource(Long inhouseId) {
+        ProductInhouse source = requireActiveInhouse(inhouseId);
+        if (source.getWhiteBarId() == null) { return source; }
+        if (barInfoMapper.selectForUpdate(source.getWhiteBarId()) == null) {
+            throw new ServiceException("来源白条不存在或已删除");
+        }
+        ProductInhouse current = productInhouseMapper.selectOne(new LambdaQueryWrapper<ProductInhouse>()
+            .eq(ProductInhouse::getId, inhouseId).last("FOR UPDATE"));
+        if (current == null || !SOURCE_WAREHOUSE.equals(current.getSource())
+            || !java.util.Objects.equals(source.getWhiteBarId(), current.getWhiteBarId())) {
+            throw new ServiceException("来源过程产品已消耗或变更，请刷新后重试");
+        }
+        return current;
+    }
+
     protected ProductInhouse requireActiveInhouse(Long inhouseId) {
         ProductInhouse src = productInhouseMapper.selectById(inhouseId);
         if (src == null) {

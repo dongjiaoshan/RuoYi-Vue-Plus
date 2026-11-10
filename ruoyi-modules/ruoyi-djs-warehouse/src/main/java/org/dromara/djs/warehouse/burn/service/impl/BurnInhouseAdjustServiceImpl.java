@@ -157,7 +157,7 @@ public class BurnInhouseAdjustServiceImpl implements IBurnInhouseAdjustService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void adjustWeight(BurnInhouseAdjustBo bo) {
         // ---------- Step 1：取产出行 + 结构校验（必须真的是燎毛间入库产出行）----------
         ProductInhouse row = productInhouseMapper.selectById(bo.getId());
@@ -173,12 +173,6 @@ public class BurnInhouseAdjustServiceImpl implements IBurnInhouseAdjustService {
             // 宁可拒绝也不做「只改一半」的调整。
             throw new ServiceException("该入库记录缺少白条流水号，无法同步库存与流水，不允许调整");
         }
-        BigDecimal oldWeight = row.getProductWeight();
-        if (oldWeight == null) {
-            throw new ServiceException("该入库记录没有入库重量，无法调整");
-        }
-        BigDecimal newWeight = bo.getProductWeight();
-        BigDecimal delta = newWeight.subtract(oldWeight);
 
         // ---------- Step 2：可调整窗口（业务前置条件，后端必须拦，不能只靠前端隐藏按钮）----------
         // 排在「重量没变就早退」之前：已处理完成的行无论提交什么值都该被拒，
@@ -190,6 +184,23 @@ public class BurnInhouseAdjustServiceImpl implements IBurnInhouseAdjustService {
         if (!BAR_STATUS_PENDING_SINGE.equals(bar.getStatus()) && !BAR_STATUS_SINGING.equals(bar.getStatus())) {
             throw new ServiceException("该猪只燎毛间已处理完成，不能再调整入库重量");
         }
+        // 与领用/直发保持 bar → 产出行的锁序。等待 bar 时半扇可能已消费，不能沿用最初的快照。
+        ProductInhouse current = productInhouseMapper.selectOne(new LambdaQueryWrapper<ProductInhouse>()
+            .eq(ProductInhouse::getId, bo.getId()).last("FOR UPDATE"));
+        if (current == null || "1".equals(current.getDelFlag())
+            || Integer.valueOf(1).equals(current.getPickupStatus())
+            || !bar.getId().equals(current.getWhiteBarId())
+            || current.getMaterialId() != null || !SOURCE_WAREHOUSE.equals(current.getSource())
+            || StringUtils.isBlank(current.getWhiteBarNo())) {
+            throw new ServiceException("该入库记录已被领用、出库或变更，请刷新后重试");
+        }
+        row = current;
+        BigDecimal oldWeight = row.getProductWeight();
+        if (oldWeight == null) {
+            throw new ServiceException("该入库记录没有入库重量，无法调整");
+        }
+        BigDecimal newWeight = bo.getProductWeight();
+        BigDecimal delta = newWeight.subtract(oldWeight);
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库 —— 调整会动库存，同一道闸
         if (row.getLocationId() != null) {
             stockCheckService.assertLocationUnlocked(row.getLocationId());

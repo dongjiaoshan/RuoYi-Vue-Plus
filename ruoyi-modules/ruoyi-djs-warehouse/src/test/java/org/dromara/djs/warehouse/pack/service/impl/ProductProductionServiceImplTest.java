@@ -1514,4 +1514,28 @@ class ProductProductionServiceImplTest {
         assertThat(captor.getValue().getTargetSql()).doesNotContain("is_delivery_check");
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void whiteBarOutLocksPigThenRereadsSourceBeforeAnyBusinessWrites(boolean warehouse) {
+        ProductInhouse src = sampleVegSource(); src.setWhiteBarId(70001L);
+        when(inhouseMapper.selectById(src.getId())).thenReturn(src);
+        when(barInfoMapper.selectForUpdate(70001L)).thenReturn(new org.dromara.djs.warehouse.cross.domain.BarInfo());
+        when(inhouseMapper.selectOne(any())).thenReturn(null); // Another transaction consumed this half before the lock.
+        if (warehouse) {
+            var bo = new org.dromara.djs.warehouse.pack.domain.bo.WarehouseOutBo(); bo.setSourceInhouseId(src.getId()); bo.setProductWeight(BigDecimal.ONE);
+            assertThatThrownBy(() -> service.submitWarehouseOut(bo)).hasMessageContaining("已消耗或变更");
+        } else {
+            var bo = new WhiteBarOutBo(); bo.setSourceInhouseId(src.getId()); bo.setProductWeight(BigDecimal.ONE); bo.setStoreId(9L);
+            assertThatThrownBy(() -> service.submitWhiteBarOut(bo)).hasMessageContaining("已消耗或变更");
+        }
+        var order = org.mockito.Mockito.inOrder(inhouseMapper, barInfoMapper);
+        order.verify(inhouseMapper).selectById(src.getId());
+        order.verify(barInfoMapper).selectForUpdate(70001L);
+        var wrapper = ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.Wrapper.class);
+        order.verify(inhouseMapper).selectOne(wrapper.capture());
+        assertThat(wrapper.getValue().getSqlSegment()).contains("FOR UPDATE");
+        verify(productionMapper, never()).insert(any(ProductProduction.class));
+        verify(inhouseMapper, never()).deleteById(any());
+    }
+
 }

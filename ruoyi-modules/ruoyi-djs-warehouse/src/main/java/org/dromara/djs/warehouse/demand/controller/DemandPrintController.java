@@ -9,6 +9,7 @@ import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.demand.domain.query.DemandPrintQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPrintDetailVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPrintSheetVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandPrintSummaryVo;
 import org.dromara.djs.warehouse.demand.service.IDemandPrintService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.validation.annotation.Validated;
@@ -51,4 +52,11 @@ public class DemandPrintController extends BaseController {
                                          @RequestParam Long storeId) {
         return R.ok(demandPrintService.getSheetDetail(demandDate, storeId));
     }
+    /** 所选日期下已确认需求的产品名称汇总打印。 */
+    @SaCheckPermission("djs:warehouse:demand:print")
+    @GetMapping("/summary")
+    public R<DemandPrintSummaryVo> summary(DemandPrintQuery query) {
+        return R.ok(demandPrintService.getSummary(query.getDemandDate(), query.getStoreIds()));
+    }
+
 }

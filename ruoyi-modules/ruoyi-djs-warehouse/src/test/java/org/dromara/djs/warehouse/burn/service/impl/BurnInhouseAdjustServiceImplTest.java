@@ -117,6 +117,8 @@ class BurnInhouseAdjustServiceImplTest {
 
     @BeforeEach
     void setup() {
+        when(productInhouseMapper.selectOne(any(LambdaQueryWrapper.class))).thenAnswer(invocation ->
+            productInhouseMapper.selectById(INHOUSE_ID));
         when(barInfoMapper.updateBurnProgress(any(), any(), any(), any())).thenReturn(1);
 
         service = new BurnInhouseAdjustServiceImpl(adjustMapper, productInhouseMapper, barInfoMapper,
@@ -202,6 +204,51 @@ class BurnInhouseAdjustServiceImplTest {
             .thenReturn(1);
         when(pigBurnRecordMapper.adjustBurnWeight(eq(BURN_RECORD_ID), any(), eq(USER_ID))).thenReturn(1);
         when(barInfoMapper.adjustInWeightIfBurning(eq(BAR_ID), any(), eq(USER_ID))).thenReturn(1);
+    }
+
+    @Test
+    @DisplayName("等待整猪锁后半扇已被领用：重读后拒绝，不能复活库存")
+    void rejectsHalfConsumedWhileWaitingForBarLock() {
+        when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
+        ProductInhouse consumed = burnRow();
+        consumed.setPickupStatus(1);
+        when(productInhouseMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(consumed);
+        assertThatThrownBy(() -> service.adjustWeight(bo(NEW_WEIGHT))).isInstanceOf(ServiceException.class)
+            .hasMessageContaining("已被领用");
+        var ordered = org.mockito.Mockito.inOrder(productInhouseMapper, barInfoMapper);
+        ordered.verify(productInhouseMapper).selectById(INHOUSE_ID);
+        ordered.verify(barInfoMapper).selectForUpdate(BAR_ID);
+        ordered.verify(productInhouseMapper).selectOne(any(LambdaQueryWrapper.class));
+        verifyNoInteractions(adjustMapper, locationStockMapper, stockFlowMapper, pigBurnRecordMapper);
+    }
+
+    @Test
+    @DisplayName("等待整猪锁后半扇已直发软删：拒绝调整")
+    void rejectsSourceDeletedWhileWaitingForBarLock() {
+        when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
+        ProductInhouse deleted = burnRow();
+        deleted.setDelFlag("1");
+        when(productInhouseMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(deleted);
+        assertThatThrownBy(() -> service.adjustWeight(bo(NEW_WEIGHT))).isInstanceOf(ServiceException.class)
+            .hasMessageContaining("已被领用、出库或变更");
+        verifyNoInteractions(adjustMapper, locationStockMapper, stockFlowMapper, pigBurnRecordMapper);
+    }
+
+    @Test
+    @DisplayName("等待整猪锁后入库重已变：按锁后的重量计算差额")
+    void calculatesDeltaFromLockedSourceWeight() {
+        when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
+        when(barInfoMapper.selectForUpdate(BAR_ID)).thenReturn(bar("singing", new BigDecimal("110.500")));
+        ProductInhouse refreshed = burnRow();
+        refreshed.setProductWeight(new BigDecimal("79.000"));
+        when(productInhouseMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(refreshed);
+        stubOtherRows("20.000");
+        stubAllWritesOk();
+        service.adjustWeight(bo(NEW_WEIGHT));
+        verify(adjustMapper).applyAdjust(INHOUSE_ID, new BigDecimal("79.000"), NEW_WEIGHT, USER_ID);
+        verify(locationStockMapper).adjustStockByWhiteBarNo(WHITE_BAR_NO, PRODUCT_ID, new BigDecimal("-0.500"), USER_ID);
     }
 
     @Test
