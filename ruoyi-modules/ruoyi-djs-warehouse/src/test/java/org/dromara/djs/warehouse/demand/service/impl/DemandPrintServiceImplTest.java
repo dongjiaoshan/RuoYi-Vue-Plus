@@ -127,6 +127,70 @@ class DemandPrintServiceImplTest {
         return row;
     }
 
+    @Test
+    @DisplayName("普通订货单先完整展示品类较多的备注组，组内保留类别顺序且不跨备注合量")
+    void detailGroupsRemarksBeforeProductCategories() {
+        LocalDate day = LocalDate.of(2026, 11, 11);
+        var first = remarkRow(1L, "二七门店订单");
+        var headPork = remarkRow(2L, "二七总部订单");
+        var storePork = remarkRow(2L, "二七门店订单");
+        var headVeg = remarkRow(3L, "二七总部订单");
+        var storeVeg = remarkRow(4L, "二七门店订单");
+        headPork.setDemandQuantity(new BigDecimal("1000"));
+        storePork.setDemandQuantity(new BigDecimal("2"));
+        var rows = List.of(first, headPork, storePork, headVeg, storeVeg);
+        when(demandPrintMapper.selectSheetItems(day, 7L)).thenReturn(rows);
+
+        var result = service.getSheetDetail(day, 7L);
+
+        assertThat(result.getItems()).containsExactly(first, storePork, storeVeg, headPork, headVeg);
+        assertThat(result.getCategoryCount()).isEqualTo(4);
+        assertThat(headPork.getDemandQuantity()).isEqualByComparingTo("1000");
+        assertThat(storePork.getDemandQuantity()).isEqualByComparingTo("2");
+        assertThat(rows).containsExactly(first, headPork, storePork, headVeg, storeVeg);
+    }
+
+    @Test
+    @DisplayName("备注组品类按去重产品计数，不按行数或需求量；同数保持原先稳定次序")
+    void detailRemarkPriorityUsesDistinctProducts() {
+        LocalDate day = LocalDate.of(2026, 11, 11);
+        var a = remarkRow(1L, "A");
+        var duplicate = remarkRow(1L, "A");
+        var b = remarkRow(2L, "B");
+        var b2 = remarkRow(3L, "B");
+        var c = remarkRow(4L, "C");
+        var c2 = remarkRow(5L, "C");
+        when(demandPrintMapper.selectSheetItems(day, 7L)).thenReturn(List.of(a, b, c, duplicate, c2, b2));
+
+        assertThat(service.getSheetDetail(day, 7L).getItems()).containsExactly(b, b2, c, c2, a, duplicate);
+    }
+
+    @Test
+    @DisplayName("空备注归同组，大小写与完整长备注仍为不同组")
+    void detailPreservesExactRemarkKeysAndEmptyGroup() {
+        LocalDate day = LocalDate.of(2026, 11, 11);
+        var blank = remarkRow(1L, null);
+        var upper = remarkRow(2L, "ABC");
+        var longText = remarkRow(3L, "备货".repeat(250) + "尾部");
+        var empty = remarkRow(4L, "");
+        var lower = remarkRow(5L, "abc");
+        var longText2 = remarkRow(6L, longText.getDemandRemark());
+        when(demandPrintMapper.selectSheetItems(day, 7L)).thenReturn(List.of(blank, upper, longText, empty, lower, longText2));
+
+        assertThat(service.getSheetDetail(day, 7L).getItems()).containsExactly(blank, empty, longText, longText2, upper, lower);
+        assertThat(longText.getDemandRemark()).endsWith("尾部").hasSize(502);
+    }
+
+    @Test
+    @DisplayName("无有效需求时普通订货单仍返回空明细与零品类")
+    void detailEmptyRemainsEmpty() {
+        LocalDate day = LocalDate.of(2026, 11, 11);
+        when(demandPrintMapper.selectSheetItems(day, 7L)).thenReturn(List.of());
+        var result = service.getSheetDetail(day, 7L);
+        assertThat(result.getItems()).isEmpty();
+        assertThat(result.getCategoryCount()).isZero();
+    }
+
     private static String sqlOf(Class<?> mapper, String name, Class<?>... params) throws Exception {
         Method m = mapper.getMethod(name, params);
         Select select = m.getAnnotation(Select.class);

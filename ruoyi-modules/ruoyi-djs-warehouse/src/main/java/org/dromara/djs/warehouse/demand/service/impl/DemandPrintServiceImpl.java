@@ -19,6 +19,7 @@ import org.dromara.djs.warehouse.demand.domain.vo.DemandPrintSummaryItemVo;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -56,11 +57,27 @@ public class DemandPrintServiceImpl implements IDemandPrintService {
         vo.setDemandDate(demandDate);
         vo.setStoreId(storeId);
         vo.setStoreName(demandPrintMapper.selectStoreName(storeId));
-        vo.setItems(items);
+        vo.setItems(groupByRemark(items));
         // 备注拆行不能使同一产品重复计为多个品类，与列表 COUNT(DISTINCT product_id) 一致。
         vo.setCategoryCount((int) items.stream().map(DemandPrintItemVo::getProductId).distinct().count());
         return vo;
     }
+
+    /** 备注组按去重产品数降序，组内沿用 Mapper 的产品顺序；同品类数保持原先稳定次序。 */
+    private static List<DemandPrintItemVo> groupByRemark(List<DemandPrintItemVo> items) {
+        Map<String, List<DemandPrintItemVo>> groups = new LinkedHashMap<>();
+        for (DemandPrintItemVo item : items) {
+            // Mapper 已按 TRIM + 二进制排序规则归一备注；此处不再改变大小写或完整文字。
+            String remark = item.getDemandRemark() == null ? "" : item.getDemandRemark();
+            groups.computeIfAbsent(remark, key -> new ArrayList<>()).add(item);
+        }
+        return groups.values().stream()
+            .sorted(Comparator.<List<DemandPrintItemVo>>comparingLong(group -> group.stream()
+                .map(DemandPrintItemVo::getProductId).distinct().count()).reversed())
+            .flatMap(List::stream)
+            .toList();
+    }
+
     @Override
     public DemandPrintSummaryVo getSummary(LocalDate demandDate, List<Long> storeIds) {
         if (demandDate == null) throw new ServiceException("请选择需求日期", 400);

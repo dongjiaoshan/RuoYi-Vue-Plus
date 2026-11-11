@@ -72,8 +72,8 @@ public interface DemandPrintMapper {
      *
      * <p>合并键 = {@code product_id + TRIM(demand_remark)}（空备注同组）；名称 / 规格 / 单位取需求行定格的冗余列。</p>
      *
-     * <p>排序按产品类别成组：白条 → 猪肉 → 鸡蛋 → 干货 → 礼盒 → 其他 → 果蔬，组内按产品编码升序
-     * （甲方样张即此顺序：白条、猪下水在前，蔬菜在后），无编码再按产品名。</p>
+     * <p>提供每个备注组内的产品顺序：白条 → 猪肉 → 鸡蛋 → 干货 → 礼盒 → 其他 → 果蔬，
+     * 组内按产品编码、产品名和产品ID升序；服务层再按备注集中显示，品类数多的备注组优先。</p>
      *
      * @param demandDate 需求日期
      * @param storeId    门店
@@ -103,7 +103,7 @@ public interface DemandPrintMapper {
                    WHEN 'vegetable' THEN 7
                    ELSE 6 END,
                  MAX(pi.product_id) ASC,
-                 MAX(dm.product_name) ASC, demandRemark ASC
+                 MAX(dm.product_name) ASC, dm.product_id ASC, demandRemark ASC
         """)
     List<DemandPrintItemVo> selectSheetItems(@Param("demandDate") LocalDate demandDate,
                                              @Param("storeId") Long storeId);
