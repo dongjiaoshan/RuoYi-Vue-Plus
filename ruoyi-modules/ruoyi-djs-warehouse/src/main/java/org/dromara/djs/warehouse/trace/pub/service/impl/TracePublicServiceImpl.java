@@ -115,7 +115,7 @@ public class TracePublicServiceImpl
     private static final String DEFAULT_TENANT = "1001";
 
     /** Redis 缓存 key 前缀。 */
-    private static final String CACHE_PREFIX = "trace:public:reception-v2:";
+    private static final String CACHE_PREFIX = "trace:public:singe-v3:";
 
     /** 缓存 TTL（~10min）。 */
     private static final Duration CACHE_TTL = Duration.ofMinutes(10);
@@ -609,6 +609,14 @@ public class TracePublicServiceImpl
             return;
         }
         timeline.removeIf(n -> !PORK_TIMELINE_KEPT.contains(n.getTraceContent()));
+        // 历史半扇逐次入库会留下多个 singe；整猪节点沿用生码回填的首次入库时刻。
+        // 仅归并屠宰节点，运输/到店等真实分批事件及原始流水均保留。
+        PublicTraceVo.TimelineNode singe = timeline.stream()
+            .filter(n -> TraceContentConst.SINGE.equals(n.getTraceContent()))
+            .min(Comparator.comparing(PublicTraceVo.TimelineNode::getTraceTime,
+                Comparator.nullsLast(Comparator.naturalOrder())))
+            .orElse(null);
+        timeline.removeIf(n -> TraceContentConst.SINGE.equals(n.getTraceContent()) && n != singe);
         timeline.sort(Comparator.comparing(PublicTraceVo.TimelineNode::getTraceTime,
             Comparator.nullsLast(Comparator.reverseOrder())));
     }

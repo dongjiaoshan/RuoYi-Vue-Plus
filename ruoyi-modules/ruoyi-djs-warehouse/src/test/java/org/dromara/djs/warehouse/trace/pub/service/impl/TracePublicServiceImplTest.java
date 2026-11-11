@@ -423,6 +423,63 @@ class TracePublicServiceImplTest {
         }
     }
 
+    @Test
+    @DisplayName("生产半扇串码样本：只保留首次屠宰节点，运输到店时间和重量保持各自原值")
+    void porkTimeline_collapsesHistoricalHalfSingeWithoutChangingDelivery() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(PORK_CODE);
+        code.setCodeType("pork");
+        code.setPigEarNo(EAR_NO);
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        TraceEvent first = event("singe", LocalDateTime.of(2026, 11, 11, 2, 48, 30), null);
+        TraceEvent second = event("singe", LocalDateTime.of(2026, 11, 11, 2, 49, 13), null);
+        second.setEventData("{\"weight\":\"57.220\"}");
+        TraceEvent ship = event("ship", LocalDateTime.of(2026, 11, 11, 4, 2, 12), null);
+        ship.setEventData("{\"weight\":\"49.340\"}");
+        TraceEvent arrival = event("arrival", LocalDateTime.of(2026, 11, 11, 5, 34, 11), null);
+        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of(arrival, ship, second, first,
+            event("marketing", LocalDateTime.of(2026, 11, 8, 10, 17, 16), null)));
+
+        PublicTraceVo vo;
+        // JsonUtils 首次初始化需要 ObjectMapper；仅在本测试作用域提供，不启动 Spring 或覆盖业务查询。
+        try (MockedStatic<cn.hutool.extra.spring.SpringUtil> spring = Mockito.mockStatic(cn.hutool.extra.spring.SpringUtil.class)) {
+            spring.when(() -> cn.hutool.extra.spring.SpringUtil.getBean(com.fasterxml.jackson.databind.ObjectMapper.class))
+                .thenReturn(new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules());
+            vo = service.getByProduceCode(PORK_CODE);
+        }
+
+        assertThat(vo.getTimeline()).extracting(PublicTraceVo.TimelineNode::getTraceContent)
+            .containsExactly("arrival", "ship", "singe", "marketing");
+        assertThat(vo.getTimeline().get(2).getTraceTime()).isEqualTo(first.getTraceTime());
+        assertThat(vo.getTimeline().get(2).getWeight()).isNull();
+        assertThat(vo.getTimeline().get(1).getTraceTime()).isEqualTo(ship.getTraceTime());
+        assertThat(vo.getTimeline().get(1).getWeight()).isEqualTo("49.340");
+        assertThat(vo.getTimeline().get(0).getTraceTime()).isEqualTo(arrival.getTraceTime());
+        // 数据库事件对象不被修改，历史事实仍能用于审计。
+        assertThat(second.getEventData()).contains("57.220");
+        org.mockito.Mockito.verify(traceEventMapper, org.mockito.Mockito.never()).delete(any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("无时间旧屠宰节点不压过真实时间，运输分批节点不被去重")
+    void porkTimeline_nullSingeAndMultipleShipments() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(PORK_CODE);
+        code.setCodeType("pork");
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        TraceEvent real = event("singe", LocalDateTime.of(2026, 11, 11, 2, 48, 30), null);
+        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of(
+            event("singe", null, null), real,
+            event("ship", LocalDateTime.of(2026, 11, 11, 4, 2), null),
+            event("ship", LocalDateTime.of(2026, 11, 11, 4, 3), null)));
+
+        PublicTraceVo vo = service.getByProduceCode(PORK_CODE);
+
+        assertThat(vo.getTimeline()).extracting(PublicTraceVo.TimelineNode::getTraceContent)
+            .containsExactly("ship", "ship", "singe");
+        assertThat(vo.getTimeline().get(2).getTraceTime()).isEqualTo(real.getTraceTime());
+    }
+
     // ============================ veg 链路 ============================
 
     @Test
