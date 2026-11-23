@@ -66,6 +66,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * 发货产品生产记录 Service 实现（WMS-PACK-001）。
@@ -161,6 +162,7 @@ public class ProductProductionServiceImpl
 
     /** 果蔬业态（V4 果蔬打包 product_material 校验 + 日损耗聚合）。 */
     private static final String BELONG_TYPE_VEGETABLE = "vegetable";
+    private static final String YELLOW_CARROT_MATERIAL_CODE = "Y0309";
 
     /** 打包台「当天」时区：与发货月台 {@code SHIP_TODAY_ZONE} 一致，避免非 UTC+8 实例跨日归错天。 */
     private static final ZoneId PACK_TODAY_ZONE = ZoneId.of("Asia/Shanghai");
@@ -323,6 +325,7 @@ public class ProductProductionServiceImpl
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         // Step 2：校验目标产品存在 + 是发货品
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
+        validateYellowCarrotMaterial(product, src);
         // 果蔬实称对打包规则「只能大于不能小于」：低于规则重量硬拒；超出 3% 弹提示、确认后可继续。
         validatePackMeasureRule(product, bo.getProductWeight(), bo.getAllowOverMeasure());
         // Step 2.5：果蔬打包来源原材料库存校验（V4，果疏产品全流程处理.docx）：
@@ -1693,6 +1696,20 @@ public class ProductProductionServiceImpl
             throw new ServiceException("来源不是仓库分割产，不可在仓库打包/出库（来源=" + src.getSource() + "）：" + inhouseId);
         }
         return src;
+    }
+
+    /** 黄萝卜独立原料需要按对应成品打包，确保库存扣减、追溯和退回使用同一种原料。 */
+    private void validateYellowCarrotMaterial(ProductInfo target, ProductInhouse source) {
+        Long sourceMaterial = source.getProductId();
+        Long targetMaterial = target.getProductMaterial();
+        if (Objects.equals(sourceMaterial, targetMaterial)) {
+            return;
+        }
+        List<Long> materialIds = Stream.of(sourceMaterial, targetMaterial).filter(Objects::nonNull).toList();
+        if (productInfoMapper.selectBatchIds(materialIds).stream()
+            .anyMatch(material -> YELLOW_CARROT_MATERIAL_CODE.equals(material.getProductId()))) {
+            throw new ServiceException("黄色胡萝卜原料与所选成品不匹配，请重新选择原料和成品");
+        }
     }
 
     /**

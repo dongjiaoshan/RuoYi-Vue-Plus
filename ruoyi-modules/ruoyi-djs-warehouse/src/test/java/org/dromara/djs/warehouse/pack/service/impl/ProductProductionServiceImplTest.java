@@ -240,6 +240,60 @@ class ProductProductionServiceImplTest {
     }
 
     @Test
+    @DisplayName("黄色胡萝卜与旧成品不能交叉打包，拒绝时不扣库或生成追溯")
+    void testVegPack_RejectsYellowCarrotCrossBinding() {
+        ProductInfo yellowMaterial = new ProductInfo();
+        yellowMaterial.setId(60002L);
+        yellowMaterial.setProductId("Y0309");
+        ProductInhouse ordinary = sampleVegSource();
+        ProductInfo finished = sampleVegProduct();
+        finished.setProductMaterial(60002L);
+        when(inhouseMapper.selectById(70001L)).thenReturn(ordinary);
+        when(productInfoMapper.selectById(60010L)).thenReturn(finished);
+        when(productInfoMapper.selectBatchIds(List.of(60001L, 60002L))).thenReturn(List.of(yellowMaterial));
+        when(productInfoMapper.selectBatchIds(List.of(60002L, 60001L))).thenReturn(List.of(yellowMaterial));
+
+        assertThatThrownBy(() -> service.submitVegPack(sampleVegBo()))
+            .isInstanceOf(ServiceException.class).hasMessageContaining("黄色胡萝卜原料");
+
+        ordinary.setProductId(60002L);
+        finished.setProductMaterial(60001L);
+        assertThatThrownBy(() -> service.submitVegPack(sampleVegBo()))
+            .isInstanceOf(ServiceException.class).hasMessageContaining("黄色胡萝卜原料");
+        verify(productionMapper, never()).insert(any(ProductProduction.class));
+        verify(inhouseMapper, never()).deductWeightById(anyLong(), any());
+    }
+
+    @Test
+    @DisplayName("黄色胡萝卜按独立成品打包时，生产快照保留原料和实重")
+    void testVegPack_YellowCarrotStoresMaterialSnapshot() {
+        ProductInhouse source = sampleVegSource();
+        source.setProductId(60002L);
+        ProductInfo finished = sampleVegProduct();
+        finished.setProductId("P0310");
+        finished.setProductName("黄色胡萝卜500g");
+        finished.setProductMaterial(60002L);
+        finished.setMaterialNum(new BigDecimal("0.500"));
+        when(inhouseMapper.selectById(70001L)).thenReturn(source);
+        when(productInfoMapper.selectById(60010L)).thenReturn(finished);
+        when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
+        when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(invocation -> {
+            ProductProduction row = invocation.getArgument(0);
+            row.setId(80001L);
+            return 1;
+        });
+        VegPackBo bo = sampleVegBo();
+        bo.setProductWeight(new BigDecimal("0.505"));
+        assertThat(service.submitVegPack(bo)).isEqualTo(80001L);
+
+        var captured = ArgumentCaptor.forClass(ProductProduction.class);
+        verify(productionMapper).insert(captured.capture());
+        assertThat(captured.getValue().getMaterialId()).isEqualTo(60002L);
+        assertThat(captured.getValue().getProductWeight()).isEqualByComparingTo("0.505");
+        assertThat(captured.getValue().getPlotId()).isEqualTo(50001L);
+    }
+
+    @Test
     @DisplayName("submitVegPack: 无论实称重量 / material_num 为何，门店需求恒恰好扣 1 份")
     void testVegPack_DeductExactlyOneCopy_RegardlessOfWeightOrMaterialNum() {
         when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
