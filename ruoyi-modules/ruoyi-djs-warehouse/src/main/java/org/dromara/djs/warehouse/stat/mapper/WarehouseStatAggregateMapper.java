@@ -272,9 +272,23 @@ public interface WarehouseStatAggregateMapper {
     //  作物日表（row17）源聚合 —— 按 crop_id 一次性 GROUP，service 端组装
     // ============================================================
 
+    // 已绑定原料的仓库来源可以拆分同一茬。仅从业务日所在的最近一茬取显式绑定；
+    // 后续换茬时旧绑定不会抢占该地块的生产流水。
+    String EXPLICIT_CROP_SOURCE = """
+        SELECT s.id FROM t_warehouse_planting_record s
+        WHERE s.tenant_id = #{tenantId} AND s.del_flag = '0'
+          AND s.plot_id = sf.plot_id AND s.product_id = sf.product_id
+          AND s.plant_date = (
+              SELECT MAX(season.plant_date) FROM t_warehouse_planting_record season
+              WHERE season.tenant_id = #{tenantId} AND season.del_flag = '0'
+                AND season.plot_id = sf.plot_id AND season.plant_date <= #{statDate}
+          )
+        ORDER BY s.id DESC LIMIT 1
+        """;
+
     /**
      * 当日有任意处理记录的作物 ID 列表（不区分地块，只按作物，A#9）。
-     * 取并集：毛菜处理（handle_record）/ 月台接收（veg_receive 自产）/ 饲喂台账（feed_log，仅有饲喂的作物也落盘）。
+     * 取毛菜处理、月台接收、饲喂台账和显式绑定来源的生产领用/退回的作物并集。
      *
      * <p>handle_record 支带 {@code record_weight > 0}：0 kg 收口记录（V6 r28/r29/r40/r41 允许提交）
      * 只表示「这块地称重/处理到此为止」，不代表当天真有产出。不过滤会让该作物在 t_warehouse_cropp_record
@@ -282,11 +296,10 @@ public interface WarehouseStatAggregateMapper {
      * 都已按此口径过滤，这里补齐。</p>
      */
     @Select("""
-        <script>
         SELECT DISTINCT crop_id FROM (
           SELECT crop_id FROM t_warehouse_handle_record
           WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(handle_time) = #{statDate} AND crop_id IS NOT NULL
-            AND record_weight &gt; 0
+            AND record_weight > 0
           UNION
           SELECT crop_id FROM t_warehouse_veg_receive
           WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(receive_time) = #{statDate}
@@ -294,8 +307,14 @@ public interface WarehouseStatAggregateMapper {
           UNION
           SELECT crop_id FROM t_warehouse_feed_log
           WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(feed_date) = #{statDate} AND crop_id IS NOT NULL
+          UNION
+          SELECT pr.crop_id FROM t_warehouse_stock_flow sf
+          JOIN t_warehouse_planting_record pr ON pr.id = (
+        """ + EXPLICIT_CROP_SOURCE + """
+          )
+          WHERE sf.del_flag = '0' AND sf.tenant_id = #{tenantId} AND DATE(sf.flow_date) = #{statDate}
+            AND sf.flow_type IN ('prod_pick_out', 'prod_return_in') AND sf.change_quantity <> 0
         ) t
-        </script>
         """)
     List<Long> selectActiveCropIds(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
@@ -345,8 +364,7 @@ public interface WarehouseStatAggregateMapper {
     /**
      * 作物维度生产领用 / 退回（stock_flow 只有 plot_id 无 crop_id；经 t_warehouse_planting_record
      * 的 plot_id→crop_id 桥接到作物，crop_id 直接对 t_plant_crop_info.id）。返 Map(cropId, pickWeight, returnWeight)。
-     * 一地块可能多条种植记录（轮作）→ 取 statDate 当日有效（plant_date<=statDate 且 harvest_date>=statDate，
-     * 日期可空放宽）的最近一条，避免行膨胀重复计。
+     * 同一茬的显式原料绑定优先；无显式绑定时沿用当日有效的种植记录规则。
      */
     @Select("""
         SELECT pr.crop_id AS cropId,
@@ -354,11 +372,14 @@ public interface WarehouseStatAggregateMapper {
                COALESCE(SUM(CASE WHEN sf.flow_type = 'prod_return_in' THEN sf.change_quantity ELSE 0 END), 0) AS returnWeight
         FROM t_warehouse_stock_flow sf
         JOIN t_warehouse_planting_record pr ON pr.plot_id = sf.plot_id AND pr.del_flag = '0' AND pr.tenant_id = #{tenantId}
-          AND pr.id = (SELECT p2.id FROM t_warehouse_planting_record p2
+          AND pr.id = COALESCE((
+        """ + EXPLICIT_CROP_SOURCE + """
+          ), (SELECT p2.id FROM t_warehouse_planting_record p2
                         WHERE p2.plot_id = sf.plot_id AND p2.del_flag = '0' AND p2.tenant_id = #{tenantId}
+                          AND p2.product_id IS NULL
                           AND (p2.plant_date IS NULL OR p2.plant_date <= #{statDate})
                           AND (p2.harvest_date IS NULL OR p2.harvest_date >= #{statDate})
-                        ORDER BY p2.plant_date DESC, p2.id DESC LIMIT 1)
+                        ORDER BY p2.plant_date DESC, p2.id DESC LIMIT 1))
         WHERE sf.del_flag = '0' AND sf.tenant_id = #{tenantId}
           AND DATE(sf.flow_date) = #{statDate}
           AND sf.flow_type IN ('prod_pick_out', 'prod_return_in')
@@ -387,20 +408,23 @@ public interface WarehouseStatAggregateMapper {
                COALESCE(SUM(manualLoss), 0) AS manualLoss
         FROM (
           SELECT pr.crop_id AS cropId,
-                 lf.loss_weight AS vegHandleLoss,
+                 sf.loss_weight AS vegHandleLoss,
                  0 AS productionLoss,
                  0 AS manualLoss
-          FROM t_warehouse_loss_flow lf
-          JOIN t_warehouse_planting_record pr ON pr.plot_id = lf.plot_id AND pr.del_flag = '0' AND pr.tenant_id = #{tenantId}
-            AND pr.id = (SELECT p2.id FROM t_warehouse_planting_record p2
-                          WHERE p2.plot_id = lf.plot_id AND p2.del_flag = '0' AND p2.tenant_id = #{tenantId}
+          FROM t_warehouse_loss_flow sf
+          JOIN t_warehouse_planting_record pr ON pr.plot_id = sf.plot_id AND pr.del_flag = '0' AND pr.tenant_id = #{tenantId}
+            AND pr.id = COALESCE((
+        """ + EXPLICIT_CROP_SOURCE + """
+            ), (SELECT p2.id FROM t_warehouse_planting_record p2
+                          WHERE p2.plot_id = sf.plot_id AND p2.del_flag = '0' AND p2.tenant_id = #{tenantId}
+                            AND p2.product_id IS NULL
                             AND (p2.plant_date IS NULL OR p2.plant_date <= #{statDate})
                             AND (p2.harvest_date IS NULL OR p2.harvest_date >= #{statDate})
-                          ORDER BY p2.plant_date DESC, p2.id DESC LIMIT 1)
-          WHERE lf.del_flag = '0' AND lf.tenant_id = #{tenantId}
-            AND DATE(lf.loss_date) = #{statDate}
-            AND lf.loss_type = 'veg_handle_loss'
-            AND lf.plot_id IS NOT NULL
+                          ORDER BY p2.plant_date DESC, p2.id DESC LIMIT 1))
+          WHERE sf.del_flag = '0' AND sf.tenant_id = #{tenantId}
+            AND DATE(sf.loss_date) = #{statDate}
+            AND sf.loss_type = 'veg_handle_loss'
+            AND sf.plot_id IS NOT NULL
           UNION ALL
           SELECT c.id AS cropId,
                  0 AS vegHandleLoss,

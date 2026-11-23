@@ -7,6 +7,8 @@ import org.dromara.djs.warehouse.veg.domain.VegetableHandle;
 import org.dromara.djs.warehouse.veg.domain.vo.VegCropVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegetableHandleVo;
 
+import java.math.BigDecimal;
+import java.sql.Date;
 import java.util.List;
 
 /**
@@ -31,6 +33,21 @@ public interface VegetableHandleMapper extends BaseMapperPlus<VegetableHandle, V
     @Select("SELECT * FROM t_warehouse_vegetable_handle "
         + " WHERE planting_record_id = #{plantingRecordId} AND del_flag = '0' LIMIT 1")
     VegetableHandle selectByPlantingRecordId(@Param("plantingRecordId") Long plantingRecordId);
+
+    /** 同一茬拆分原料来源时，旧来源的已摘量只并入种植端累计。 */
+    @Select("""
+        SELECT COALESCE(SUM(h.picked_weight), 0)
+        FROM t_warehouse_planting_record previous
+        JOIN t_warehouse_vegetable_handle h ON h.planting_record_id = previous.id
+          AND h.tenant_id = previous.tenant_id AND h.del_flag = '0'
+        WHERE previous.tenant_id = #{tenantId} AND previous.del_flag = '0'
+          AND previous.plot_id = #{plotId} AND previous.plant_date = #{plantDate}
+          AND previous.id <> #{plantingRecordId} AND previous.crop_id <> #{cropId}
+          AND previous.product_id IS NOT NULL AND previous.handle_status = 'done'
+        """)
+    BigDecimal sumPriorSourcePicked(@Param("tenantId") String tenantId, @Param("plotId") Long plotId,
+                                    @Param("plantDate") Date plantDate,
+                                    @Param("plantingRecordId") Long plantingRecordId, @Param("cropId") Long cropId);
 
     /**
      * mp 毛菜处理菜品列表：按 crop_id 聚合 4 个重量（采摘 / 饲喂 / 处理后 / 损耗）。

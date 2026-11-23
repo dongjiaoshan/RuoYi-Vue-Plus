@@ -1009,7 +1009,12 @@ public class VegetableHandleServiceImpl
         baseMapper.updateById(delta);
 
         // Step 4.1：回写种植 actual_yield（仓库称重 = 实际采摘产量），让种植「采摘详情·已摘」反映真实称重
-        syncActualYieldToPlant(planting.getPlotId(), planting.getCropId(), picked);
+        BigDecimal seasonPicked = picked;
+        if (planting.getProductId() != null) {
+            seasonPicked = picked.add(baseMapper.sumPriorSourcePicked(planting.getTenantId(), planting.getPlotId(),
+                planting.getPlantDate(), planting.getId(), planting.getCropId()));
+        }
+        syncActualYieldToPlant(planting.getPlotId(), planting.getCropId(), seasonPicked);
 
         // Step 5：同步 planting_record.handle_status pending → processing
         if (STATUS_PENDING.equals(planting.getHandleStatus())) {
@@ -1047,7 +1052,7 @@ public class VegetableHandleServiceImpl
         Long userId = bo.getProcessUserId();
 
         // Step 1：校验 planting_record 存在 + 未完成
-        PlantingRecord planting = plantingRecordMapper.selectById(bo.getPlantingRecordId());
+        PlantingRecord planting = plantingRecordMapper.selectForHarvestUpdate(bo.getPlantingRecordId());
         if (planting == null) {
             throw new ServiceException("种植记录不存在：" + bo.getPlantingRecordId());
         }
