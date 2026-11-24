@@ -121,6 +121,7 @@ class TracePublicServiceImplTest {
     @Mock private PigMapper pigMapper;
     @Mock private PigGrowthMapper pigGrowthMapper;
     @Mock private PigMarketingMapper pigMarketingMapper;
+    @Mock private org.dromara.djs.warehouse.cross.mapper.PigReceptionMapper pigReceptionMapper;
     @Mock private MedRecordMapper medRecordMapper;
     @Mock private MedicineMapper medicineMapper;
     @Mock private ISowDetailService sowDetailService;
@@ -189,7 +190,7 @@ class TracePublicServiceImplTest {
         service = spy(new TracePublicServiceImpl(
             traceCodeMapper, traceEventMapper, productInfoMapper, storeMapper,
             traceFarmNameMapper, traceUserNameMapper, tracePageConfigMapper, ossService, dictService,
-            pigMapper, pigGrowthMapper, pigMarketingMapper, medRecordMapper, medicineMapper, sowDetailService,
+            pigMapper, pigGrowthMapper, pigMarketingMapper, pigReceptionMapper, medRecordMapper, medicineMapper, sowDetailService,
             plotInfoMapper, plotZoneMapper, farmRecordsMapper, cropOrganicMapper, plotOrganicMapper,
             plantDetailsMapper, cropInfoMapper,
             plantingRecordMapper, productProductionMapper, vegDisplayNameMapper, stockFlowMapper));
@@ -327,9 +328,17 @@ class TracePublicServiceImplTest {
         pedigree.setSireEarNo("S250001");
         pedigree.setSireBreed("杜洛克");
         pedigree.setSireAgeDays(600);
+        pedigree.setSirePigId(PIG_ID + 1);
+        Pig sire = new Pig();
+        sire.setBirthDate(LocalDate.of(2024, 10, 1));
+        when(pigMapper.selectById(PIG_ID + 1)).thenReturn(sire);
         pedigree.setDamEarNo("D250002");
         pedigree.setDamBreed("长白");
         pedigree.setDamAgeDays(720);
+        pedigree.setDamPigId(PIG_ID + 2);
+        Pig dam = new Pig();
+        dam.setBirthDate(LocalDate.of(2024, 6, 1));
+        when(pigMapper.selectById(PIG_ID + 2)).thenReturn(dam);
         pedigree.setDamParity(4);
         when(sowDetailService.queryPedigree(PIG_ID)).thenReturn(pedigree);
 
@@ -412,6 +421,63 @@ class TracePublicServiceImplTest {
             assertThat(vo.getTimeline().get(i).getTraceTime())
                 .isBeforeOrEqualTo(vo.getTimeline().get(i - 1).getTraceTime());
         }
+    }
+
+    @Test
+    @DisplayName("生产半扇串码样本：只保留首次屠宰节点，运输到店时间和重量保持各自原值")
+    void porkTimeline_collapsesHistoricalHalfSingeWithoutChangingDelivery() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(PORK_CODE);
+        code.setCodeType("pork");
+        code.setPigEarNo(EAR_NO);
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        TraceEvent first = event("singe", LocalDateTime.of(2026, 11, 11, 2, 48, 30), null);
+        TraceEvent second = event("singe", LocalDateTime.of(2026, 11, 11, 2, 49, 13), null);
+        second.setEventData("{\"weight\":\"57.220\"}");
+        TraceEvent ship = event("ship", LocalDateTime.of(2026, 11, 11, 4, 2, 12), null);
+        ship.setEventData("{\"weight\":\"49.340\"}");
+        TraceEvent arrival = event("arrival", LocalDateTime.of(2026, 11, 11, 5, 34, 11), null);
+        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of(arrival, ship, second, first,
+            event("marketing", LocalDateTime.of(2026, 11, 8, 10, 17, 16), null)));
+
+        PublicTraceVo vo;
+        // JsonUtils 首次初始化需要 ObjectMapper；仅在本测试作用域提供，不启动 Spring 或覆盖业务查询。
+        try (MockedStatic<cn.hutool.extra.spring.SpringUtil> spring = Mockito.mockStatic(cn.hutool.extra.spring.SpringUtil.class)) {
+            spring.when(() -> cn.hutool.extra.spring.SpringUtil.getBean(com.fasterxml.jackson.databind.ObjectMapper.class))
+                .thenReturn(new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules());
+            vo = service.getByProduceCode(PORK_CODE);
+        }
+
+        assertThat(vo.getTimeline()).extracting(PublicTraceVo.TimelineNode::getTraceContent)
+            .containsExactly("arrival", "ship", "singe", "marketing");
+        assertThat(vo.getTimeline().get(2).getTraceTime()).isEqualTo(first.getTraceTime());
+        assertThat(vo.getTimeline().get(2).getWeight()).isNull();
+        assertThat(vo.getTimeline().get(1).getTraceTime()).isEqualTo(ship.getTraceTime());
+        assertThat(vo.getTimeline().get(1).getWeight()).isEqualTo("49.340");
+        assertThat(vo.getTimeline().get(0).getTraceTime()).isEqualTo(arrival.getTraceTime());
+        // 数据库事件对象不被修改，历史事实仍能用于审计。
+        assertThat(second.getEventData()).contains("57.220");
+        org.mockito.Mockito.verify(traceEventMapper, org.mockito.Mockito.never()).delete(any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("无时间旧屠宰节点不压过真实时间，运输分批节点不被去重")
+    void porkTimeline_nullSingeAndMultipleShipments() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(PORK_CODE);
+        code.setCodeType("pork");
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        TraceEvent real = event("singe", LocalDateTime.of(2026, 11, 11, 2, 48, 30), null);
+        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of(
+            event("singe", null, null), real,
+            event("ship", LocalDateTime.of(2026, 11, 11, 4, 2), null),
+            event("ship", LocalDateTime.of(2026, 11, 11, 4, 3), null)));
+
+        PublicTraceVo vo = service.getByProduceCode(PORK_CODE);
+
+        assertThat(vo.getTimeline()).extracting(PublicTraceVo.TimelineNode::getTraceContent)
+            .containsExactly("ship", "ship", "singe");
+        assertThat(vo.getTimeline().get(2).getTraceTime()).isEqualTo(real.getTraceTime());
     }
 
     // ============================ veg 链路 ============================
@@ -1112,6 +1178,88 @@ class TracePublicServiceImplTest {
         assertThat(p.getWeight()).isEqualTo("500g/份");   // 规格兜底，未被现场码逻辑改写
         // 现场码分支未触发 → 不按名反查产品
         Mockito.verify(productInfoMapper, Mockito.never()).selectOne(any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("猪肉屠宰日龄按首次接收日减真实生日，不取出栏日或今天")
+    void porkAgeUsesReceptionDay() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(PORK_CODE);
+        code.setCodeType("pork");
+        code.setPigEarNo(EAR_NO);
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        LocalDateTime marketDate = LocalDateTime.of(2026, 11, 4, 9, 0);
+        when(traceEventMapper.selectList(any(Wrapper.class)))
+            .thenReturn(List.of(event("marketing", marketDate, null)));
+        Pig pig = new Pig();
+        pig.setId(PIG_ID);
+        pig.setBirthDate(LocalDate.of(2025, 11, 1));
+        when(pigMapper.selectOne(any(Wrapper.class))).thenReturn(pig);
+        java.time.ZoneId zone = java.time.ZoneId.of("Asia/Shanghai");
+        LocalDateTime receiveDate = LocalDateTime.of(2026, 11, 6, 0, 10);
+        java.util.Date marketing = java.util.Date.from(marketDate.atZone(zone).toInstant());
+        var reception = new org.dromara.djs.warehouse.cross.domain.vo.PigReceptionAgeVo();
+        reception.setReceiveTime(java.util.Date.from(receiveDate.atZone(zone).toInstant()));
+        reception.setBirthDate(LocalDate.of(2025, 11, 1));
+        reception.setAgeDays(370);
+        when(pigReceptionMapper.selectReceptionAge(EAR_NO, marketing)).thenReturn(reception);
+
+        PublicTraceVo first = service.getByProduceCode(PORK_CODE);
+        assertThat(first.getPig().getAgeDays()).isEqualTo(370);
+        assertThat(first.getPig().getReceiveDate()).isEqualTo(receiveDate);
+        assertThat(first.getPig().getBirthDate()).isEqualTo(LocalDate.of(2025, 11, 1));
+        assertThat(first.getPig().getMarketDate()).isEqualTo(marketDate);
+
+        when(pigReceptionMapper.selectReceptionAge(EAR_NO, marketing)).thenReturn(null);
+        PublicTraceVo noReception = service.getByProduceCode(PORK_CODE);
+        assertThat(noReception.getPig().getAgeDays()).isNull();
+        assertThat(noReception.getPig().getReceiveDate()).isNull();
+
+        reception.setBirthDate(null);
+        reception.setAgeDays(null);
+        when(pigReceptionMapper.selectReceptionAge(EAR_NO, marketing)).thenReturn(reception);
+        PublicTraceVo noBirthday = service.getByProduceCode(PORK_CODE);
+        assertThat(noBirthday.getPig().getAgeDays()).isNull();
+        assertThat(noBirthday.getPig().getBirthDate()).isNull();
+        assertThat(noBirthday.getPig().getReceiveDate()).isEqualTo(receiveDate);
+    }
+
+    @Test
+    @DisplayName("公开追溯父母生日未知时不把引种时长当作日龄")
+    void pedigreeDoesNotUseIntroductionDateAsBirthday() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(PORK_CODE);
+        code.setCodeType("pork");
+        code.setPigEarNo(EAR_NO);
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        Pig pig = new Pig();
+        pig.setId(PIG_ID);
+        when(pigMapper.selectOne(any(Wrapper.class))).thenReturn(pig);
+        PedigreeVo pedigree = new PedigreeVo();
+        pedigree.setSirePigId(PIG_ID + 1);
+        pedigree.setSireEarNo("SIRE-INTRO-ONLY");
+        pedigree.setSireAgeDays(309);
+        pedigree.setDamPigId(PIG_ID + 2);
+        pedigree.setDamEarNo("DAM-INTRO-ONLY");
+        pedigree.setDamAgeDays(309);
+        pedigree.setDamParity(3);
+        when(sowDetailService.queryPedigree(PIG_ID)).thenReturn(pedigree);
+        Pig sire = new Pig();
+        sire.setIntroduceDate(LocalDate.of(2026, 1, 1));
+        Pig dam = new Pig();
+        dam.setIntroduceDate(LocalDate.of(2026, 1, 1));
+        when(pigMapper.selectById(PIG_ID + 1)).thenReturn(sire);
+        when(pigMapper.selectById(PIG_ID + 2)).thenReturn(dam);
+
+        PublicTraceVo.PedigreeBlock unknown = service.getByProduceCode(PORK_CODE).getPedigree();
+        assertThat(unknown.getSireAgeDays()).isNull();
+        assertThat(unknown.getDamAgeDays()).isNull();
+        assertThat(unknown.getDamParity()).isEqualTo(3);
+
+        dam.setBirthDate(LocalDate.of(2024, 6, 1));
+        PublicTraceVo.PedigreeBlock partial = service.getByProduceCode(PORK_CODE).getPedigree();
+        assertThat(partial.getSireAgeDays()).isNull();
+        assertThat(partial.getDamAgeDays()).isEqualTo(309);
     }
 
     // ============================ 不存在 ============================

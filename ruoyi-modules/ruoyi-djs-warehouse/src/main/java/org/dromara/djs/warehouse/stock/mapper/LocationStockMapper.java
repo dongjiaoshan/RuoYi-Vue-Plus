@@ -610,6 +610,22 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                                   @Param("userId") Long userId);
 
     /**
+     * 分割篮按已发现的主键累加。调用先持整猪 bar 锁，同猪两半只串行；发现篮子使用非锁定读，
+     * 避免按产品扫描更新/锁读时锁住其他耳号。主键以外的条件保留来源形状守卫，变更时返回0让整笔回滚。
+     * tenant_id 仍由租户拦截器注入。
+     */
+    @Update("UPDATE t_warehouse_location_stock "
+        + "SET product_stock = product_stock + #{addQty}, update_by = #{userId}, update_time = NOW() "
+        + "WHERE id = #{id} AND location_id = #{locationId} AND product_id = #{productId} "
+        + "AND ear_no = #{earNo} AND white_bar_no IS NULL AND is_end = 0 AND del_flag = '0'")
+    int addCutBasketById(@Param("id") Long id,
+                         @Param("locationId") Long locationId,
+                         @Param("productId") Long productId,
+                         @Param("earNo") String earNo,
+                         @Param("addQty") BigDecimal addQty,
+                         @Param("userId") Long userId);
+
+    /**
      * 按 {@code (location_id, product_id)} 且 {@code plot_id / ear_no / white_bar_no 全 NULL} 原子累加
      * 门店退货入库到「退货专属篮」（row31：门店退回猪肉/果蔬成品无地块/耳号来源，客户拍板专设一个不带
      * 地块编号/耳号的退货篮承载；再领用/发货不带追溯——客户确认符合）。

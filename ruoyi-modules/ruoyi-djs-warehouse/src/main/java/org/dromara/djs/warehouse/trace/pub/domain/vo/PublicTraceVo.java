@@ -184,10 +184,12 @@ public class PublicTraceVo implements Serializable {
         private String breed;
         /** 出生日期。 */
         private LocalDate birthDate;
-        /** 日龄（出栏日 − 出生日，天；任一缺 → null）。 */
+        /** 屠宰日龄（接收日 − 出生日，天；任一缺 → null）。 */
         private Integer ageDays;
         /** 出栏日期（Pig 无列，用 marketing 事件时间兜底，可能为 null）。 */
         private LocalDateTime marketDate;
+        /** 接收日期（本次出栏对应首笔燎毛入库时间；未接收为 null）。 */
+        private LocalDateTime receiveDate;
         /** 出生重（kg，源 {@code t_farm_pig_info.birth_weight}；无 → null）。 */
         private String birthWeight;
         /** 出栏重（kg，源 {@code t_farm_pig_marketing.out_weight} 最近一条；无 → null）。 */

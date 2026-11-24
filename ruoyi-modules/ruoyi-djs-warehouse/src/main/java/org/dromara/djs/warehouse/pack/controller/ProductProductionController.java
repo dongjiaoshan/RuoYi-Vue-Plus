@@ -94,8 +94,8 @@ public class ProductProductionController extends BaseController {
     @SaCheckPermission("djs:warehouse:production:export")
     @PostMapping("/export")
     public void export(ProductProductionQuery query, HttpServletResponse response) {
-        List<ProductProductionVo> list = service.queryList(query);
-        ExcelUtil.exportExcel(list, "发货产品生产记录", ProductProductionVo.class, response);
+        List<ProductProductionGroupVo> list = service.queryGroupList(query);
+        ExcelUtil.exportExcel(list, "产品生产", ProductProductionGroupVo.class, response);
     }
 
     /**

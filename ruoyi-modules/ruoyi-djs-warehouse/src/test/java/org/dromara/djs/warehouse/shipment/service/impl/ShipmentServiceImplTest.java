@@ -299,6 +299,8 @@ class ShipmentServiceImplTest {
         demand.setShippedCount(new BigDecimal("3"));  // 仅备 3 / 需求 10 → 未满足
         when(demandMapper.selectById(demandId)).thenReturn(demand);
 
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(newProduction(11L, null, "P-SHORT", new BigDecimal("3"))));
+
         ShipmentCheckBo bo = new ShipmentCheckBo();
         bo.setDemandId(demandId);
         bo.setProductionIds(List.of(11L));
@@ -365,6 +367,13 @@ class ShipmentServiceImplTest {
         when(demandMapper.selectById(203L)).thenReturn(done);
         when(demandMapper.selectById(204L)).thenReturn(other);
 
+        List<ProductProduction> alreadySent = java.util.stream.LongStream.range(1, 6).mapToObj(i -> {
+            ProductProduction row = newProduction(900L + i, 202L, "ALREADY-SENT-" + i, BigDecimal.ONE);
+            row.setStoreId(7L); row.setIsDeliveryCheck(1);
+            return row;
+        }).toList();
+        when(productProductionMapper.selectList(any())).thenReturn(alreadySent);
+
         int closed = service.forceCloseUnmetDemands(7L, List.of(201L, 202L, 203L, 204L));
 
         assertThat(closed).isEqualTo(1);
@@ -379,8 +388,8 @@ class ShipmentServiceImplTest {
     void confirmCheck_demandFullySatisfied_proceeds() {
         Long demandId = 100L;
         DemandManage demand = newDemand(demandId, 9L, DemandStatus.CONFIRMED);
-        demand.setDemandQuantity(new BigDecimal("3"));
-        demand.setShippedCount(new BigDecimal("3"));  // 已备齐
+        demand.setDemandQuantity(new BigDecimal("1"));
+        demand.setShippedCount(new BigDecimal("1"));  // 已备齐
         when(demandMapper.selectById(demandId)).thenReturn(demand);
 
         ProductProduction p = newProduction(11L, demandId, "PROD-001", new BigDecimal("3.0"));
@@ -672,6 +681,27 @@ class ShipmentServiceImplTest {
         assertThat(sql).doesNotContain("OR DATE(produce_date)");
         assertThat(sql).contains("DATE(produce_date) >= ?");
         assertThat(sql).contains("DATE(produce_date) <= ?");
+    }
+
+    @Test
+    void availableProductions_excludesMailDestinationAndDeliveryType() {
+        DemandManage demand = newDemand(102L, 9L, DemandStatus.CONFIRMED);
+        demand.setProductId(501L);
+        demand.setDemandQuantity(BigDecimal.ONE);
+        demand.setShippedCount(BigDecimal.ZERO);
+        when(demandMapper.selectById(102L)).thenReturn(demand);
+        when(demandMapper.selectInFlightStoreProductDemands(eq(501L), eq(9L), any()))
+            .thenReturn(List.of(demand));
+        when(productProductionMapper.selectList(any())).thenReturn(List.of());
+
+        service.listAvailableProductions(102L);
+
+        ArgumentCaptor<LambdaQueryWrapper<ProductProduction>> captor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(productProductionMapper).selectList(captor.capture());
+        var query = captor.getValue();
+        assertThat(query.getTargetSql()).contains("deliver_dest IS NULL OR deliver_dest NOT IN (?,?,?)")
+            .contains("deliver_type IS NULL OR deliver_type <> ?");
+        assertThat(query.getParamNameValuePairs().values()).contains("mail", "gift", "warehouse_out", 2);
     }
 
     @Test
@@ -1079,6 +1109,58 @@ class ShipmentServiceImplTest {
         ShipStoreVo vo = service.queryStoreSummary(9L);
 
         assertThat(vo.getSatisfyRate()).isEqualByComparingTo("50.00");
+    }
+
+    @Test
+    void preparedCountUsesUniqueWhiteBarAcrossDemandDatesAndNeverFiftyHeads() {
+        DemandManage today = newDemand(700L, 9L, DemandStatus.CONFIRMED);
+        today.setProductId(501L); today.setDemandQuantity(BigDecimal.ONE); today.setShippedCount(BigDecimal.ZERO);
+        DemandManage tomorrow = newDemand(701L, 9L, DemandStatus.CONFIRMED);
+        tomorrow.setProductId(501L); tomorrow.setDemandQuantity(BigDecimal.ONE);
+        when(demandMapper.selectList(any())).thenReturn(List.of(today, tomorrow));
+        ProductProduction p = newProduction(81L, null, "RIGHT-HALF", new BigDecimal("50"));
+        p.setProductId(501L); p.setStoreId(9L); p.setDemandDeductQty(BigDecimal.ONE);
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(p));
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(newProduct(501L, "white_bar", "kg", null)));
+        var result = service.listStorePendingDemands(9L);
+        assertThat(result.get(0).getPreparedCount()).isEqualByComparingTo("1");
+        assertThat(result.get(1).getPreparedCount()).isZero();
+        assertThat(result.get(1).getAvailableProductions()).isEmpty();
+        assertThat(result.get(0).getShippedCount()).isZero();
+    }
+
+    @Test
+    void actualDeliveredQuantityExcludesUnselectedDifferentStoreAndDifferentDemand() {
+        DemandManage d = newDemand(700L, 9L, DemandStatus.PARTIAL_SHIPPED);
+        d.setProductId(501L); d.setDemandQuantity(BigDecimal.ONE);
+        when(demandMapper.selectById(700L)).thenReturn(d);
+        ProductProduction sent = newProduction(81L, 700L, "SENT", new BigDecimal("50"));
+        sent.setProductId(501L); sent.setStoreId(9L); sent.setIsDeliveryCheck(1);
+        ProductProduction unselected = newProduction(82L, null, "READY", new BigDecimal("50"));
+        unselected.setProductId(501L); unselected.setStoreId(9L);
+        ProductProduction otherDate = newProduction(83L, 701L, "OTHER-DATE", new BigDecimal("50"));
+        otherDate.setProductId(501L); otherDate.setStoreId(9L); otherDate.setIsDeliveryCheck(1);
+        ProductProduction otherStore = newProduction(84L, 700L, "OTHER-STORE", new BigDecimal("50"));
+        otherStore.setProductId(501L); otherStore.setStoreId(10L); otherStore.setIsDeliveryCheck(1);
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(sent, unselected, otherDate, otherStore));
+        assertThat(service.deliveredQuantity(700L)).isEqualByComparingTo("1");
+    }
+
+    @Test
+    void realPreparedWhiteBarCanShipWhenDemandCreatedAfterProductionWithoutRewritingPreparedLedger() {
+        DemandManage d = newDemand(700L, 9L, DemandStatus.CONFIRMED);
+        d.setProductId(501L); d.setDemandQuantity(BigDecimal.ONE); d.setShippedCount(BigDecimal.ZERO);
+        when(demandMapper.selectById(700L)).thenReturn(d);
+        ProductProduction p = newProduction(81L, null, "PREMADE", new BigDecimal("50"));
+        p.setProductId(501L); p.setStoreId(9L);
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(p));
+        when(productProductionMapper.markDeliveryChecked(any(), any(), any())).thenReturn(1);
+        ShipmentCheckBo bo = new ShipmentCheckBo(); bo.setDemandId(700L); bo.setProductionIds(List.of(81L));
+        bo.setDeliverType(1); bo.setShipUnit("头"); bo.setTotalQuantity(new BigDecimal("50"));
+        service.confirmCheck(bo);
+        verify(demandMapper, never()).incrementShipped(any(), any(), any());
+        verify(productProductionMapper).markDeliveryChecked(eq(List.of(81L)), any(), eq(700L));
+        assertThat(d.getShippedCount()).isZero();
     }
 
     // ---------- helpers ----------

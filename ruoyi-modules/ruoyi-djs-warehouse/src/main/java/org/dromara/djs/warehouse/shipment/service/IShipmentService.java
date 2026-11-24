@@ -9,6 +9,7 @@ import org.dromara.djs.warehouse.shipment.domain.vo.ShipDemandVo;
 import org.dromara.djs.warehouse.shipment.domain.vo.ShipStoreVo;
 import org.dromara.djs.warehouse.shipment.domain.vo.ShipmentVo;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 /**
@@ -125,4 +126,7 @@ public interface IShipmentService {
      * @return 该门店待发需求单列表（demand 维度，含可发产品明细）
      */
     List<ShipDemandVo> listStorePendingDemands(Long storeId);
+
+    /** 只统计已清点且实际绑定到该需求的发货量，单位与需求一致。 */
+    BigDecimal deliveredQuantity(Long demandId);
 }

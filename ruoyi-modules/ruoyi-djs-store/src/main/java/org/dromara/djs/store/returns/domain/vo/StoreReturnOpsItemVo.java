@@ -114,6 +114,14 @@ public class StoreReturnOpsItemVo implements Serializable {
     /** 处置方式：0=产品入库（默认） / 1=产品丢弃。 */
     private Integer isDiscard;
 
+    /** 仓库单独记录的丢弃量（原材料单位），null代表历史处置模式。 */
+    private BigDecimal warehouseDiscardQty;
+    /** 仓库处理备注，与原门店备注分开保存。 */
+    private String warehouseRemark;
+    /** 1=仓库补录，原门店退回量未提供，页面显示破折号。 */
+    private Integer warehouseAdded;
+
+
     /** 退回状态 djs_store_return_status：pending=待处理 / received=已处理。 */
     private String returnStatus;
 

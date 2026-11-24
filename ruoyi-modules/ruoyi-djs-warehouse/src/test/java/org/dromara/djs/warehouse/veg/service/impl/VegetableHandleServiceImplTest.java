@@ -938,6 +938,44 @@ class VegetableHandleServiceImplTest {
     }
 
     @Test
+    @DisplayName("换原料后的首次称重单独入库，种植累计承接旧来源实重")
+    void testHarvest_CarriesPriorSourceOnlyIntoPlantYield() {
+        var planting = samplePlanting("pending");
+        var sowDate = java.sql.Date.valueOf("2026-08-29");
+        planting.setPlantDate(sowDate);
+        planting.setTenantId("1001");
+        planting.setProductId(PRODUCT_ID);
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(planting);
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(harvestHandle("0.000"));
+        when(handleMapper.sumPriorSourcePicked("1001", 11001L, sowDate, 60001L, 12001L))
+            .thenReturn(new BigDecimal("19.340"));
+        mockCropProduct();
+        mockFreshLocation();
+        when(bizCodeGenerator.generate(eq(BizCodeType.STOCK_FLOW_NO), anyMap())).thenReturn("F20261123IN0001");
+
+        var details = new org.dromara.djs.plant.plan.domain.PlantDetails();
+        details.setId(40001L);
+        details.setHarvestStatus("picking");
+        when(plantDetailsMapper.selectList(any())).thenReturn(List.of(details));
+        var configuration = new org.apache.ibatis.builder.MapperBuilderAssistant(
+            new com.baomidou.mybatisplus.core.MybatisConfiguration(), "test");
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(configuration, details.getClass());
+        when(plantDetailsMapper.update(any(), any())).thenAnswer(invocation -> {
+            com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<?> update = invocation.getArgument(1);
+            assertThat(update.getParamNameValuePairs().values()).contains(new BigDecimal("20.590"));
+            return 1;
+        });
+
+        service.submitHarvest(harvestBo("1.250", 0, List.of(30001L)));
+
+        verify(plantDetailsMapper).update(any(), any());
+        var warehouse = ArgumentCaptor.forClass(VegetableHandle.class);
+        verify(handleMapper).updateById(warehouse.capture());
+        assertThat(warehouse.getValue().getPickedWeight()).isEqualByComparingTo("1.250");
+        assertThat(warehouse.getValue().getStockInWeight()).isEqualByComparingTo("1.250");
+    }
+
+    @Test
     @DisplayName("D-0147 ③ 果蔬入库：秤读数落采摘入库流水；对不上实重 → 拒绝且一行不写")
     void testHarvest_ScaleReadingStoredOnInboundFlow() {
         when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));

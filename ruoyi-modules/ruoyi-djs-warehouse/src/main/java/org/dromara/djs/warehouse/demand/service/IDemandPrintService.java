@@ -5,8 +5,10 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandPrintQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPrintDetailVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPrintSheetVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandPrintSummaryVo;
 
 import java.time.LocalDate;
+import java.util.List;
 
 /**
  * 需求单打印服务（V7-R8）。
@@ -19,7 +21,7 @@ public interface IDemandPrintService {
     /**
      * 订货单列表（需求日期 × 门店）。
      *
-     * @param query     日期区间 + 门店
+     * @param query     单一需求日期 + 门店
      * @param pageQuery 分页
      * @return 分页结果
      */
@@ -33,4 +35,7 @@ public interface IDemandPrintService {
      * @return 抬头 + 明细（该日该店无有效需求时 items 为空、categoryCount=0）
      */
     DemandPrintDetailVo getSheetDetail(LocalDate demandDate, Long storeId);
+
+    /** 所选日期/门店的已确认需求，按产品名称汇总。 */
+    DemandPrintSummaryVo getSummary(LocalDate demandDate, List<Long> storeIds);
 }

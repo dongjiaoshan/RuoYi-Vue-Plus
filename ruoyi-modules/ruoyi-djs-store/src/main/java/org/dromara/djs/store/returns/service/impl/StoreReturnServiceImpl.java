@@ -46,8 +46,12 @@ import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.purchase.service.IWarehousePurchaseInService;
+import org.dromara.djs.store.returns.domain.bo.WarehouseReturnConfirmBo;
+import org.dromara.djs.store.returns.domain.bo.WarehouseReturnUnitBo;
+import org.dromara.djs.store.returns.domain.bo.WarehouseReturnExtraBo;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -1367,6 +1371,10 @@ public class StoreReturnServiceImpl
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int confirm(StoreReturnConfirmBo bo) {
+        return confirmInternal(bo, false);
+    }
+
+    private int confirmInternal(StoreReturnConfirmBo bo, boolean warehouseOperation) {
         StoreReturn existing = baseMapper.selectById(bo.getId());
         if (existing == null) {
             throw new ServiceException("退回记录不存在：" + bo.getId(), 404);
@@ -1376,7 +1384,10 @@ public class StoreReturnServiceImpl
         }
 
         ProductInfo returnProduct = productInfoMapper.selectById(existing.getProductId());
-        assertWithinConfirmLimit(existing, returnProduct, bo);
+        // 仓库分列操作的非KG上限已按原退回数量校验；其他入口继续使用既有折料上限。
+        if (!warehouseOperation || returnProduct == null || isKgUnit(resolveMetricUnit(returnProduct))) {
+            assertWithinConfirmLimit(existing, returnProduct, bo);
+        }
 
         // row24 第 2 点：生产产品没配原材料 → 只能丢弃，不能退回仓库（仓库只存原材料，无从确定入哪个料的库存）
         if (!DISCARD_YES.equals(bo.getIsDiscard()) && !canInbound(returnProduct)) {
@@ -1457,6 +1468,9 @@ public class StoreReturnServiceImpl
             return;
         }
         String metricUnit = resolveMetricUnit(product);
+        if (Integer.valueOf(1).equals(existing.getWarehouseAdded())) {
+            return; // 仓库补录无门店报退基数，不能从占位0倒推出确认上限。
+        }
         if (unlimitedConfirmWeight(existing, product, metricUnit)) {
             return;
         }
@@ -1794,12 +1808,13 @@ public class StoreReturnServiceImpl
         // 直接读字段，光靠注解「确认人」整列是空的。STR-RETURN-OPS-001 的「退回操作人」同理会空。
         fillConfirmUserNames(all);
         fillOperatorNames(all);
-        // 排序：退回日期倒序 → 门店 id 倒序（单位退回 storeId 为 null，用 MIN_VALUE 排到最后，
-        // 不做 null 处理 Comparator.comparing 会直接 NPE）。
+        // 按实际退回时间倒序；同一时刻按完整分组维度排序，分页顺序不依赖数据库返回顺序。
         all.sort(Comparator
-            .comparing(StoreReturnStoreDailyVo::getReturnDate, Comparator.reverseOrder())
-            .thenComparing(v -> v.getStoreId() == null ? Long.MIN_VALUE : v.getStoreId(),
-                Comparator.reverseOrder()));
+            .comparing(StoreReturnStoreDailyVo::getReturnTime, Comparator.nullsLast(Comparator.reverseOrder()))
+            .thenComparing(StoreReturnStoreDailyVo::getReturnDate, Comparator.nullsLast(Comparator.reverseOrder()))
+            .thenComparing(StoreReturnStoreDailyVo::getReturnType, Comparator.nullsLast(Comparator.naturalOrder()))
+            .thenComparing(StoreReturnStoreDailyVo::getStoreId, Comparator.nullsLast(Comparator.reverseOrder()))
+            .thenComparing(StoreReturnStoreDailyVo::getReturnUnit, Comparator.nullsLast(Comparator.naturalOrder())));
         return all;
     }
 
@@ -2029,6 +2044,15 @@ public class StoreReturnServiceImpl
 
     @Override
     public List<StoreReturnOpsItemVo> listOperationItems(StoreReturnQuery query) {
+        return listOperationItems(query, false);
+    }
+
+    @Override
+    public List<StoreReturnOpsItemVo> listWarehouseOperationItems(StoreReturnQuery query) {
+        return listOperationItems(query, true);
+    }
+
+    private List<StoreReturnOpsItemVo> listOperationItems(StoreReturnQuery query, boolean warehouseOperation) {
         StoreReturnQuery q = query == null ? new StoreReturnQuery() : query;
         q.setReturnDirection(DIRECTION_STORE_TO_WAREHOUSE);
         boolean unitType = RETURN_TYPE_UNIT.equals(q.getReturnType());
@@ -2078,6 +2102,9 @@ public class StoreReturnServiceImpl
             vo.setUnlimitedConfirmWeight(unlimitedWeight);
             // 实际称重不依赖固定计量比例；缺原材料仍由canInbound单独阻断，单位新增不走此分支。
             vo.setCanConvert(unlimitedWeight || canConvert(p, metricUnit));
+            vo.setWarehouseDiscardQty(r.getWarehouseDiscardQty());
+            vo.setWarehouseRemark(r.getWarehouseRemark());
+            vo.setWarehouseAdded(r.getWarehouseAdded());
             vo.setReturnQuantity(r.getReturnQuantity());
             vo.setReturnWeight(r.getGoodsWeight());
             vo.setReceivedQty(r.getReceivedQty());
@@ -2089,7 +2116,9 @@ public class StoreReturnServiceImpl
             vo.setOperatorId(r.getOperatorId());
             vo.setConfirmUserId(r.getConfirmUserId());
             vo.setConfirmTime(r.getConfirmTime());
-            LocationChoice choice = resolveConfirmLocationChoice(r, p, productById, enabledLocations);
+            LocationChoice choice = warehouseOperation && !STATUS_RECEIVED.equals(r.getReturnStatus())
+                ? resolveWarehouseLocationChoice(p, productById, enabledLocations)
+                : resolveConfirmLocationChoice(r, p, productById, enabledLocations);
             vo.setDefaultLocationId(choice.defaultLocationId());
             vo.setLocationOptions(choice.options());
             result.add(vo);
@@ -2114,15 +2143,34 @@ public class StoreReturnServiceImpl
 
     @Override
     public List<StoreReturnUnitCandidateVo> listUnitCandidates() {
-        List<Long> ids = resolveReturnListProductIds();
-        if (ids.isEmpty()) {
-            return List.of();
-        }
+        return buildOperationCandidates(resolveReturnListProductIds(), true);
+    }
+
+    @Override
+    public List<StoreReturnUnitCandidateVo> listOperationRawCandidates() {
+        List<Long> ids = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+            .select(ProductInfo::getId).eq(ProductInfo::getProductAttr, 2)
+            .eq(ProductInfo::getProductStatus, 0)).stream().map(ProductInfo::getId).toList();
+        return buildOperationCandidates(ids, false, false, true);
+    }
+
+    @Override
+    public List<StoreReturnUnitCandidateVo> listWarehouseSupplementCandidates() {
+        return buildOperationCandidates(resolveReturnListProductIds(), true, true, true);
+    }
+
+    private List<StoreReturnUnitCandidateVo> buildOperationCandidates(List<Long> ids, boolean fromReturnList) {
+        return buildOperationCandidates(ids, fromReturnList, false, false);
+    }
+
+    private List<StoreReturnUnitCandidateVo> buildOperationCandidates(List<Long> ids, boolean fromReturnList,
+                                                                     boolean warehouseSupplement, boolean warehouseOperation) {
+        if (ids.isEmpty()) return List.of();
         List<ProductInfo> products = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
             .select(ProductInfo::getId, ProductInfo::getProductId, ProductInfo::getProductName,
                 ProductInfo::getProductSpec, ProductInfo::getProductUnit, ProductInfo::getBelongType,
                 ProductInfo::getProductMaterial, ProductInfo::getMaterialNum, ProductInfo::getProductAttr,
-                ProductInfo::getStoreLocationId)
+                ProductInfo::getStoreLocationId, ProductInfo::getProductType)
             .in(ProductInfo::getId, ids).orderByAsc(ProductInfo::getId));
         if (products.isEmpty()) {
             return List.of();
@@ -2139,14 +2187,10 @@ public class StoreReturnServiceImpl
                 .forEach(m -> productById.putIfAbsent(m.getId(), m));
         }
         Map<Long, String> metricUnits = resolveMetricUnits(new ArrayList<>(productById.values()));
-        Set<Long> returnListIds = new HashSet<>(ids);
+        Set<Long> returnListIds = fromReturnList ? new HashSet<>(ids) : returnListAllowedIds();
         Map<Long, LocationPickerVo> enabledLocations = allEnabledLocationMap();
-        // V6 row226 对「退回管理」菜单下的两个入口一视同仁：门店退回那一页剔掉了，单位退回这边也剔。
-        // 剔的理由（猪肉侧没有成品→原材料的自动折叠，列出来分不清退的是哪一个）与从哪个入口进来无关；
-        // 只在门店那页剔，同一个菜单下就会出现两套口径。
-        // ⚠️ 判据下在**产出行的这个循环**上，不下在上面的 id 列表上：行是另一次查询的结果，
-        // 过滤 id 却放过行，等于没过滤（改的时候被单测当场抓到过一次）。
-        Set<Long> excluded = porkMaterialSoldIds(
+        // 仓库补录以显式清单为准；门店端继续剔除按原材料售卖的猪肉生产产品。
+        Set<Long> excluded = warehouseSupplement ? Set.of() : porkMaterialSoldIds(
             products.stream().map(ProductInfo::getId).filter(Objects::nonNull).collect(Collectors.toList()));
         List<StoreReturnUnitCandidateVo> result = new ArrayList<>(products.size());
         for (ProductInfo p : products) {
@@ -2164,6 +2208,7 @@ public class StoreReturnServiceImpl
             StoreReturnUnitCandidateVo vo = new StoreReturnUnitCandidateVo();
             vo.setProductId(p.getId());
             vo.setProductCode(p.getProductId());
+            vo.setProductType(p.getProductType());
             vo.setProductName(p.getProductName());
             vo.setProductSpec(p.getProductSpec());
             vo.setBelongType(p.getBelongType());
@@ -2173,7 +2218,8 @@ public class StoreReturnServiceImpl
             vo.setInReturnList(p.getId() != null && returnListIds.contains(p.getId()));
             vo.setCanInbound(canInbound(p));
             vo.setCanConvert(canConvert(p, metricUnit));
-            LocationChoice choice = resolveLocationChoice(p, productById, enabledLocations);
+            LocationChoice choice = warehouseOperation ? resolveWarehouseLocationChoice(p, productById, enabledLocations)
+                : resolveLocationChoice(p, productById, enabledLocations);
             vo.setDefaultLocationId(choice.defaultLocationId());
             vo.setLocationOptions(choice.options());
             result.add(vo);
@@ -2271,6 +2317,138 @@ public class StoreReturnServiceImpl
         log.info("[STR-RETURN-OPS-001] createUnitReturns unit={} date={} 行数={} → 直接 received（未丢弃行已入库）",
             bo.getReturnUnit(), bo.getReturnDate(), created);
         return created;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int confirmOperation(WarehouseReturnConfirmBo bo) {
+        StoreReturn row = baseMapper.selectOne(new LambdaQueryWrapper<StoreReturn>()
+            .eq(StoreReturn::getId, bo.getId()).last("FOR UPDATE"));
+        if (row == null || !DIRECTION_STORE_TO_WAREHOUSE.equals(row.getReturnDirection()))
+            throw new ServiceException("退回记录不存在或方向无效", 400);
+        if (STATUS_RECEIVED.equals(row.getReturnStatus())) throw new ServiceException("该退回记录已处理", 400);
+        ProductInfo product = productInfoMapper.selectById(row.getProductId());
+        if (product == null) throw new ServiceException("退回产品不存在", 400);
+        validateOperationAmounts(product, bo.getReceivedQty(), bo.getDiscardQty());
+        if (!Integer.valueOf(1).equals(row.getWarehouseAdded()) && !isKgUnit(resolveMetricUnit(product))) {
+            BigDecimal cap = row.getReturnQuantity();
+            if (cap != null && cap.signum() > 0 && bo.getReceivedQty().add(bo.getDiscardQty()).compareTo(cap) > 0) {
+                throw new ServiceException("仓库确认量与丢弃量合计不能超过原退回量(" + cap.stripTrailingZeros().toPlainString() + ")", 400);
+            }
+        }
+        int affected;
+        if (bo.getReceivedQty().signum() > 0) {
+            StoreReturnConfirmBo inbound = new StoreReturnConfirmBo();
+            inbound.setId(row.getId()); inbound.setReceivedQty(bo.getReceivedQty());
+            inbound.setReceivedWeight(bo.getReceivedQty());
+            Long locationId = resolveWarehouseInboundLocation(product, bo.getLocationId());
+            LocationInfo location = locationId == null ? null : locationInfoMapper.selectById(locationId);
+            if (location == null || !Integer.valueOf(1).equals(location.getLocationStatus()))
+                throw new ServiceException("请选择启用的入库库位", 400);
+            inbound.setLocationId(locationId);
+            inbound.setIsDiscard(DISCARD_NO);
+            affected = confirmInternal(inbound, true); // 共用入库库位、原材料解析及库存流水事务。
+        } else {
+            StoreReturn patch = new StoreReturn(); patch.setId(row.getId());
+            patch.setReceivedQty(BigDecimal.ZERO); patch.setReceivedWeight(BigDecimal.ZERO);
+            patch.setIsDiscard(DISCARD_YES); patch.setReturnStatus(STATUS_RECEIVED);
+            patch.setConfirmUserId(LoginHelper.getUserId()); patch.setConfirmTime(LocalDateTime.now());
+            affected = baseMapper.update(patch, new LambdaUpdateWrapper<StoreReturn>()
+                .eq(StoreReturn::getId, row.getId()).ne(StoreReturn::getReturnStatus, STATUS_RECEIVED)
+                .set(StoreReturn::getLocationId, null));
+        }
+        if (affected > 0) {
+            StoreReturn patch = new StoreReturn(); patch.setId(row.getId());
+            patch.setWarehouseDiscardQty(bo.getDiscardQty());
+            patch.setWarehouseRemark(bo.getWarehouseRemark() == null ? "" : bo.getWarehouseRemark());
+            baseMapper.updateById(patch);
+        }
+        return affected;
+    }
+
+    private void validateOperationAmounts(ProductInfo product, BigDecimal received, BigDecimal discarded) {
+        if (received == null || discarded == null || received.signum() < 0 || discarded.signum() < 0
+            || received.add(discarded).signum() <= 0)
+            throw new ServiceException("请录入非负的仓库确认量和丢弃量，至少一项大于0", 400);
+        int scale = isKgUnit(resolveMetricUnit(product)) ? 3 : 1;
+        if (received.stripTrailingZeros().scale() > scale || discarded.stripTrailingZeros().scale() > scale)
+            throw new ServiceException("退回量小数位超出原材料单位允许精度", 400);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
+    public int addOperationProducts(WarehouseReturnExtraBo bo) {
+        StoreReturn anchor = baseMapper.selectById(bo.getAnchorId());
+        if (anchor == null || STATUS_RECEIVED.equals(anchor.getReturnStatus())
+            || !DIRECTION_STORE_TO_WAREHOUSE.equals(anchor.getReturnDirection()))
+            throw new ServiceException("请选择待处理退回单", 400);
+        // 补录候选与提交共用显式配置的产品ID；不改变门店端可退成员集合。
+        Set<Long> allowed = new HashSet<>(resolveReturnListProductIds());
+        StoreReturnQuery query = new StoreReturnQuery();
+        query.setReturnDirection(DIRECTION_STORE_TO_WAREHOUSE);
+        query.setReturnType(anchor.getReturnType()); query.setReturnUnit(anchor.getReturnUnit());
+        query.setStoreId(anchor.getStoreId());
+        query.setReturnDateFrom(anchor.getReturnDate().toLocalDate());
+        query.setReturnDateTo(anchor.getReturnDate().toLocalDate());
+        // 先按共同最小主键串行化该组，再读最新已提交成员。不能对idx_store_date做range FOR UPDATE：
+        // 两个添加请求的gap/插入意向锁可能互等。READ_COMMITTED保证等待组锁后能看到先提交的补录。
+        // 首次只读ID，锁后读取完整行使用不同SQL，避免MyBatis一级缓存复用等待锁前的成员快照。
+        List<StoreReturn> group = baseMapper.selectList(buildQueryWrapper(query).select(StoreReturn::getId));
+        Long mutexId = group.stream().map(StoreReturn::getId).min(Long::compareTo).orElse(null);
+        if (mutexId == null || baseMapper.selectOne(new LambdaQueryWrapper<StoreReturn>()
+            .eq(StoreReturn::getId, mutexId).last("FOR UPDATE")) == null)
+            throw new ServiceException("退回单状态已变化，请刷新", 400);
+        StoreReturn currentAnchor = baseMapper.selectOne(new LambdaQueryWrapper<StoreReturn>()
+            .eq(StoreReturn::getId, bo.getAnchorId()).last("FOR UPDATE"));
+        if (currentAnchor == null || STATUS_RECEIVED.equals(currentAnchor.getReturnStatus()))
+            throw new ServiceException("退回单状态已变化，请刷新", 400);
+        Set<Long> existing = baseMapper.selectList(buildQueryWrapper(query)).stream()
+            .map(StoreReturn::getProductId).collect(Collectors.toSet());
+        int created = 0;
+        for (Long id : new java.util.LinkedHashSet<>(bo.getProductIds())) {
+            ProductInfo product = productInfoMapper.selectById(id);
+            if (product == null) throw new ServiceException("产品不存在", 400);
+            assertReturnable(product); assertInReturnProductList(product, allowed);
+            if (!existing.add(id)) continue;
+            StoreReturn row = operationRow(product, anchor.getReturnDate(), anchor.getReturnType(), anchor.getReturnUnit());
+            row.setStoreId(anchor.getStoreId()); baseMapper.insert(row); created++;
+        }
+        return created;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int createOperationUnitReturns(WarehouseReturnUnitBo bo) {
+        Map<String, String> units = dictService.getAllDictByDictType(DICT_RETURN_UNIT);
+        if (units != null && !units.isEmpty() && !units.containsKey(bo.getReturnUnit()))
+            throw new ServiceException("退回单位不在配置清单中", 400);
+        Set<Long> seen = new HashSet<>();
+        for (WarehouseReturnUnitBo.Item item : bo.getItems()) {
+            if (!seen.add(item.getProductId())) throw new ServiceException("产品不能重复", 400);
+            ProductInfo product = productInfoMapper.selectById(item.getProductId());
+            if (product == null || !Integer.valueOf(2).equals(product.getProductAttr())
+                || !Integer.valueOf(0).equals(product.getProductStatus()))
+                throw new ServiceException("新增单位退回只支持启用的原材料产品", 400);
+            assertReturnable(product);
+            validateOperationAmounts(product, item.getReceivedQty(), item.getDiscardQty());
+            StoreReturn row = operationRow(product, bo.getReturnDate().atStartOfDay(), RETURN_TYPE_UNIT, bo.getReturnUnit());
+            baseMapper.insert(row);
+            WarehouseReturnConfirmBo confirm = new WarehouseReturnConfirmBo();
+            confirm.setId(row.getId()); confirm.setReceivedQty(item.getReceivedQty());
+            confirm.setDiscardQty(item.getDiscardQty()); confirm.setWarehouseRemark(item.getWarehouseRemark());
+            confirm.setLocationId(item.getLocationId()); confirmOperation(confirm);
+        }
+        return seen.size();
+    }
+
+    private StoreReturn operationRow(ProductInfo product, LocalDateTime date, String type, String unit) {
+        StoreReturn row = new StoreReturn(); row.setReturnNo(generateReturnNo());
+        row.setReturnDirection(DIRECTION_STORE_TO_WAREHOUSE); row.setReturnType(type);
+        row.setReturnUnit(unit); row.setReturnDate(date); row.setProductId(product.getId());
+        row.setReturnQuantity(BigDecimal.ZERO); row.setGoodsWeight(BigDecimal.ZERO);
+        row.setWarehouseAdded(1); row.setWarehouseDiscardQty(BigDecimal.ZERO);
+        row.setReturnStatus(STATUS_PENDING); row.setOperatorId(LoginHelper.getUserId());
+        return row;
     }
 
     // ---------- private helpers ----------
@@ -2374,6 +2552,47 @@ public class StoreReturnServiceImpl
         }
         Long def = stockMost != null ? stockMost : (all.isEmpty() ? null : all.get(0).getId());
         return new LocationChoice(def, all);
+    }
+
+    /** D-0192：仅仓库新版操作使用类别库位；业务编码定位主键，保留库位档案名称。 */
+    private LocationChoice resolveWarehouseLocationChoice(ProductInfo product, Map<Long, ProductInfo> productById,
+                                                           Map<Long, LocationPickerVo> enabledLocations) {
+        List<String> codes;
+        String defaultCode;
+        if (product != null && BELONG_TYPE_VEGETABLE.equals(product.getBelongType())) {
+            // 毛菜处理间对应既有毛菜鲜品库 L0006，不是另建同名库位。
+            codes = List.of(FRESH_VEG_LOCATION_CODE, "L0003");
+            defaultCode = FRESH_VEG_LOCATION_CODE;
+        } else if (isPorkProduct(product)) {
+            codes = List.of("L0007", "L0002");
+            defaultCode = "L0002";
+        } else {
+            return resolveLocationChoice(product, productById, enabledLocations);
+        }
+        List<LocationPickerVo> options = new ArrayList<>();
+        for (String code : codes) {
+            enabledLocations.values().stream().filter(l -> code.equals(l.getLocationCode()))
+                .findFirst().ifPresent(options::add);
+        }
+        Long defaultId = options.stream().filter(l -> defaultCode.equals(l.getLocationCode()))
+            .map(LocationPickerVo::getId).findFirst().orElse(null);
+        if (defaultId == null) {
+            throw new ServiceException("默认退回入库库位（" + defaultCode + "）不存在或已停用，请先维护库位", 400);
+        }
+        return new LocationChoice(defaultId, options);
+    }
+
+    /** 确认时重新核对启用态及类别范围，拒绝绕过下拉提交其他库位。 */
+    private Long resolveWarehouseInboundLocation(ProductInfo product, Long requestedId) {
+        if (product != null && (BELONG_TYPE_VEGETABLE.equals(product.getBelongType()) || isPorkProduct(product))) {
+            LocationChoice choice = resolveWarehouseLocationChoice(product, Map.of(), allEnabledLocationMap());
+            Long id = requestedId == null ? choice.defaultLocationId() : requestedId;
+            if (choice.options().stream().noneMatch(l -> id.equals(l.getId()))) {
+                throw new ServiceException("入库库位不在该产品类别允许的启用库位中，请重新选择", 400);
+            }
+            return id;
+        }
+        return requestedId != null ? requestedId : resolveDefaultLocation(resolveInboundProductId(product.getId()));
     }
 
     /** 产品 {@code store_location_id}（逗号分隔）里仍然启用的库位，保持配置顺序。 */

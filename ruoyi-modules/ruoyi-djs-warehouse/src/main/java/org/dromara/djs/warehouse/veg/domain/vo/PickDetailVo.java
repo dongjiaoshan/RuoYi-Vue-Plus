@@ -29,11 +29,11 @@ public class PickDetailVo implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /** 记录时间：采收过磅的操作时间 / 采摘活动的记录创建时间。 */
-    @ExcelProperty(value = "记录时间")
+    @ExcelProperty(value = "采摘记录时间")
     private String recordTime;
 
     /** 实际录入的采摘日期：种植记录 harvest_date / 采摘活动 activity_date。 */
-    @ExcelProperty(value = "采摘日期")
+    @ExcelIgnore
     private String pickDate;
 
     @ExcelProperty(value = "作物名称")

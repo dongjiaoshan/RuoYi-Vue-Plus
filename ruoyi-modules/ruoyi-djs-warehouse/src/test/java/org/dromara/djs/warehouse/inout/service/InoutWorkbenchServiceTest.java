@@ -53,6 +53,7 @@ class InoutWorkbenchServiceTest {
     @Mock org.dromara.djs.warehouse.flow.service.IMatFlowService matFlowService;
     @Mock ILocationStockService stockService;
     @Mock BarInfoMapper barMapper;
+    @Mock org.dromara.djs.warehouse.cross.mapper.PigReceptionMapper pigReceptionMapper;
     @Mock PigCutRecordMapper cutMapper;
     @Mock ProductInhouseMapper inhouseMapper;
     @Mock StockFlowMapper flowMapper;
@@ -100,6 +101,35 @@ class InoutWorkbenchServiceTest {
         assertThat(result.requestId()).isEqualTo(KEY);
         verifyNoInteractions(inhouseMapper, burnService, productionService, stockService, barMapper);
     }
+    @Test void cutCardsUseTheSameReceivingAgeForPickedAndUnpickedHalves() {
+        var unpicked = new CutWorkbenchBarVo(); unpicked.setBarInfoId(1L); unpicked.setInhouseId(2L);
+        var picked = new CutWorkbenchBarVo(); picked.setBarInfoId(1L); picked.setCutRecordId(3L);
+        var unknown = new CutWorkbenchBarVo(); unknown.setBarInfoId(4L); unknown.setInhouseId(5L);
+        when(workbenchMapper.selectUnpickedBars()).thenReturn(List.of(unpicked, unknown));
+        when(workbenchMapper.selectPickedBars()).thenReturn(List.of(picked));
+        var age = new org.dromara.djs.warehouse.cross.domain.vo.PigReceptionAgeVo();
+        age.setBarInfoId(1L); age.setAgeDays(400);
+        when(pigReceptionMapper.selectReceptionAges(List.of(1L,4L))).thenReturn(List.of(age));
+        var rows = service.cutBars();
+        assertThat(rows).hasSize(3);
+        assertThat(unpicked.getAgeDays()).isEqualTo(400);
+        assertThat(picked.getAgeDays()).isEqualTo(400);
+        assertThat(unknown.getAgeDays()).isNull();
+        verify(pigReceptionMapper).selectReceptionAges(List.of(1L,4L));
+    }
+    @Test void cutCardsSortByNewestInboundAcrossPickedAndUnpickedAndKeepMissingTimesLast() {
+        var old = new CutWorkbenchBarVo(); old.setInhouseId(8L); old.setInTime(new Date(1000));
+        var sameTime = new CutWorkbenchBarVo(); sameTime.setCutRecordId(9L); sameTime.setInTime(new Date(1000));
+        var recent = new CutWorkbenchBarVo(); recent.setInhouseId(2L); recent.setInTime(new Date(2000));
+        var newestPicked = new CutWorkbenchBarVo(); newestPicked.setCutRecordId(12L); newestPicked.setInTime(new Date(3000));
+        newestPicked.setOperateTime(new Date(500));
+        var unknown = new CutWorkbenchBarVo(); unknown.setInhouseId(1L);
+        var unknownPicked = new CutWorkbenchBarVo(); unknownPicked.setCutRecordId(3L);
+        when(workbenchMapper.selectUnpickedBars()).thenReturn(List.of(recent,unknown,old));
+        when(workbenchMapper.selectPickedBars()).thenReturn(List.of(sameTime,unknownPicked,newestPicked));
+        assertThat(service.cutBars()).containsExactly(newestPicked,recent,old,sameTime,unknown,unknownPicked);
+    }
+
     @Test void sameKeyDifferentWeightRejectedBeforeAnyMutation() {
         when(flowMapper.selectOne(any())).thenReturn(receipt(burnHash()));
         var bo=burnBo(); bo.setWeight(new BigDecimal("6"));

@@ -17,15 +17,13 @@ import java.math.BigDecimal;
 /**
  * 发货确认 → 需求状态机反向更新 listener（CROSS-FLOW-003）。
  *
- * <p>消费 {@link ShipmentConfirmedEvent}（WMS-SHIP-001 发布），按需求当前
- * {@code shipped_count} 推进需求状态：{@code shipped >= demand} → {@link DemandEvent#COMPLETE}；
+ * <p>消费 {@link ShipmentConfirmedEvent}（WMS-SHIP-001 发布），按实际已发货并绑定该需求的成品量推进需求状态：{@code shipped >= demand} → {@link DemandEvent#COMPLETE}；
  * 否则 → {@link DemandEvent#PARTIAL_SHIP}（合法性交给 {@code DemandStateMachine}）。</p>
  *
  * <h3>需求扣减已前移到打包（需求 C，防双扣）</h3>
  * <p>{@code shipped_count} 的累加由打包链路完成（{@code ProductProductionServiceImpl.submit*Pack}
  * 调 {@code deductDemandOnPack} → {@link DemandManageMapper#incrementShipped}）。发货确认<b>不再</b>
- * 累加 {@code shipped_count}，避免「打包扣一次 + 发货又扣一次」双扣。本 listener 仅按已扣减的
- * {@code shipped_count} 推进状态机。</p>
+ * 累加 {@code shipped_count}，避免「打包扣一次 + 发货又扣一次」双扣。本 listener 按真实发货量推进状态机，保持生产扣减字段不变。</p>
  *
  * <h3>事件 phase（全 sprint 最硬约束）</h3>
  * <p>{@link TransactionPhase#AFTER_COMMIT} —— WMS-SHIP-001 在 {@code @Transactional} 内同步
@@ -62,8 +60,10 @@ public class ShipmentConfirmedEventListener {
 
     private final IDemandStatusService demandStatusService;
 
+    private final org.dromara.djs.warehouse.shipment.service.IShipmentService shipmentService;
+
     /**
-     * 监听发货确认事件 → 按已扣减的 shipped_count 推进需求状态机（不再累加 shipped_count）。
+     * 监听发货确认事件 → 按实际发货量推进需求状态机（不再累加 shipped_count）。
      *
      * @param event 发货确认事件（含 shipmentId / demandId / shippedQuantity / operatorId）
      */
@@ -72,7 +72,7 @@ public class ShipmentConfirmedEventListener {
         try {
             // 需求扣减已前移到打包（ProductProductionServiceImpl.submit*Pack 调 deductDemandOnPack），
             // 发货确认不再累加 shipped_count，避免「打包扣一次 + 发货又扣一次」双扣（需求 C，Kevin 拍板）。
-            // 本 listener 仅保留「按已扣减的 shipped_count 推进需求状态机」职责。
+            // 本 listener 仅保留「按实际发货量推进需求状态机」职责。
 
             // 1. 重读 demand 最新状态（shipped_count 已由打包链路累加）
             DemandManage demand = demandMapper.selectById(event.getDemandId());
@@ -94,7 +94,7 @@ public class ShipmentConfirmedEventListener {
             }
 
             // 3. 判定目标事件（BigDecimal 用 compareTo，绝不用 == / equals）
-            BigDecimal shipped = demand.getShippedCount() == null ? BigDecimal.ZERO : demand.getShippedCount();
+            BigDecimal shipped = shipmentService.deliveredQuantity(demand.getId());
             BigDecimal need = demand.getDemandQuantity() == null ? BigDecimal.ZERO : demand.getDemandQuantity();
             DemandEvent targetEvent = (need.signum() > 0 && shipped.compareTo(need) >= 0)
                 ? DemandEvent.COMPLETE       // 累计达量 → 完成

@@ -247,12 +247,84 @@ class TraceServiceImplTest {
         doReturn("T20260615PG000001").when(service).findProduceCodeByEarNo("01A12605001");
         doNothing().when(service).insertTraceEvent(any(TraceEvent.class));
 
-        service.recordEventByEarNo("01A12605001", TraceContentConst.SINGE);
+        service.recordEventByEarNo("01A12605001", TraceContentConst.MARKETING);
 
         ArgumentCaptor<TraceEvent> captor = ArgumentCaptor.forClass(TraceEvent.class);
         verify(service, times(1)).insertTraceEvent(captor.capture());
         assertThat(captor.getValue().getProduceCode()).isEqualTo("T20260615PG000001");
-        assertThat(captor.getValue().getTraceContent()).isEqualTo(TraceContentConst.SINGE);
+        assertThat(captor.getValue().getTraceContent()).isEqualTo(TraceContentConst.MARKETING);
+    }
+
+    @Test
+    @DisplayName("第二半扇入库：已有屠宰节点不追加，也不把本半扇重量写到旧码")
+    void recordSinge_secondHalfDoesNotAppendToFirstHalf() {
+        BarInfo bar = new BarInfo();
+        bar.setInTime(java.sql.Timestamp.valueOf("2026-11-11 02:48:30"));
+        doReturn(bar).when(service).findBarByEarNo("EAR");
+        TraceCode left = new TraceCode();
+        left.setProduceCode("LEFT");
+        when(traceCodeMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(left));
+        doReturn(java.util.Set.of(TraceContentConst.SINGE)).when(service)
+            .findExistingContents(eq("LEFT"), any());
+
+        service.recordEventByEarNo("EAR", TraceContentConst.SINGE, new BigDecimal("57.220"));
+
+        verify(service, never()).insertTraceEvent(any());
+        verify(service, never()).findProduceCodeByEarNo(any());
+    }
+
+    @Test
+    @DisplayName("同猪两张码各补一次整猪节点，时间同源，不混入半扇重量；重复调用幂等")
+    void recordSinge_canonicalTimeAndIdempotencyForBothCodes() {
+        BarInfo bar = new BarInfo();
+        bar.setInTime(java.sql.Timestamp.valueOf("2026-11-11 02:48:30"));
+        doReturn(bar).when(service).findBarByEarNo("EAR");
+        TraceCode left = new TraceCode();
+        left.setProduceCode("LEFT");
+        TraceCode right = new TraceCode();
+        right.setProduceCode("RIGHT");
+        when(traceCodeMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(left, right));
+        java.util.Set<String> written = new java.util.HashSet<>();
+        org.mockito.Mockito.doAnswer(inv -> written.contains(inv.getArgument(0))
+            ? java.util.Set.of(TraceContentConst.SINGE) : java.util.Set.of())
+            .when(service).findExistingContents(any(), any());
+        org.mockito.Mockito.doAnswer(inv -> {
+            TraceEvent event = inv.getArgument(0);
+            written.add(event.getProduceCode());
+            assertThat(event.getTraceTime()).isEqualTo(LocalDateTime.of(2026, 11, 11, 2, 48, 30));
+            assertThat(event.getEventData()).isNull();
+            return null;
+        }).when(service).insertTraceEvent(any());
+
+        service.recordEventByEarNo("EAR", TraceContentConst.SINGE, new BigDecimal("49.340"));
+        service.recordEventByEarNo("EAR", TraceContentConst.SINGE, new BigDecimal("57.220"));
+
+        assertThat(written).containsExactlyInAnyOrder("LEFT", "RIGHT");
+        verify(service, times(2)).insertTraceEvent(any());
+        ArgumentCaptor<LambdaQueryWrapper<TraceCode>> query = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(traceCodeMapper, times(2)).selectList(query.capture());
+        assertThat(query.getValue().getSqlSegment()).contains("pig_ear_no", "code_type");
+        assertThat(query.getValue().getParamNameValuePairs().values()).contains("EAR", "pork");
+    }
+
+    @Test
+    @DisplayName("屠宰源时间缺失时不伪造节点")
+    void recordSinge_missingSourceTimeDoesNotInventEvent() {
+        doReturn(new BarInfo()).when(service).findBarByEarNo("EAR");
+        service.recordEventByEarNo("EAR", TraceContentConst.SINGE, BigDecimal.ONE);
+        verify(service, never()).insertTraceEvent(any());
+        doReturn(null).when(service).findBarByEarNo("EAR");
+        service.recordEventByEarNo("EAR", TraceContentConst.SINGE);
+        verify(service, never()).insertTraceEvent(any());
+    }
+
+    @Test
+    @DisplayName("屠宰追溯查询失败不会拖垮业务入库")
+    void recordSinge_failureDoesNotThrow() {
+        org.mockito.Mockito.doThrow(new IllegalStateException("unavailable"))
+            .when(service).findBarByEarNo("EAR");
+        assertThatCode(() -> service.recordEventByEarNo("EAR", TraceContentConst.SINGE))
+            .doesNotThrowAnyException();
     }
 
     // ============================ 耳号事件回填（核心 bug 修复） ============================

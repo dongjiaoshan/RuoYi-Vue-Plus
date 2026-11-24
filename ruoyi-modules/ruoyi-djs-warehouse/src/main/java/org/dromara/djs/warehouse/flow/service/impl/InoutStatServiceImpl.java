@@ -51,6 +51,7 @@ public class InoutStatServiceImpl implements IInoutStatService {
     private static final String DEFAULT_TENANT = "1001";
 
     private static final String DICT_PRODUCT_TYPE = "djs_product_type";
+    private static final String DICT_BELONG_TYPE = "djs_belong_type";
     private static final String DICT_FLOW_TYPE = "djs_flow_type";
     private static final String DICT_STOCK_OUT_DEST = "djs_stock_out_dest";
 
@@ -228,6 +229,7 @@ public class InoutStatServiceImpl implements IInoutStatService {
         }
         for (InoutStatInVo vo : list) {
             vo.setProductTypeName(productTypeName(vo.getProductType()));
+            vo.setBelongTypeName(dictLabel(DICT_BELONG_TYPE, vo.getBelongType(), EMPTY_TEXT));
             vo.setInModeName(dictLabel(DICT_FLOW_TYPE, vo.getFlowType(), vo.getFlowType()));
             if (isBlank(vo.getSupplierName())) {
                 vo.setSupplierName(NO_SUPPLIER);
@@ -252,6 +254,7 @@ public class InoutStatServiceImpl implements IInoutStatService {
         }
         for (InoutStatOutVo vo : list) {
             vo.setProductTypeName(productTypeName(vo.getProductType()));
+            vo.setBelongTypeName(dictLabel(DICT_BELONG_TYPE, vo.getBelongType(), EMPTY_TEXT));
             vo.setOutDestName(dictLabel(DICT_STOCK_OUT_DEST, vo.getStockOutDest(), NO_OUT_DEST));
             if (isBlank(vo.getStoreName())) {
                 vo.setStoreName(EMPTY_TEXT);

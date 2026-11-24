@@ -175,6 +175,7 @@ public class PigBurnRecordServiceImpl
     private final ILossFlowService lossFlowService;
     private final WeightCompletionPolicy completionPolicy;
     private final IPigQueryService pigQueryService;
+    private final org.dromara.djs.warehouse.cut.service.IPigCutRecordService pigCutService;
 
     public PigBurnRecordServiceImpl(PigBurnRecordMapper baseMapper,
                                     StockFlowMapper stockFlowMapper,
@@ -189,7 +190,8 @@ public class PigBurnRecordServiceImpl
                                     ImageUrlResolver imageUrlResolver,
                                     ILossFlowService lossFlowService,
                                     WeightCompletionPolicy completionPolicy,
-                                    IPigQueryService pigQueryService) {
+                                    IPigQueryService pigQueryService,
+                                    org.dromara.djs.warehouse.cut.service.IPigCutRecordService pigCutService) {
         super(baseMapper);
         this.stockFlowMapper = stockFlowMapper;
         this.barInfoMapper = barInfoMapper;
@@ -204,10 +206,11 @@ public class PigBurnRecordServiceImpl
         this.lossFlowService = lossFlowService;
         this.completionPolicy = completionPolicy;
         this.pigQueryService = pigQueryService;
+        this.pigCutService = pigCutService;
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Long submitBurnRecord(PigBurnRecordBo bo) {
         // ---------- Step 1：校验待燎毛白条 ----------
         BarInfo bar = barInfoMapper.selectForUpdate(bo.getBarInfoId());
@@ -587,7 +590,7 @@ public class PigBurnRecordServiceImpl
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void finishBurn(Long barInfoId, Long operatorId) {
         finishBurn(barInfoId, operatorId, false);
     }
@@ -623,6 +626,8 @@ public class PigBurnRecordServiceImpl
         // 重量 = 本次入库总重 inWeightTotal。recordEventByEarNo 全程容错（无生码白条 warn 跳过，不拖垮燎毛事务）。
         traceService.recordEventByEarNo(bar.getEarNo(), TraceContentConst.WHITE_BAR_IN, inWeightTotal);
 
+        // 半扇可以在整猪完成前先分割；完成燎毛后按现存半扇进度衔接，不把已完成的分割遗留在in_stock。
+        pigCutService.finalizeBarPickupIfComplete(bar.getId(), operatorId);
         BigDecimal shippedWeight = barInfoMapper.fullyDirectShippedWeight(bar.getId());
         if (shippedWeight != null) {
             barInfoMapper.updateStatusToShipOut(bar.getId(), new Date(), shippedWeight, operatorId);

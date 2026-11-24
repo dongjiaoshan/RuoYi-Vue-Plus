@@ -188,12 +188,18 @@ class LocationStockServiceImplTest {
         String sql = captor.getValue().getCustomSqlSegment();
         assertThat(sql)
             .contains("product_stock > 0 OR EXISTS")
-            .contains("t_warehouse_stock_flow")
+            .contains("SELECT DISTINCT tenant_id, warehouse_id, product_id, ear_no, white_bar_no, plot_id")
+            .contains("FROM t_warehouse_stock_flow")
+            .contains("WHERE del_flag = '0'")
+            .contains("flow_date >= DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+08:00'))")
+            .contains("flow_date < DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+08:00')) + INTERVAL 1 DAY")
+            .doesNotContain("DATE(f.flow_date)")
+            .contains("f.tenant_id = t_warehouse_location_stock.tenant_id")
             .contains("warehouse_id <=> t_warehouse_location_stock.location_id")
+            .contains("product_id <=> COALESCE(")
             .contains("ear_no <=> t_warehouse_location_stock.ear_no")
             .contains("white_bar_no <=> t_warehouse_location_stock.white_bar_no")
-            .contains("plot_id <=> t_warehouse_location_stock.plot_id")
-            .contains("UTC_TIMESTAMP()");
+            .contains("plot_id <=> t_warehouse_location_stock.plot_id");
     }
 
     @Test

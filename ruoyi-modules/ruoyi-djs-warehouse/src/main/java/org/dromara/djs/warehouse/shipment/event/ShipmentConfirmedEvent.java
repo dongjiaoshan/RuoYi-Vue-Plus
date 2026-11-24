@@ -14,9 +14,8 @@ import java.math.BigDecimal;
  *
  * <p>D14 listener 应：</p>
  * <ol>
- *   <li>UPDATE {@code t_warehouse_demand_manage SET shipped_count = shipped_count + shippedQuantity}</li>
- *   <li>判断 {@code shipped_count >= demand_quantity} → 触发 {@code IDemandStatusService.transition(COMPLETE)}；
- *       否则 → 触发 {@code transition(PARTIAL_SHIP)}（从 CONFIRMED 直接进入，无排产环节）</li>
+ *   <li>按已绑定且已出车的成品汇总实际发货量，不改写打包阶段的 {@code shipped_count}。</li>
+ *   <li>实际发货量达到 {@code demand_quantity} 时推进完成，否则推进部分发货状态。</li>
  *   <li>INSERT {@code t_trace_event}（warehouse_ship 节点）</li>
  * </ol>
  *
@@ -36,8 +35,8 @@ public class ShipmentConfirmedEvent extends ApplicationEvent {
     private final Long demandId;
 
     /**
-     * 本次发货「份数」= 清点成品件数（每件打包=1 份；CROSS-FLOW-003 累加 demand.shipped_count）。
-     * 量纲必须是份（与 demand_quantity 一致），不是 kg —— 否则需求量算碎值且状态机误判完成。
+     * 本次实际发货量，与需求单位一致：白条每半扇1，KG按实重，其他按成品的需求扣减量。
+     * 不用于累加 {@code demand.shipped_count}；该字段由打包环节记录备齐量。
      */
     private final BigDecimal shippedQuantity;
 

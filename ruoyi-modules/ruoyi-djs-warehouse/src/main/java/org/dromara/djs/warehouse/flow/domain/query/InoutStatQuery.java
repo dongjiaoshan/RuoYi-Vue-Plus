@@ -49,6 +49,9 @@ public class InoutStatQuery implements Serializable {
      */
     private List<Integer> productTypes;
 
+    /** 产品类别多选（djs_belong_type；本统计页面使用）。 */
+    private List<String> belongTypes;
+
     /**
      * 入库方式多选（djs_flow_type 入库方向白名单；仅入库统计使用）。
      */

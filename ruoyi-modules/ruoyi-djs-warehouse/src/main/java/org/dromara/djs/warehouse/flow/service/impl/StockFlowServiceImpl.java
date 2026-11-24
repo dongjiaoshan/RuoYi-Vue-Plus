@@ -12,6 +12,7 @@ import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.warehouse.flow.constant.FlowDisplayScope;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.domain.query.StockFlowQuery;
+import org.dromara.djs.warehouse.flow.domain.query.StockFlowDateRange;
 import org.dromara.djs.warehouse.flow.domain.vo.PackingHomeVo;
 import org.dromara.djs.warehouse.flow.domain.vo.PackingItemVo;
 import org.dromara.djs.warehouse.flow.domain.vo.StockFlowVo;
@@ -244,6 +245,7 @@ public class StockFlowServiceImpl
         if (query == null) {
             return w.orderByDesc(StockFlow::getId);
         }
+        StockFlowDateRange dates = StockFlowDateRange.parse(query.getDateFrom(), query.getDateTo());
         boolean hasMatTypes = query.getMatTypes() != null && !query.getMatTypes().isEmpty();
         boolean hasProductTypes = query.getProductTypes() != null && !query.getProductTypes().isEmpty();
         // matType / productName / buyClass / productType → 反查 product.id 集合（取交集下推 productId IN）
@@ -307,8 +309,9 @@ public class StockFlowServiceImpl
             .eq(query.getPlotId() != null, StockFlow::getPlotId, query.getPlotId())
             // 三期过滤（V6 row92）：传 1 = 只看三期；不传 = 全部
             .eq(query.getThirdPhase() != null, StockFlow::getThirdPhase, query.getThirdPhase())
-            .ge(query.getDateFrom() != null, StockFlow::getFlowDate, query.getDateFrom())
-            .le(query.getDateTo()   != null, StockFlow::getFlowDate, query.getDateTo())
+            .ge(dates.from() != null, StockFlow::getFlowDate, dates.from())
+            .lt(dates.to() != null && dates.exclusiveEnd(), StockFlow::getFlowDate, dates.to())
+            .le(dates.to() != null && !dates.exclusiveEnd(), StockFlow::getFlowDate, dates.to())
             .orderByDesc(StockFlow::getFlowDate)
             .orderByDesc(StockFlow::getId);
         return w;

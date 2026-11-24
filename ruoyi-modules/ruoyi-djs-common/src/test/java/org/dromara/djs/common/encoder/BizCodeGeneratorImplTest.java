@@ -11,6 +11,9 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import java.lang.reflect.Field;
 import java.time.LocalDate;
@@ -28,11 +31,14 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -71,6 +77,9 @@ class BizCodeGeneratorImplTest {
     @Mock
     private RedissonClient redissonClient;
 
+    @Mock
+    private PlatformTransactionManager transactionManager;
+
     private BizCodeGeneratorImpl generator;
 
     /**
@@ -85,7 +94,9 @@ class BizCodeGeneratorImplTest {
 
     @BeforeEach
     void setUp() {
-        generator = new BizCodeGeneratorImpl(ruleMapper, sequenceMapper, redissonClient);
+        generator = new BizCodeGeneratorImpl(ruleMapper, sequenceMapper, redissonClient, transactionManager);
+        when(transactionManager.getTransaction(any(TransactionDefinition.class)))
+            .thenAnswer(inv -> new SimpleTransactionStatus());
 
         // --- mock 锁：同 key 总返回同一把 ReentrantLock，确保并发时真的串行 ---
         when(redissonClient.getLock(anyString())).thenAnswer(inv -> {
@@ -316,6 +327,56 @@ class BizCodeGeneratorImplTest {
 
         String second = generator.generate(BizCodeType.RETURN_NO, Map.of());
         assertThat(second).isEqualTo("RET" + yyyyMMdd + "0002");
+    }
+
+    @Test
+    @DisplayName("序号独立短事务commit完成后才释放Redis锁")
+    void allocationCommitsBeforeUnlock() throws Exception {
+        stubRule("STOCK_FLOW_NO", "F{seq6}", 0);
+        RLock lock = mock(RLock.class);
+        when(redissonClient.getLock(anyString())).thenReturn(lock);
+        when(lock.tryLock(anyLong(), anyLong(), eq(TimeUnit.SECONDS))).thenReturn(true);
+        when(lock.isHeldByCurrentThread()).thenReturn(true);
+        SimpleTransactionStatus status = new SimpleTransactionStatus();
+        when(transactionManager.getTransaction(any(TransactionDefinition.class))).thenAnswer(inv -> {
+            TransactionDefinition definition = inv.getArgument(0);
+            assertThat(definition.getPropagationBehavior()).isEqualTo(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+            assertThat(definition.getIsolationLevel()).isEqualTo(TransactionDefinition.ISOLATION_READ_COMMITTED);
+            return status;
+        });
+
+        assertThat(generator.generate(BizCodeType.STOCK_FLOW_NO, Map.of())).isEqualTo("F000001");
+
+        var order = inOrder(lock, transactionManager, sequenceMapper);
+        order.verify(lock).tryLock(anyLong(), anyLong(), eq(TimeUnit.SECONDS));
+        order.verify(transactionManager).getTransaction(any(TransactionDefinition.class));
+        order.verify(sequenceMapper).incrementSeq("STOCK_FLOW_NO", "", 1L);
+        order.verify(sequenceMapper).insert(any(BizCodeSequence.class));
+        order.verify(transactionManager).commit(status);
+        order.verify(lock).isHeldByCurrentThread();
+        order.verify(lock).unlock();
+    }
+
+    @Test
+    @DisplayName("序号分配失败先回滚短事务再释放Redis锁，不掩盖数据库异常")
+    void allocationRollsBackBeforeUnlockOnFailure() throws Exception {
+        stubRule("STOCK_FLOW_NO", "F{seq6}", 0);
+        RLock lock = mock(RLock.class);
+        when(redissonClient.getLock(anyString())).thenReturn(lock);
+        when(lock.tryLock(anyLong(), anyLong(), eq(TimeUnit.SECONDS))).thenReturn(true);
+        when(lock.isHeldByCurrentThread()).thenReturn(true);
+        SimpleTransactionStatus status = new SimpleTransactionStatus();
+        when(transactionManager.getTransaction(any(TransactionDefinition.class))).thenReturn(status);
+        when(sequenceMapper.incrementSeq(anyString(), anyString(), anyLong()))
+            .thenThrow(new IllegalStateException("private-sequence-db-error"));
+
+        assertThatThrownBy(() -> generator.generate(BizCodeType.STOCK_FLOW_NO, Map.of()))
+            .isInstanceOf(IllegalStateException.class).hasMessage("private-sequence-db-error");
+
+        var order = inOrder(transactionManager, lock);
+        order.verify(transactionManager).rollback(status);
+        order.verify(lock).isHeldByCurrentThread();
+        order.verify(lock).unlock();
     }
 
     // ============================================================

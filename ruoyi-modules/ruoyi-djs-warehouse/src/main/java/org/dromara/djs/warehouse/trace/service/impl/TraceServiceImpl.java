@@ -333,6 +333,10 @@ public class TraceServiceImpl
             log.warn("[TRC-CORE-001] recordEventByEarNo skipped: empty earNo, content={}", traceContent);
             return;
         }
+        if (TraceContentConst.SINGE.equals(traceContent)) {
+            recordSingeMilestone(earNo);
+            return;
+        }
         String produceCode = findProduceCodeByEarNo(earNo);
         if (produceCode == null) {
             // 猪肉链 trace_code 当前无生成入口，反查落空属 V1 预期 → warn 跳过
@@ -341,6 +345,28 @@ public class TraceServiceImpl
             return;
         }
         recordEvent(produceCode, traceContent, weight);
+    }
+
+    /** 整猪屠宰节点与生码回填同源：取首次入库时间，每张猪肉码只补一次，不携带另一半扇重量。 */
+    private void recordSingeMilestone(String earNo) {
+        try {
+            BarInfo bar = findBarByEarNo(earNo);
+            if (bar == null || bar.getInTime() == null) {
+                return;
+            }
+            List<TraceCode> codes = baseMapper.selectList(new LambdaQueryWrapper<TraceCode>()
+                .eq(TraceCode::getPigEarNo, earNo)
+                .eq(TraceCode::getCodeType, TraceCodeTypeConst.PORK));
+            for (TraceCode code : codes) {
+                if (StringUtils.isBlank(code.getProduceCode())) {
+                    continue;
+                }
+                Set<String> existing = findExistingContents(code.getProduceCode(), Set.of(TraceContentConst.SINGE));
+                backfillOne(code.getProduceCode(), TraceContentConst.SINGE, bar.getInTime(), existing);
+            }
+        } catch (Exception e) {
+            log.warn("[TRC-CORE-001] 屠宰节点回填失败(跳过) earNo={}: {}", earNo, e.getMessage());
+        }
     }
 
     /**

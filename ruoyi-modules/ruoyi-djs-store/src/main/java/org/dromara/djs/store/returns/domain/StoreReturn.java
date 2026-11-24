@@ -93,6 +93,14 @@ public class StoreReturn extends TenantEntity {
      */
     private Integer isDiscard;
 
+    /** 仓库单独记录的丢弃量（原材料单位），null代表历史处置模式。 */
+    private BigDecimal warehouseDiscardQty;
+    /** 仓库处理备注，与原门店备注分开保存。 */
+    private String warehouseRemark;
+    /** 1=仓库补录，原门店退回量未提供，页面显示破折号。 */
+    private Integer warehouseAdded;
+
+
     /** 仓库确认人 user_id → {@code sys_user.user_id}（确认实收时 LoginHelper 注入）。 */
     private Long confirmUserId;
 

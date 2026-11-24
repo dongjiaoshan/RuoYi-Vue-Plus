@@ -22,7 +22,11 @@ import java.util.List;
  */
 public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> {
 
-    /** 历史流水没有 white_bar_id 时，由同租户白条流水号关联原始产出行（包括已消费软删行）。 */
+    /**
+     * 历史流水没有 white_bar_id 时，由同租户白条流水号关联原始产出行（包括已消费软删行）。
+     * 纯聚合查询不锁流水扫描范围：写调用先锁对应 bar，并在 READ_COMMITTED 下读取最新提交值。
+     * 否则历史回查的宽扫描可能跨猪持锁，与生成流水编号的锁形成反向等待。
+     */
     @Select("<script>SELECT COALESCE(f.white_bar_id, i.white_bar_id) AS bar_info_id, "
         + "f.product_id, f.white_bar_no, f.change_quantity AS weight, f.flow_date AS flow_time "
         + "FROM t_warehouse_stock_flow f LEFT JOIN "
@@ -32,7 +36,7 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
         + "WHERE f.del_flag='0' AND f.flow_type='slaughter_burn' AND f.inout_type='IN' "
         + "AND COALESCE(f.white_bar_id, i.white_bar_id) IN "
         + "<foreach collection='barIds' item='id' open='(' separator=',' close=')'>#{id}</foreach> "
-        + "ORDER BY f.id FOR UPDATE</script>")
+        + "ORDER BY f.id</script>")
     List<org.dromara.djs.warehouse.burn.domain.vo.BurnInboundVo> selectBurnInbounds(
         @Param("barIds") java.util.Collection<Long> barIds);
 
@@ -186,7 +190,7 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
                                          @Param("belongType") String belongType);
 
     /**
-     * 分割产出总重（按 {@code white_bar_id} 聚合 {@code cut_out_in} 流水的 change_quantity）。
+     * 分割产出总重（写调用先锁 bar，以 READ_COMMITTED 一致读汇总；按 {@code white_bar_id} 聚合 {@code cut_out_in} 流水的 change_quantity）。
      *
      * <p>白条分割「剩余可分割重量 / 超量校验」统一口径：自养（有耳号）/ 外购（{@code ear_no=NULL}）都按
      * {@code white_bar_id}（= bar_info.id = cut_record.white_bar_id）聚合，不依赖 ear_no，
@@ -199,7 +203,7 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
         + "  FROM t_warehouse_stock_flow "
         + " WHERE flow_type    = 'cut_out_in' "
         + "   AND white_bar_id = #{whiteBarId} "
-        + "   AND del_flag     = '0' FOR UPDATE")
+        + "   AND del_flag     = '0'")
     BigDecimal sumCutOutByWhiteBarId(@Param("whiteBarId") Long whiteBarId);
 
     /**
@@ -216,7 +220,7 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
         + "  FROM t_warehouse_stock_flow "
         + " WHERE flow_type     = 'cut_out_in' "
         + "   AND white_bar_no  = #{whiteBarNo} "
-        + "   AND del_flag      = '0' FOR UPDATE")
+        + "   AND del_flag      = '0'")
     BigDecimal sumCutOutByWhiteBarNo(@Param("whiteBarNo") String whiteBarNo);
 
     /**

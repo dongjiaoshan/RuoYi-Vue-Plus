@@ -160,6 +160,9 @@ public interface IStoreReturnService {
      */
     List<StoreReturnOpsItemVo> listOperationItems(StoreReturnQuery query);
 
+    /** 仓库新版退回明细：D-0192 类别库位策略，不影响旧门店入口。 */
+    List<StoreReturnOpsItemVo> listWarehouseOperationItems(StoreReturnQuery query);
+
     /**
      * 门店退回操作页「退回门店」筛选项（V6 row222）：现有退回记录里出现过的门店 / 退回单位，去重。
      *
@@ -190,4 +193,15 @@ public interface IStoreReturnService {
      * @return 成功建条数
      */
     int createUnitReturns(StoreReturnUnitBo bo);
+
+    /** 仓库分列记录入库与丢弃量。 */
+    int confirmOperation(org.dromara.djs.store.returns.domain.bo.WarehouseReturnConfirmBo bo);
+    /** 仓库新增原材料单位退回。 */
+    int createOperationUnitReturns(org.dromara.djs.store.returns.domain.bo.WarehouseReturnUnitBo bo);
+    /** 仓库补录候选：显式配置的退回清单产品。 */
+    List<StoreReturnUnitCandidateVo> listWarehouseSupplementCandidates();
+    /** 仓库原材料候选。 */
+    java.util.List<org.dromara.djs.store.returns.domain.vo.StoreReturnUnitCandidateVo> listOperationRawCandidates();
+    /** 在原退回单中增加字典清单产品。 */
+    int addOperationProducts(org.dromara.djs.store.returns.domain.bo.WarehouseReturnExtraBo bo);
 }

@@ -66,6 +66,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * 发货产品生产记录 Service 实现（WMS-PACK-001）。
@@ -161,6 +162,7 @@ public class ProductProductionServiceImpl
 
     /** 果蔬业态（V4 果蔬打包 product_material 校验 + 日损耗聚合）。 */
     private static final String BELONG_TYPE_VEGETABLE = "vegetable";
+    private static final String YELLOW_CARROT_MATERIAL_CODE = "Y0309";
 
     /** 打包台「当天」时区：与发货月台 {@code SHIP_TODAY_ZONE} 一致，避免非 UTC+8 实例跨日归错天。 */
     private static final ZoneId PACK_TODAY_ZONE = ZoneId.of("Asia/Shanghai");
@@ -323,6 +325,7 @@ public class ProductProductionServiceImpl
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         // Step 2：校验目标产品存在 + 是发货品
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
+        validateYellowCarrotMaterial(product, src);
         // 果蔬实称对打包规则「只能大于不能小于」：低于规则重量硬拒；超出 3% 弹提示、确认后可继续。
         validatePackMeasureRule(product, bo.getProductWeight(), bo.getAllowOverMeasure());
         // Step 2.5：果蔬打包来源原材料库存校验（V4，果疏产品全流程处理.docx）：
@@ -495,9 +498,9 @@ public class ProductProductionServiceImpl
                 throw new ServiceException("所选生产产品不支持该原材料外售，请刷新后重选");
             }
             todayDemands = demandManageMapper.selectUncompletedDemands(product.getId(), bo.getStoreId()).stream()
-                .filter(d -> LocalDate.now(PACK_TODAY_ZONE).equals(d.getDemandDate()) && rowRemain(d).signum() > 0).toList();
+                .filter(d -> d.getDemandDate() != null && !d.getDemandDate().isBefore(LocalDate.now(PACK_TODAY_ZONE)) && rowRemain(d).signum() > 0).toList();
             if (todayDemands.isEmpty()) {
-                throw new ServiceException("所选门店没有该产品的当天未满足需求，请刷新后重选");
+                throw new ServiceException("所选门店没有该产品今日及以后的未满足需求，请刷新后重选");
             }
         }
         // 实称对打包计量规则的校验（下限硬拒 / 超 3% 可确认继续）：肉品无条件套用；
@@ -506,7 +509,7 @@ public class ProductProductionServiceImpl
         if (cutStore && isKgUnit(product.getProductUnit())) {
             BigDecimal remainingWeight = todayDemands.stream().map(ProductProductionServiceImpl::rowRemain)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-            validateMeasuredWeight(remainingWeight, bo.getProductWeight(), bo.getAllowOverMeasure(), "门店当天剩余需求");
+            validateMeasuredWeight(remainingWeight, bo.getProductWeight(), bo.getAllowOverMeasure(), "门店今日及以后剩余需求");
         } else if (BELONG_TYPE_PORK.equals(product.getBelongType())
             || isOtherPackKgMeasureMode(product, src, bo)) {
             validatePackMeasureRule(product, bo.getProductWeight(), bo.getAllowOverMeasure());
@@ -832,14 +835,14 @@ public class ProductProductionServiceImpl
      * 流水、不进 location_stock，发货 ship_out 才出账）。</p>
      */
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Long submitWhiteBarOut(WhiteBarOutBo bo) {
         Long userId = currentUserIdSafe();
         Date now = new Date();
         // D-0147 ③：领用称重页另带秤读数（成对 + 称重 − 去皮 = 出库重量），先于任何写库校验
         ScaleReading reading = ScaleReading.of(bo.getGrossWeight(), bo.getTareWeight(), bo.getProductWeight());
 
-        ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
+        ProductInhouse src = requireLockedWhiteBarOutSource(bo.getSourceInhouseId());
         ProductInfo product = productInfoMapper.selectById(src.getProductId());
         if (product == null) {
             throw new ServiceException("来源产品主数据不存在：" + src.getProductId());
@@ -855,7 +858,7 @@ public class ProductProductionServiceImpl
         }
         List<DemandManage> whiteBarDemands = List.of();
         if (BELONG_TYPE_WHITE_BAR.equals(belongType)) {
-            whiteBarDemands = demandManageMapper.selectUncompletedDemands(product.getId(), bo.getStoreId());
+            whiteBarDemands = demandManageMapper.selectUncompletedWhiteBarDemands(product.getId(), bo.getStoreId());
             BigDecimal remaining = whiteBarDemands.stream().map(ProductProductionServiceImpl::rowRemain)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
             if (remaining.compareTo(BigDecimal.ONE) < 0) {
@@ -940,10 +943,11 @@ public class ProductProductionServiceImpl
         }
 
         // row205（邓博 2026-07-05）：发货月台出库补记「白条领用表」cut_record（out_type=ship，领用即终态）。
-        // 记出库位置 + 预冷损耗 + 排酸时长 + 目标门店/需求。target_demand_id 与门店下拉同口径（含已完成需求、优先未完成）
-        // ——门店因当天有该产品需求才可选，选中即回填该需求；无匹配需求 → null。分割统计只算 out_type='cut'，本行不计入。
+        // 记出库位置 + 预冷损耗 + 排酸时长 + 目标门店/需求。白条引用本次实际履约候选的最早需求，
+        // 与门店候选及扣减范围一致；猪肉仍沿用原有引用规则。分割统计只算 out_type='cut'，本行不计入。
         BarInfo shipBar = whiteBarId != null ? barInfoMapper.selectById(whiteBarId) : null;
-        DemandManage shipDemand = demandManageMapper.selectShipTargetDemand(product.getId(), bo.getStoreId());
+        DemandManage shipDemand = BELONG_TYPE_WHITE_BAR.equals(belongType) ? whiteBarDemands.getFirst()
+            : demandManageMapper.selectShipTargetDemand(product.getId(), bo.getStoreId());
         Long shipDemandId = shipDemand != null ? shipDemand.getId() : null;
         Long shipCutRecordId = pigCutService.insertOutRecord("ship", shipBar, src, bo.getProductWeight(),
             bo.getStoreId(), shipDemandId, userId, null);
@@ -980,14 +984,14 @@ public class ProductProductionServiceImpl
      * （bar 状态机转态口径待邓博确认，见 report 待确认项③）。</p>
      */
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Long submitWarehouseOut(WarehouseOutBo bo) {
         Long userId = currentUserIdSafe();
         Date now = new Date();
         // D-0147 ③：领用称重页另带秤读数（成对 + 称重 − 去皮 = 出库重量），先于任何写库校验
         ScaleReading reading = ScaleReading.of(bo.getGrossWeight(), bo.getTareWeight(), bo.getProductWeight());
 
-        ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
+        ProductInhouse src = requireLockedWhiteBarOutSource(bo.getSourceInhouseId());
         ProductInfo product = productInfoMapper.selectById(src.getProductId());
         if (product == null) {
             throw new ServiceException("来源产品主数据不存在：" + src.getProductId());
@@ -1225,7 +1229,7 @@ public class ProductProductionServiceImpl
     }
 
     @Override
-    public TableDataInfo<ProductProductionGroupVo> queryGroupPageList(ProductProductionQuery query, PageQuery pageQuery) {
+    public List<ProductProductionGroupVo> queryGroupList(ProductProductionQuery query) {
         String produceNo = query == null ? null : query.getProduceNo();
         String productName = query == null ? null : query.getProductName();
         String belongType = query == null ? null : query.getBelongType();
@@ -1236,8 +1240,12 @@ public class ProductProductionServiceImpl
         Integer hasDamage = query == null ? null : query.getHasDamage();
         // belongType / belongTypes（产品品类多选，R70 优先 IN，product_info 维度）/ productType（组内同值）/
         // productName(LIKE) 下推 mapper WHERE；hasDamage（是否存在损坏）作用于组维度，下推 mapper HAVING（row50）
-        List<ProductProductionGroupVo> all =
-            baseMapper.selectProductionGroupList(produceNo, productName, belongType, belongTypes, productType, from, to, hasDamage);
+        return baseMapper.selectProductionGroupList(produceNo, productName, belongType, belongTypes, productType, from, to, hasDamage);
+    }
+
+    @Override
+    public TableDataInfo<ProductProductionGroupVo> queryGroupPageList(ProductProductionQuery query, PageQuery pageQuery) {
+        List<ProductProductionGroupVo> all = queryGroupList(query);
         // 聚合后内存分页（分组行数小，范式同 DemandManageServiceImpl.queryGroupList）
         int total = all.size();
         int pageNum = pageQuery == null || pageQuery.getPageNum() == null ? 1 : pageQuery.getPageNum();
@@ -1341,6 +1349,7 @@ public class ProductProductionServiceImpl
             .orderByDesc(ProductProduction::getId);
         Page<ProductProductionVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillJoinNames(page.getRecords());
+        fillProductAttributes(page.getRecords());
         return TableDataInfo.build(page);
     }
 
@@ -1363,10 +1372,9 @@ public class ProductProductionServiceImpl
         if (production == null) {
             throw new ServiceException("生产记录不存在或已删除：" + bo.getId());
         }
-        // admin row99：按 KG 计量的生产产品只能按重量管理，不能按“件”标损。
-        // 后端必须同步守门，避免隐藏按钮后仍可直接调用接口绕过业务规则。
-        if (isKgUnit(production.getProductUnit())) {
-            throw new ServiceException("KG 产品不支持记为损坏");
+        // KG 生产产品仅在真实发到门店且已确认到店后可标损，白条及仓库自用仍保持原规则。
+        if (isKgUnit(production.getProductUnit()) && !canMarkArrivedKgDamage(production)) {
+            throw new ServiceException("仅已确认到店的非白条 KG 生产产品支持记为损坏");
         }
         // 标损时间由后端取 now（前端不传，避免客户端时钟漂移）
         int affected = baseMapper.updateDamage(bo.getId(), bo.getEvidenceOssIds(), bo.getRemark(), new Date());
@@ -1375,6 +1383,27 @@ public class ProductProductionServiceImpl
         }
         log.info("[DENGBO-DAMAGE-001] mark damage id={} evidenceOssIds={} remark={}",
             bo.getId(), bo.getEvidenceOssIds(), bo.getRemark());
+    }
+
+    private boolean canMarkArrivedKgDamage(ProductProduction production) {
+        if (!Integer.valueOf(1).equals(production.getIsDeliveryCheck())
+            || production.getDemandId() == null || production.getStoreId() == null
+            || "mail".equals(production.getDeliverDest())
+            || Integer.valueOf(2).equals(production.getDeliverType())
+            || DELIVER_DEST_GIFT.equals(production.getDeliverDest())
+            || DELIVER_DEST_WAREHOUSE_OUT.equals(production.getDeliverDest())) {
+            return false;
+        }
+        DemandManage demand = demandManageMapper.selectById(production.getDemandId());
+        if (demand == null || demand.getReceivedTime() == null
+            || !Objects.equals(demand.getStoreId(), production.getStoreId())
+            || !"store".equals(demand.getDemandType())
+            || BELONG_TYPE_WHITE_BAR.equals(demand.getProductType())) {
+            return false;
+        }
+        ProductInfo product = productInfoMapper.selectById(production.getProductId());
+        return product != null && Integer.valueOf(1).equals(product.getProductAttr())
+            && !BELONG_TYPE_WHITE_BAR.equals(product.getBelongType());
     }
 
     @Override
@@ -1501,7 +1530,7 @@ public class ProductProductionServiceImpl
         if (product == null || !BELONG_TYPE_WHITE_BAR.equals(product.getBelongType())
             || !Integer.valueOf(0).equals(product.getProductStatus())) { return List.of(); }
         List<Map<String, Object>> result = new java.util.ArrayList<>();
-        for (StoreDemandCopiesVo demand : listStoreDemandCopies(productId)) {
+        for (StoreDemandCopiesVo demand : listWhiteBarStoreDemandCopies(productId)) {
             if (demand.getCopies() == null || demand.getCopies().compareTo(BigDecimal.ONE) < 0) { continue; }
             Map<String, Object> item = new java.util.LinkedHashMap<>();
             item.put("storeId", String.valueOf(demand.getStoreId()));
@@ -1542,6 +1571,12 @@ public class ProductProductionServiceImpl
         }
         // 打包台只显示「当天」已确认门店需求（与发货月台 demand_date=today 一致，Kevin 2026-06-26）。
         return demandManageMapper.selectStoreDemandCopies(productId, LocalDate.now(PACK_TODAY_ZONE));
+    }
+
+    @Override
+    public List<StoreDemandCopiesVo> listWhiteBarStoreDemandCopies(Long productId) {
+        if (productId == null) { return List.of(); }
+        return demandManageMapper.selectWhiteBarStoreDemandCopies(productId);
     }
 
     @Override
@@ -1637,6 +1672,21 @@ public class ProductProductionServiceImpl
      * <p>P1-2：仓库打包/出库只认仓库分割产（{@code source='warehouse'}），拒绝门店现场分割
      * （{@code source='store'}，STR-SPLIT-001）；防前端绕过 picker 直接传 store 行 id 跨域取库存。</p>
      */
+    private ProductInhouse requireLockedWhiteBarOutSource(Long inhouseId) {
+        ProductInhouse source = requireActiveInhouse(inhouseId);
+        if (source.getWhiteBarId() == null) { return source; }
+        if (barInfoMapper.selectForUpdate(source.getWhiteBarId()) == null) {
+            throw new ServiceException("来源白条不存在或已删除");
+        }
+        ProductInhouse current = productInhouseMapper.selectOne(new LambdaQueryWrapper<ProductInhouse>()
+            .eq(ProductInhouse::getId, inhouseId).last("FOR UPDATE"));
+        if (current == null || !SOURCE_WAREHOUSE.equals(current.getSource())
+            || !java.util.Objects.equals(source.getWhiteBarId(), current.getWhiteBarId())) {
+            throw new ServiceException("来源过程产品已消耗或变更，请刷新后重试");
+        }
+        return current;
+    }
+
     protected ProductInhouse requireActiveInhouse(Long inhouseId) {
         ProductInhouse src = productInhouseMapper.selectById(inhouseId);
         if (src == null) {
@@ -1646,6 +1696,20 @@ public class ProductProductionServiceImpl
             throw new ServiceException("来源不是仓库分割产，不可在仓库打包/出库（来源=" + src.getSource() + "）：" + inhouseId);
         }
         return src;
+    }
+
+    /** 黄萝卜独立原料需要按对应成品打包，确保库存扣减、追溯和退回使用同一种原料。 */
+    private void validateYellowCarrotMaterial(ProductInfo target, ProductInhouse source) {
+        Long sourceMaterial = source.getProductId();
+        Long targetMaterial = target.getProductMaterial();
+        if (Objects.equals(sourceMaterial, targetMaterial)) {
+            return;
+        }
+        List<Long> materialIds = Stream.of(sourceMaterial, targetMaterial).filter(Objects::nonNull).toList();
+        if (productInfoMapper.selectBatchIds(materialIds).stream()
+            .anyMatch(material -> YELLOW_CARROT_MATERIAL_CODE.equals(material.getProductId()))) {
+            throw new ServiceException("黄色胡萝卜原料与所选成品不匹配，请重新选择原料和成品");
+        }
     }
 
     /**
@@ -2222,32 +2286,34 @@ public class ProductProductionServiceImpl
         if (candidates.isEmpty()) {
             return List.of();
         }
-        // candidates 已按 demand_date ASC, id ASC 排序 → 首行的需求日即最早需求日。
+        // 普通打包仍只规划最早需求日；门店分割传入已校验的今日及以后窗口，须逐行扣完同一窗口。
+        // candidates 已按 demand_date ASC, id ASC 排序。
+        boolean spanDates = suppliedRows != null;
         // demand_date 理论非空（DDL NOT NULL），防御性取到 null 时退化为「只认首行」。
         LocalDate targetDate = candidates.get(0).getDemandDate();
-        List<DemandManage> sameDay = new java.util.ArrayList<>();
+        List<DemandManage> eligibleRows = new java.util.ArrayList<>();
         for (DemandManage d : candidates) {
-            if (targetDate != null && !targetDate.equals(d.getDemandDate())) {
+            if (!spanDates && targetDate != null && !targetDate.equals(d.getDemandDate())) {
                 break;
             }
             if (rowRemain(d).signum() > 0) {
-                sameDay.add(d);
+                eligibleRows.add(d);
             }
-            if (targetDate == null) {
+            if (!spanDates && targetDate == null) {
                 break;
             }
         }
-        if (sameDay.isEmpty()) {
-            // 当天各行都已扣满（并发已履约）：不扣、不报错。
+        if (eligibleRows.isEmpty()) {
+            // 窗口各行都已扣满（并发已履约）：不扣、不报错。
             return List.of();
         }
-        if (weighedKg.compareTo(rowRemain(sameDay.get(0))) < 0) {
+        if (weighedKg.compareTo(rowRemain(eligibleRows.get(0))) < 0) {
             // 连第一行都填不满 —— 与改动前同一条下界、同一句报错。
             throw new ServiceException("重量未满足需求，请处理后再试");
         }
         List<DemandManage> planned = new java.util.ArrayList<>();
         BigDecimal left = weighedKg;
-        for (DemandManage d : sameDay) {
+        for (DemandManage d : eligibleRows) {
             BigDecimal remain = rowRemain(d);
             if (left.compareTo(remain) < 0) {
                 // 剩下的重量填不满这一行 —— KG 不做部分履约（填一半的行仍会卡住出车闸），到此为止。
@@ -2651,6 +2717,22 @@ public class ProductProductionServiceImpl
             .orderByDesc(ProductProduction::getProduceTime)
             .orderByDesc(ProductProduction::getId);
         return w;
+    }
+
+    /** 批量回填产品主数据属性，供产品明细按实际成品/原材料控制操作。 */
+    private void fillProductAttributes(List<ProductProductionVo> rows) {
+        Set<Long> productIds = rows.stream().map(ProductProductionVo::getProductId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (productIds.isEmpty()) {
+            return;
+        }
+        Map<Long, ProductInfo> products = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .select(ProductInfo::getId, ProductInfo::getProductAttr).in(ProductInfo::getId, productIds))
+            .stream().collect(Collectors.toMap(ProductInfo::getId, product -> product, (a, b) -> a));
+        for (ProductProductionVo row : rows) {
+            ProductInfo product = products.get(row.getProductId());
+            row.setProductAttr(product == null ? null : product.getProductAttr());
+        }
     }
 
     /**

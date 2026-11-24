@@ -50,7 +50,7 @@ public interface IProductProductionService {
      */
     Long submitDryPack(DryPackBo bo);
 
-    /** 原材料外售：只消耗本次领用行，只履约当天需求，其余计量与生产记录逻辑沿用肉品打包。 */
+    /** 原材料外售：只消耗本次领用行，只履约今日及以后的需求，其余计量与生产记录逻辑沿用肉品打包。 */
     Long submitCutStorePack(DryPackBo bo);
 
     /**
@@ -80,6 +80,9 @@ public interface IProductProductionService {
      * 生产量(SUM product_weight) / 件数(COUNT)。逐件明细经「查看」下钻
      * {@link #queryItemPageList} 子页。范式同 DemandManage 聚合（全量查 + 内存分页）。</p>
      */
+    /** 与分页主列表同查询的全量聚合行，供导出。 */
+    List<ProductProductionGroupVo> queryGroupList(ProductProductionQuery query);
+
     TableDataInfo<ProductProductionGroupVo> queryGroupPageList(ProductProductionQuery query, PageQuery pageQuery);
 
     /**
@@ -192,6 +195,9 @@ public interface IProductProductionService {
      * @return 各门店未发货份数（无则空 List）
      */
     List<StoreDemandCopiesVo> listStoreDemandCopies(Long productId);
+
+    /** 白条出库的门店候选：全部日期已确认未满足的同款白条需求。 */
+    List<StoreDemandCopiesVo> listWhiteBarStoreDemandCopies(Long productId);
 
     /**
      * 批量版「各产品各门店未发货需求份数」（打包录入卡片网格「需求量」批量聚合，去前端 N+1）。

@@ -802,12 +802,18 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         // admin rows84/110：正库存始终可见；零库存只在上海自然日内该“同一库存篮”
         // 有真实出入库流水时可见。不能用 update_time 代替流水，否则盘点/编辑会把历史零库存
         // 永久重新暴露。<=> 逐维 null-safe 关联，避免同产品不同耳号/白条/地块串篮。
+        // 先按 flow_date 索引筛出当天流水并去重，让各库存篮只匹配这份结果，避免逐篮查历史流水。
         wrapper.apply("""
             (t_warehouse_location_stock.product_stock > 0 OR EXISTS (
                 SELECT 1
-                  FROM t_warehouse_stock_flow f
-                 WHERE f.del_flag = '0'
-                   AND f.tenant_id = t_warehouse_location_stock.tenant_id
+                  FROM (
+                      SELECT DISTINCT tenant_id, warehouse_id, product_id, ear_no, white_bar_no, plot_id
+                        FROM t_warehouse_stock_flow
+                       WHERE del_flag = '0'
+                         AND flow_date >= DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+08:00'))
+                         AND flow_date < DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+08:00')) + INTERVAL 1 DAY
+                  ) f
+                 WHERE f.tenant_id = t_warehouse_location_stock.tenant_id
                    AND f.warehouse_id <=> t_warehouse_location_stock.location_id
                    AND f.product_id <=> COALESCE(
                        t_warehouse_location_stock.product_id,
@@ -815,8 +821,6 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
                    AND f.ear_no <=> t_warehouse_location_stock.ear_no
                    AND f.white_bar_no <=> t_warehouse_location_stock.white_bar_no
                    AND f.plot_id <=> t_warehouse_location_stock.plot_id
-                   AND DATE(f.flow_date) =
-                       DATE(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '+08:00'))
             ))""");
         if (query == null) {
             return wrapper.orderByDesc(LocationStock::getId);

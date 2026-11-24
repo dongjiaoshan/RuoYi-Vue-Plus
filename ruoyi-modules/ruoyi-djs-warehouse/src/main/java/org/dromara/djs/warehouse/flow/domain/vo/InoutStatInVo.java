@@ -42,8 +42,14 @@ public class InoutStatInVo implements Serializable {
     private String productName;
 
     /** 产品类型（djs_product_type 翻译后）。 */
-    @ExcelProperty(value = "产品类型")
     private String productTypeName;
+
+    /** 产品类别翻译，列表与导出同源。 */
+    @ExcelProperty(value = "产品类别")
+    private String belongTypeName;
+
+    /** 原始产品类别。 */
+    private String belongType;
 
     /** 规格（product_info.product_spec，空时 service 兜 "-"）。 */
     @ExcelProperty(value = "规格")
