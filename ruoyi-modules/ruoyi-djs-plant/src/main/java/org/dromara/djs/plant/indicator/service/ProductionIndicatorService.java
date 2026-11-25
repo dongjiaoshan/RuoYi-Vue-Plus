@@ -7,6 +7,7 @@ import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.common.job.DjsJobRunner;
 import org.dromara.djs.plant.indicator.domain.ProductionIndicator.IdleTotals;
 import org.dromara.djs.plant.indicator.domain.ProductionIndicator.Report;
+import org.dromara.djs.plant.indicator.mapper.PlantPlotSnapshotMapper.Totals;
 import org.dromara.djs.plant.indicator.mapper.PlantProductionIndicatorMapper;
 import org.dromara.djs.plant.indicator.mapper.ProductionIndicatorSourceMapper;
 import org.springframework.stereotype.Service;
@@ -14,7 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.YearMonth;
-import java.time.ZoneId;
+import java.util.NavigableMap;
 
 @Service
 @RequiredArgsConstructor
@@ -24,6 +25,7 @@ public class ProductionIndicatorService {
 
     private final ProductionIndicatorSourceMapper source;
     private final PlantProductionIndicatorMapper indicators;
+    private final PlotSnapshotService snapshots;
 
     /**
      * 重算闭区间的日报及涉及的整月、整年。进行中的月年只纳入已结束的业务日，
@@ -32,7 +34,7 @@ public class ProductionIndicatorService {
     @Transactional(rollbackFor = Exception.class)
     public void recalculate(LocalDate from, LocalDate to) {
         validateRange(from, to);
-        LocalDate today = LocalDate.now(ZoneId.of(BUSINESS_ZONE));
+        LocalDate today = snapshots.today();
         if (!to.isBefore(today)) {
             throw new ServiceException("回刷结束日须早于当前业务日");
         }
@@ -47,11 +49,15 @@ public class ProductionIndicatorService {
             LocalDate until = nextYear.isBefore(today) ? nextYear : today;
             LocalDate first = from.isAfter(yearStart) ? from : yearStart;
             LocalDate last = to.isBefore(nextYear) ? to : nextYear.minusDays(1);
-            refreshYear(tenantId, yearStart, until, first, last);
+            refreshYear(tenantId, yearStart, until, first, last, today);
         }
     }
 
-    private void refreshYear(String tenantId, LocalDate yearStart, LocalDate until, LocalDate first, LocalDate last) {
+    private void refreshYear(String tenantId, LocalDate yearStart, LocalDate until,
+                             LocalDate first, LocalDate last, LocalDate today) {
+        LocalDate yearEnd = yearStart.plusYears(1).minusDays(1);
+        boolean currentYear = yearStart.getYear() == today.getYear();
+        var captured = snapshots.totals(tenantId, yearStart, currentYear ? today : yearEnd);
         var calculator = new ProductionIndicatorCalculator(yearStart, until,
             source.selectDetails(tenantId, yearStart.getYear(), until),
             source.selectFarmEvents(tenantId, yearStart, until),
@@ -63,14 +69,27 @@ public class ProductionIndicatorService {
         calculator.addDailyPerformance(source.selectDailyPerformance(tenantId, first, last.plusDays(1)),
             source.selectTeamMembers(tenantId, yearStart, until));
         for (LocalDate date = first; !date.isAfter(last); date = date.plusDays(1)) {
-            indicators.upsertDaily(IdWorker.getId(), calculator.daily(date));
+            indicators.upsertDaily(IdWorker.getId(), calculator.daily(date, captured.get(date)));
         }
         YearMonth lastMonth = YearMonth.from(last);
         for (YearMonth month = YearMonth.from(first); !month.isAfter(lastMonth); month = month.plusMonths(1)) {
-            indicators.upsertMonthly(IdWorker.getId(), calculator.monthly(month));
+            indicators.upsertMonthly(IdWorker.getId(), calculator.monthly(month, monthSnapshot(captured, month, today)));
         }
         var idle = idleTotals(tenantId, yearStart, until);
-        indicators.upsertAnnual(IdWorker.getId(), calculator.annual(idle));
+        Totals yearSnapshot = currentYear && !captured.isEmpty() ? captured.lastEntry().getValue() : captured.get(yearEnd);
+        // 常规回刷在次日。当天已采集后手动回刷时，仅第 54 行的分子补入当天完工。
+        int sameDayPlantings = yearSnapshot != null && today.equals(yearSnapshot.snapDate())
+            ? source.countCompletedPlantingsOn(tenantId, today) : 0;
+        indicators.upsertAnnual(IdWorker.getId(), calculator.annual(idle, yearSnapshot, sameDayPlantings));
+    }
+
+    private static Totals monthSnapshot(NavigableMap<LocalDate, Totals> captured, YearMonth month, LocalDate today) {
+        LocalDate end = month.atEndOfMonth();
+        if (end.isBefore(today)) {
+            return captured.get(end);
+        }
+        var latest = captured.floorEntry(end);
+        return latest != null && !latest.getKey().isBefore(month.atDay(1)) ? latest.getValue() : null;
     }
 
     /** 返回所选业务日与该区间涉及的自然月、自然年指标。 */
@@ -78,7 +97,7 @@ public class ProductionIndicatorService {
     public Report query(LocalDate from, LocalDate to) {
         validateRange(from, to);
         String tenantId = currentTenant();
-        LocalDate today = LocalDate.now(ZoneId.of(BUSINESS_ZONE));
+        LocalDate today = snapshots.today();
         LocalDate reportDay = to.isBefore(today) ? to : today;
         // 本年空闲天数可查询到所选报表日，其余指标读取已回刷快照。
         var annual = indicators.selectAnnual(tenantId, from.getYear(), to.getYear()).stream()
@@ -95,7 +114,7 @@ public class ProductionIndicatorService {
             source.selectIdleTransitions(tenantId));
     }
 
-    private static String currentTenant() {
+    static String currentTenant() {
         String tenantId = TenantHelper.getTenantId();
         return tenantId == null || tenantId.isBlank() ? DjsJobRunner.DEFAULT_TENANT : tenantId;
     }

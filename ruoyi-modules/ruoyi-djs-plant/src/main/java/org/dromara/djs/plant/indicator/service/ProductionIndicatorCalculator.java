@@ -5,6 +5,7 @@ import org.dromara.djs.plant.indicator.domain.ProductionIndicator.Annual;
 import org.dromara.djs.plant.indicator.domain.ProductionIndicator.Daily;
 import org.dromara.djs.plant.indicator.domain.ProductionIndicator.IdleTotals;
 import org.dromara.djs.plant.indicator.domain.ProductionIndicator.Monthly;
+import org.dromara.djs.plant.indicator.mapper.PlantPlotSnapshotMapper.Totals;
 import org.dromara.djs.plant.indicator.mapper.ProductionIndicatorSourceMapper.DailyPerformance;
 import org.dromara.djs.plant.indicator.mapper.ProductionIndicatorSourceMapper.Detail;
 import org.dromara.djs.plant.indicator.mapper.ProductionIndicatorSourceMapper.FarmEvent;
@@ -249,31 +250,51 @@ final class ProductionIndicatorCalculator {
         return List.of(day(date), month(YearMonth.from(date)), annual);
     }
 
-    Daily daily(LocalDate date) {
+    Daily daily(LocalDate date, Totals snapshot) {
         Bucket b = day(date);
         return new Daily(date, sumAreas(b.plantedByPlot), b.plantedCrops.size(), b.plantedByPlot.size(),
             b.farmWorkCount, b.farmWorkArea, b.harvestPlots.size(), b.inboundWeight, b.inboundCrops.size(),
             b.inboundPlots.size(), b.inboundUnmatched, b.rotationByPlot.size(), sumAreas(b.rotationByPlot),
             b.rotationWaitDays, b.rotationWaitCount, b.rotationUnmatched, b.disasterPlots.size(),
-            ProductionIndicator.divide(b.performanceEstimate, b.estimatedMembers.size(), 2), b.dockUnmatched);
+            ProductionIndicator.divide(b.performanceEstimate, b.estimatedMembers.size(), 2), b.dockUnmatched,
+            snapshot == null ? null : snapshot.idlePlotCount(),
+            snapshot == null ? null : snapshot.idleArea(),
+            snapshot == null ? null : snapshot.inFieldArea(),
+            snapshot == null ? null : snapshot.inFieldCropCount(),
+            snapshot == null ? null : snapshot.inFieldPlotCount(),
+            snapshot == null ? null : snapshot.totalPlotCount(),
+            snapshot == null ? null : snapshot.overdueHarvestPlotCount(),
+            snapshot == null ? null : snapshot.pendingRotationPlotCount());
     }
 
-    Monthly monthly(YearMonth period) {
+    Monthly monthly(YearMonth period, Totals snapshot) {
         Bucket b = month(period);
         return new Monthly(period.atDay(1), b.plantedArea, b.plantedCrops.size(), b.plantedRounds,
             b.planCount, b.planCompleted, b.farmWorkCount, b.farmWorkArea, b.harvestRounds,
             b.inboundWeight, b.inboundCrops.size(), b.inboundPlots.size(), b.inboundUnmatched,
             b.rotationRounds, b.rotationArea, b.rotationUnmatched, b.performanceAmount, b.yieldCompletionPercent(),
             b.rotationAverageDays(), b.disasterPlots.size(), performancePerPerson(b, period.atEndOfMonth()),
-            b.disasterLossArea.setScale(3, RoundingMode.HALF_UP), b.disasterLossYield, b.dockUnmatched);
+            b.disasterLossArea.setScale(3, RoundingMode.HALF_UP), b.disasterLossYield, b.dockUnmatched,
+            snapshot == null ? null : snapshot.idlePlotCount(),
+            snapshot == null ? null : ProductionIndicator.divide(
+                BigDecimal.valueOf(100L * (snapshot.totalPlotCount() - snapshot.idlePlotCount())),
+                snapshot.totalPlotCount(), 2),
+            snapshot == null ? null : snapshot.overdueHarvestPlotCount(),
+            snapshot == null ? null : snapshot.inFieldArea(),
+            snapshot == null ? null : snapshot.inFieldPlotCount(),
+            snapshot == null ? null : snapshot.inFieldCropCount(),
+            snapshot == null ? null : snapshot.idleArea(),
+            snapshot == null ? null : snapshot.pendingRotationPlotCount());
     }
 
-    Annual annual(IdleTotals idle) {
+    Annual annual(IdleTotals idle, Totals snapshot, int sameDayPlantings) {
         Bucket b = annual;
         return new Annual(year, b.plantedArea, b.planCount, b.planCompleted, b.inboundWeight,
             b.disasterRecords, b.rotationRounds, b.performanceAmount, b.performanceThrough,
             idle.days(), idle.intervals(), b.rotationAverageDays(),
-            performancePerPerson(b, from.plusYears(1).minusDays(1)), b.dockUnmatched);
+            performancePerPerson(b, from.plusYears(1).minusDays(1)), b.dockUnmatched,
+            snapshot == null ? null : ProductionIndicator.divide(
+                BigDecimal.valueOf((long) b.plantedRounds + sameDayPlantings), snapshot.totalPlotCount(), 2));
     }
 
     private BigDecimal performancePerPerson(Bucket b, LocalDate end) {

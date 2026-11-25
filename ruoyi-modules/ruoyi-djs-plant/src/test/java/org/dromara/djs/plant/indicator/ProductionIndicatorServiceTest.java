@@ -3,12 +3,14 @@ package org.dromara.djs.plant.indicator;
 import org.dromara.djs.plant.indicator.domain.ProductionIndicator.Daily;
 import org.dromara.djs.plant.indicator.domain.ProductionIndicator.Annual;
 import org.dromara.djs.plant.indicator.domain.ProductionIndicator.Monthly;
+import org.dromara.djs.plant.indicator.mapper.PlantPlotSnapshotMapper;
 import org.dromara.djs.plant.indicator.mapper.PlantProductionIndicatorMapper;
 import org.dromara.djs.plant.indicator.mapper.ProductionIndicatorSourceMapper;
 import org.dromara.djs.plant.indicator.mapper.ProductionIndicatorSourceMapper.DailyPerformance;
 import org.dromara.djs.plant.indicator.mapper.ProductionIndicatorSourceMapper.Detail;
 import org.dromara.djs.plant.indicator.mapper.ProductionIndicatorSourceMapper.Member;
 import org.dromara.djs.plant.indicator.mapper.ProductionIndicatorSourceMapper.Performance;
+import org.dromara.djs.plant.indicator.service.PlotSnapshotService;
 import org.dromara.djs.plant.indicator.service.ProductionIndicatorService;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -31,7 +33,8 @@ class ProductionIndicatorServiceTest {
     void replayOneDayRefreshesWholeMonthWithOtherActualPlantingDays() {
         ProductionIndicatorSourceMapper source = mock(ProductionIndicatorSourceMapper.class);
         PlantProductionIndicatorMapper mapper = mock(PlantProductionIndicatorMapper.class);
-        ProductionIndicatorService service = new ProductionIndicatorService(source, mapper);
+        ProductionIndicatorService service = new ProductionIndicatorService(source, mapper,
+            new PlotSnapshotService(mock(PlantPlotSnapshotMapper.class)));
         LocalDate day = LocalDate.of(2025, 10, 15);
         when(source.selectDetails("1001", 2025, LocalDate.of(2026, 1, 1))).thenReturn(List.of(
             new Detail(1, 10L, 11L, BigDecimal.valueOf(5), day, null, 2025, 10, 1L, day.minusDays(3), null, null),

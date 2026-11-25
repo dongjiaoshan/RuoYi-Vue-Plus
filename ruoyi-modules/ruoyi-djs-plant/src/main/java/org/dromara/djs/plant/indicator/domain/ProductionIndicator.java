@@ -18,7 +18,9 @@ public final class ProductionIndicator {
         int harvestInboundCropCount, int harvestInboundPlotCount,
         int harvestCropUnmatchedCount, int rotationPlotCount, BigDecimal rotationArea,
         int rotationWaitDaysSum, int rotationWaitValidCount, int rotationUnmatchedCount,
-        int disasterPlotCount, BigDecimal harvestPerformancePerPersonEstimate, int harvestDockUnmatchedCount
+        int disasterPlotCount, BigDecimal harvestPerformancePerPersonEstimate, int harvestDockUnmatchedCount,
+        Integer idlePlotCount, BigDecimal idleArea, BigDecimal inFieldArea, Integer inFieldCropCount,
+        Integer inFieldPlotCount, Integer totalPlotCount, Integer overdueHarvestPlotCount, Integer pendingRotationPlotCount
     ) {
 
         public BigDecimal getRotationWaitAverageDays() {
@@ -35,7 +37,10 @@ public final class ProductionIndicator {
         BigDecimal rotationArea, int rotationUnmatchedCount,
         BigDecimal harvestPerformanceAmount, BigDecimal yieldCompletionPercent, BigDecimal rotationAverageDays,
         int disasterPlotCount, BigDecimal harvestPerformancePerPerson, BigDecimal disasterLossArea,
-        BigDecimal disasterLossYield, int harvestDockUnmatchedCount
+        BigDecimal disasterLossYield, int harvestDockUnmatchedCount,
+        Integer idlePlotCount, BigDecimal plotUtilizationPercent, Integer overdueHarvestPlotCount,
+        BigDecimal inFieldArea, Integer inFieldPlotCount, Integer inFieldCropCount, BigDecimal idleArea,
+        Integer pendingRotationPlotCount
     ) {
 
         public BigDecimal getPlantPlanCompletionPercent() {
@@ -48,7 +53,7 @@ public final class ProductionIndicator {
         BigDecimal harvestInboundWeight, int disasterRecordCount, int rotationPlotCount,
         BigDecimal harvestPerformanceAmount, String performanceThroughMonth,
         long idleDaysSum, int idleIntervalCount, BigDecimal rotationAverageDays,
-        BigDecimal harvestPerformancePerPerson, int harvestDockUnmatchedCount
+        BigDecimal harvestPerformancePerPerson, int harvestDockUnmatchedCount, BigDecimal averagePlantingsPerPlot
     ) {
 
         public BigDecimal getPlantPlanCompletionPercent() {
@@ -62,7 +67,7 @@ public final class ProductionIndicator {
             return new Annual(statYear, plantedArea, plantPlanCount, plantPlanCompletedCount, harvestInboundWeight,
                 disasterRecordCount, rotationPlotCount, harvestPerformanceAmount, performanceThroughMonth,
                 totals.days(), totals.intervals(), rotationAverageDays, harvestPerformancePerPerson,
-                harvestDockUnmatchedCount);
+                harvestDockUnmatchedCount, averagePlantingsPerPlot);
         }
     }
 

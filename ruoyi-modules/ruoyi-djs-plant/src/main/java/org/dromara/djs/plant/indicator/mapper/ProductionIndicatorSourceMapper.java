@@ -36,6 +36,14 @@ public interface ProductionIndicatorSourceMapper {
     List<Detail> selectDetails(@Param("tenantId") String tenantId, @Param("year") int year,
                                @Param("until") LocalDate until);
 
+    /** 同 P1 种植完工事件，供当天已拍快照后的手动年度回刷使用。 */
+    @Select("""
+        SELECT COUNT(*) FROM t_plant_plant_details
+         WHERE tenant_id = #{tenantId} AND del_flag = '0' AND plot_id IS NOT NULL
+           AND plant_status = 'completed' AND end_actualdate = #{date}
+        """)
+    int countCompletedPlantingsOn(@Param("tenantId") String tenantId, @Param("date") LocalDate date);
+
     @Select("""
         SELECT f.plot_id, f.farm_date, f.farm_type, p.plot_area, f.plant_detail_id,
                f.crop_id, f.plant_id, f.loss_rate, f.loss_yield

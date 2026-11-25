@@ -1,17 +1,25 @@
 package org.dromara.djs.plant.indicator;
 
+import cn.hutool.extra.spring.SpringUtil;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.TenantLineInnerInterceptor;
 import net.sf.jsqlparser.expression.StringValue;
 import org.apache.ibatis.mapping.Environment;
-import org.apache.ibatis.session.Configuration;
 import org.apache.ibatis.session.SqlSession;
 import org.apache.ibatis.session.SqlSessionFactoryBuilder;
 import org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;
+import org.dromara.common.core.exception.ServiceException;
+import org.dromara.djs.common.job.DjsJobRegistry;
+import org.dromara.djs.common.job.DjsJobRunner;
+import org.dromara.djs.common.job.service.IDjsJobLogService;
 import org.dromara.djs.plant.dashboard.applet.mapper.AppletPlantManageDashboardMapper;
 import org.dromara.djs.plant.dashboard.mapper.PlantDashboardMapper;
+import org.dromara.djs.plant.indicator.job.PlantPlotSnapshotJob;
+import org.dromara.djs.plant.indicator.mapper.PlantPlotSnapshotMapper;
 import org.dromara.djs.plant.indicator.mapper.PlantProductionIndicatorMapper;
 import org.dromara.djs.plant.indicator.mapper.ProductionIndicatorSourceMapper;
+import org.dromara.djs.plant.indicator.service.PlotSnapshotService;
 import org.dromara.djs.plant.indicator.service.ProductionIndicatorService;
 import org.dromara.djs.plant.perf.mapper.PlantWorkPerformanceMapper;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
@@ -22,20 +30,38 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.mybatis.spring.SqlSessionTemplate;
+import org.mybatis.spring.transaction.SpringManagedTransactionFactory;
+import org.springframework.aop.framework.ProxyFactory;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
+import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
+import org.springframework.transaction.interceptor.TransactionInterceptor;
 
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.time.Instant;
+import java.time.InstantSource;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @Tag("local")
 @Tag("dev")
@@ -49,6 +75,8 @@ class ProductionIndicatorsMysqlTest {
     private Connection connection;
     private SqlSession session;
     private ProductionIndicatorService service;
+    private Consumer<LocalDate> captureSnapshot;
+    private LocalDate businessDate;
     private PlotIdleIntervalService idleIntervals;
     private String initializeIdleHistory;
     private String backfillIdleHistory;
@@ -63,7 +91,7 @@ class ProductionIndicatorsMysqlTest {
                 plant_id BIGINT, plot_id BIGINT, crop_id BIGINT, plant_month INT, plot_area DECIMAL(10,2),
                 begin_actualdate DATE, end_actualdate DATE, begin_harvestdate DATE, end_harvestdate DATE,
                 plant_status VARCHAR(16) DEFAULT 'completed', harvest_status VARCHAR(16) DEFAULT 'completed',
-                actual_yield DECIMAL(12,3), expected_yield DECIMAL(12,3), rotated_at DATETIME,
+                actual_yield DECIMAL(12,3), expected_yield DECIMAL(12,3), rotated_at DATETIME, last_harvestdate DATE,
                 transplant_adjusted TINYINT DEFAULT 0)
             """);
         sql("""
@@ -72,8 +100,13 @@ class ProductionIndicatorsMysqlTest {
             """);
         sql("""
             CREATE TEMPORARY TABLE t_plant_plot_info (id BIGINT PRIMARY KEY, plot_area DECIMAL(10,2),
-                plot_status INT DEFAULT 1,
+                plot_status INT DEFAULT 1, zone_id BIGINT,
                 tenant_id VARCHAR(20) DEFAULT '1001', del_flag CHAR(1) DEFAULT '0')
+            """);
+        sql("""
+            CREATE TEMPORARY TABLE t_plant_plot_zone (
+                id BIGINT PRIMARY KEY, zone_status INT, tenant_id VARCHAR(20) DEFAULT '1001',
+                del_flag CHAR(1) DEFAULT '0')
             """);
         sql("""
             CREATE TEMPORARY TABLE t_plant_farm_records (
@@ -162,22 +195,31 @@ class ProductionIndicatorsMysqlTest {
         applyMigration(migrations.resolve("V202609301100__PLT-STAT-V11-production-indicators.sql"));
         applyMigration(migrations.resolve("V202609301130__PLT-STAT-V11-plot-idle-interval.sql"));
         applyMigration(migrations.resolve("V202609301700__PLT-STAT-V12-event-indicators.sql"));
+        applyMigration(migrations.resolve("V202609301800__PLT-STAT-V12-plot-daily-snapshot.sql"));
 
-        Configuration config = new Configuration(new Environment("local", new JdbcTransactionFactory(),
+        MybatisConfiguration config = new MybatisConfiguration(new Environment("local", new JdbcTransactionFactory(),
             new SingleConnectionDataSource(connection, true)));
         MybatisPlusInterceptor tenant = new MybatisPlusInterceptor();
         tenant.addInnerInterceptor(new TenantLineInnerInterceptor(() -> new StringValue(TENANT)));
         config.addInterceptor(tenant);
         config.addMapper(ProductionIndicatorSourceMapper.class);
         config.addMapper(PlantProductionIndicatorMapper.class);
+        config.addMapper(PlantPlotSnapshotMapper.class);
         config.addMapper(PlotIdleIntervalMapper.class);
         config.addMapper(PlantDashboardMapper.class);
         config.addMapper(PlantDetailsMapper.class);
         config.addMapper(PlantWorkPerformanceMapper.class);
         config.addMapper(AppletPlantManageDashboardMapper.class);
         session = new SqlSessionFactoryBuilder().build(config).openSession();
+        ZoneId shanghai = ZoneId.of(ProductionIndicatorService.BUSINESS_ZONE);
+        businessDate = LocalDate.now(shanghai);
+        InstantSource time = () -> businessDate.atTime(23, 50).atZone(shanghai).toInstant();
+        var snapshots = new PlotSnapshotService(session.getMapper(PlantPlotSnapshotMapper.class), time);
+        var registry = new DjsJobRegistry();
+        new PlantPlotSnapshotJob(snapshots, registry).register();
+        captureSnapshot = registry.get("plant-plot-snapshot");
         service = new ProductionIndicatorService(session.getMapper(ProductionIndicatorSourceMapper.class),
-            session.getMapper(PlantProductionIndicatorMapper.class));
+            session.getMapper(PlantProductionIndicatorMapper.class), snapshots);
         idleIntervals = new PlotIdleIntervalService(session.getMapper(PlotIdleIntervalMapper.class));
     }
 
@@ -203,6 +245,271 @@ class ProductionIndicatorsMysqlTest {
         if (connection != null) {
             connection.close();
         }
+    }
+
+    @Test
+    void closingSnapshotCountsScopedPlotsAndCropsAtMonthEnd() throws Exception {
+        LocalDate close = LocalDate.of(2025, 11, 30);
+        businessDate = close;
+        sql("INSERT INTO t_plant_plot_zone (id, zone_status, del_flag) VALUES (1,1,'0'),(2,0,'0'),(3,1,'1')");
+        sql("""
+            INSERT INTO t_plant_plot_info (id, zone_id, plot_status, plot_area, del_flag) VALUES
+                (10,1,1,2.50,'0'),(20,1,2,5,'0'),(30,1,3,3,'0'),
+                (40,1,3,1,'0'),(41,1,3,1,'0'),(42,1,3,1,'0'),(43,1,3,1,'0'),(44,1,3,1,'0'),
+                (45,1,3,1,'0'),(46,1,3,1,'0'),(47,1,3,1,'0'),(48,1,3,1,'0'),(49,1,3,1,'0'),
+                (60,2,1,100,'0'),(61,1,1,100,'1'),(62,3,1,100,'0')
+            """);
+        sql("INSERT INTO t_plant_plot_info (id, zone_id, plot_status, plot_area, tenant_id) VALUES (63,1,1,100,'2002')");
+        sql("INSERT INTO t_plant_plot_zone (id, zone_status, tenant_id) VALUES (4,1,'2002')");
+        sql("INSERT INTO t_plant_plot_info (id, zone_id, plot_status, plot_area) VALUES (64,4,1,100)");
+        sql("""
+            INSERT INTO t_plant_plant_details (id, plot_id, crop_id, harvest_status, last_harvestdate, tenant_id)
+            VALUES (100,30,999,'pending','2025-11-25','2002')
+            """);
+        sql("""
+            INSERT INTO t_plant_plant_details
+                (id, plot_id, crop_id, plant_status, harvest_status, last_harvestdate, rotated_at, del_flag) VALUES
+                (1,20,111,'completed','pending','2025-11-29',NULL,'0'),
+                (2,20,222,'ongoing','pending','2025-11-30',NULL,'0'),
+                (3,20,111,'completed','picking','2025-11-30',NULL,'0'),
+                (4,30,111,'completed','picking','2025-11-30',NULL,'0'),
+                (5,20,333,'pending','pending','2025-11-23',NULL,'0'),
+                (6,30,444,'completed','completed','2025-11-20','2025-11-25 18:00:00','0'),
+                (7,20,555,'completed','pending','2025-11-20',NULL,'1'),
+                (8,10,666,'completed','completed','2025-11-20',NULL,'0'),
+                (9,30,777,'completed','pending','2025-11-20','2025-11-25 18:00:00','0')
+            """);
+        sql("""
+            INSERT INTO t_plant_plant_details (id, plot_id, crop_id, harvest_status, end_harvestdate, last_harvestdate)
+            VALUES (40,40,900,'completed','2025-11-29','2025-11-20'),
+                (41,41,900,'completed','2025-11-29','2025-11-20'),(42,42,900,'completed','2025-11-29','2025-11-20'),
+                (43,43,900,'completed','2025-11-29','2025-11-20'),(44,44,900,'completed','2025-11-29','2025-11-20'),
+                (45,45,900,'completed','2025-11-29','2025-11-20'),(46,46,900,'completed','2025-11-29','2025-11-20'),
+                (47,47,900,'completed','2025-11-30','2025-11-20'),(48,48,900,'completed','2025-11-30','2025-11-20'),
+                (49,49,900,'completed','2025-11-30','2025-11-20')
+            """);
+        captureSnapshot.accept(close);
+        assertThat(queryLong("SELECT id FROM t_plant_plot_snapshot_day")).isGreaterThan(9_007_199_254_740_991L);
+        assertThat(queryLong("SELECT MIN(id) FROM t_plant_plot_status_daily")).isGreaterThan(9_007_199_254_740_991L);
+        try (var query = connection.prepareStatement("""
+            SELECT plot_id FROM t_plant_plot_status_daily WHERE snap_date = ? ORDER BY plot_id
+            """)) {
+            query.setObject(1, close);
+            try (var rows = query.executeQuery()) {
+                List<Long> captured = new ArrayList<>();
+                while (rows.next()) {
+                    captured.add(rows.getLong(1));
+                }
+                assertThat(captured).containsExactly(10L, 20L, 30L, 40L, 41L, 42L, 43L, 44L, 45L, 46L, 47L, 48L, 49L);
+            }
+        }
+        businessDate = close.plusDays(1);
+        service.recalculate(close, close);
+        session.clearCache();
+        var report = service.query(close, close);
+        var day = report.daily().getFirst();
+        var month = report.monthly().getFirst();
+        assertAll(
+            () -> assertThat(day.idlePlotCount()).as("种植 3").isEqualTo(1),
+            () -> assertThat(day.idleArea()).as("种植 4").isEqualByComparingTo("2.50"),
+            () -> assertThat(day.inFieldArea()).as("种植 8").isEqualByComparingTo("8"),
+            () -> assertThat(day.inFieldCropCount()).as("种植 9，同一地块两种，跨地同种去重").isEqualTo(2),
+            () -> assertThat(day.inFieldPlotCount()).as("种植 10").isEqualTo(2),
+            () -> assertThat(day.totalPlotCount()).as("种植 11，排除停用片区、软删及跨租户地块").isEqualTo(13),
+            () -> assertThat(day.overdueHarvestPlotCount()).as("种植 18，未开采也计，最晚日当天不计").isEqualTo(1),
+            () -> assertThat(day.pendingRotationPlotCount()).as("种植 20，7 块加当日完采 3 块").isEqualTo(10),
+            () -> assertThat(month.idlePlotCount()).as("种植 26").isEqualTo(1),
+            () -> assertThat(month.plotUtilizationPercent()).as("种植 30，待退茬计为利用").isEqualByComparingTo("92.31"),
+            () -> assertThat(month.overdueHarvestPlotCount()).as("种植 39").isEqualTo(1),
+            () -> assertThat(month.inFieldArea()).as("种植 45").isEqualByComparingTo("8"),
+            () -> assertThat(month.inFieldPlotCount()).as("种植 46").isEqualTo(2),
+            () -> assertThat(month.inFieldCropCount()).as("种植 47").isEqualTo(2),
+            () -> assertThat(month.idleArea()).as("种植 48").isEqualByComparingTo("2.50"),
+            () -> assertThat(month.pendingRotationPlotCount()).as("种植 50").isEqualTo(10)
+        );
+    }
+
+    @Test
+    void sameDayRecaptureOverwritesAndHistoricalRerunDoesNotCapture() throws Exception {
+        LocalDate close = DAY;
+        businessDate = close;
+        sql("INSERT INTO t_plant_plot_zone (id, zone_status) VALUES (1,1),(2,1)");
+        sql("INSERT INTO t_plant_plot_info (id, zone_id, plot_status, plot_area) VALUES (10,1,1,2),(20,2,1,3)");
+        captureSnapshot.accept(close);
+        long snapshotId = queryLong("SELECT id FROM t_plant_plot_snapshot_day");
+        sql("UPDATE t_plant_plot_zone SET zone_status=0 WHERE id=2");
+        sql("UPDATE t_plant_plot_info SET plot_area=4 WHERE id=10");
+        captureSnapshot.accept(close);
+
+        businessDate = close.plusDays(2);
+        sql("UPDATE t_plant_plot_info SET plot_area=99 WHERE id=10");
+        var audit = mock(IDjsJobLogService.class);
+        String job = PlantPlotSnapshotJob.JOB_NAME;
+        String manual = DjsJobRunner.TRIGGER_MANUAL;
+        List<LocalDate> pastDates = List.of(close.minusDays(1), close, close.plusDays(1));
+        try (var spring = mockStatic(SpringUtil.class)) {
+            spring.when(() -> SpringUtil.getBean(IDjsJobLogService.class)).thenReturn(audit);
+            for (LocalDate pastDate : pastDates) {
+                long logId = pastDate.toEpochDay();
+                when(audit.recordStart(job, pastDate, manual)).thenReturn(logId);
+                DjsJobRunner.runForDate(job, TENANT, pastDate, manual, captureSnapshot);
+                verify(audit).recordFail(eq(logId), anyLong(), eq("过去日期不补拍快照，已跳过"));
+            }
+        }
+        verify(audit, never()).recordDone(anyLong(), anyLong());
+        captureSnapshot.accept(businessDate.plusDays(1));
+        assertThat(queryLong("SELECT COUNT(*) FROM t_plant_plot_snapshot_day")).isEqualTo(1);
+        assertThat(queryLong("SELECT id FROM t_plant_plot_snapshot_day")).isEqualTo(snapshotId);
+        assertThat(queryLong("SELECT COUNT(*) FROM t_plant_plot_status_daily")).isEqualTo(1);
+
+        service.recalculate(close.minusDays(1), close.plusDays(1));
+        var report = service.query(close.minusDays(1), close.plusDays(1));
+        var day = report.daily().get(1);
+        assertThat(day.totalPlotCount()).as("种植 11，同一天重拍去掉停用片区").isEqualTo(1);
+        assertThat(day.idleArea()).as("种植 4，保留当天第二次拍摄的 4 亩").isEqualByComparingTo("4");
+        for (int index : List.of(0, 2)) {
+            var missing = report.daily().get(index);
+            assertThat(Arrays.asList(missing.idlePlotCount(), missing.idleArea(), missing.inFieldArea(),
+                missing.inFieldCropCount(), missing.inFieldPlotCount(), missing.totalPlotCount(),
+                missing.overdueHarvestPlotCount(), missing.pendingRotationPlotCount()))
+                .as("种植 3、4、8–11、18、20，无快照日报").containsOnlyNulls();
+        }
+        assertThat(report.monthly().getFirst().idleArea()).as("种植 48，当前月回取最新已有快照").isEqualByComparingTo("4");
+        assertThat(report.annual().getFirst().averagePlantingsPerPlot()).as("种植 54，当年有快照、零次种植")
+            .isEqualByComparingTo("0.00");
+
+        businessDate = close.plusMonths(1);
+        service.recalculate(close, close);
+        var month = service.query(close, close).monthly().getFirst();
+        assertThat(Arrays.asList(month.idlePlotCount(), month.plotUtilizationPercent(),
+            month.overdueHarvestPlotCount(), month.inFieldArea(), month.inFieldPlotCount(), month.inFieldCropCount(),
+            month.idleArea(), month.pendingRotationPlotCount()))
+            .as("种植 26、30、39、45–48、50，已结束月缺月底快照").containsOnlyNulls();
+    }
+
+    @Test
+    void openMonthWithoutItsOwnSnapshotKeepsStockMetricsNull() throws Exception {
+        LocalDate priorMonthEnd = NOV.minusDays(1);
+        businessDate = priorMonthEnd;
+        sql("INSERT INTO t_plant_plot_zone (id, zone_status) VALUES (1,1)");
+        sql("INSERT INTO t_plant_plot_info (id, zone_id, plot_area) VALUES (10,1,2)");
+        captureSnapshot.accept(priorMonthEnd);
+
+        businessDate = NOV.plusDays(1);
+        service.recalculate(priorMonthEnd, NOV);
+        var months = service.query(priorMonthEnd, NOV).monthly();
+        assertThat(months.getFirst().idleArea()).isEqualByComparingTo("2");
+        var openMonth = months.getLast();
+        assertThat(Arrays.asList(openMonth.idlePlotCount(), openMonth.plotUtilizationPercent(),
+            openMonth.overdueHarvestPlotCount(), openMonth.inFieldArea(), openMonth.inFieldPlotCount(),
+            openMonth.inFieldCropCount(), openMonth.idleArea(), openMonth.pendingRotationPlotCount()))
+            .as("种植 26、30、39、45–48、50，当前月没有本月快照").containsOnlyNulls();
+    }
+
+    @Test
+    void crossingBusinessMidnightRollsBackSnapshotDay() throws Exception {
+        LocalDate close = DAY;
+        sql("INSERT INTO t_plant_plot_zone (id, zone_status) VALUES (1,1)");
+        sql("INSERT INTO t_plant_plot_info (id, zone_id, plot_area) VALUES (10,1,2)");
+        var dataSource = new SingleConnectionDataSource(connection, true);
+        var config = new MybatisConfiguration(new Environment("snapshot-tx", new SpringManagedTransactionFactory(), dataSource));
+        config.addMapper(PlantPlotSnapshotMapper.class);
+        var template = new SqlSessionTemplate(new SqlSessionFactoryBuilder().build(config));
+        var time = mock(InstantSource.class);
+        Instant beforeMidnight = close.atTime(23, 59).atZone(ZoneId.of(ProductionIndicatorService.BUSINESS_ZONE)).toInstant();
+        when(time.instant()).thenReturn(beforeMidnight, beforeMidnight).thenAnswer(invocation -> {
+            assertThat(queryLong("SELECT COUNT(*) FROM t_plant_plot_snapshot_day")).isEqualTo(1);
+            return beforeMidnight.plusSeconds(60);
+        });
+        var target = new PlotSnapshotService(template.getMapper(PlantPlotSnapshotMapper.class), time);
+        var transaction = new TransactionInterceptor();
+        transaction.setTransactionManager(new DataSourceTransactionManager(dataSource));
+        transaction.setTransactionAttributeSource(new AnnotationTransactionAttributeSource());
+        var proxy = new ProxyFactory(target);
+        proxy.addAdvice(transaction);
+        var snapshots = (PlotSnapshotService) proxy.getProxy();
+
+        assertThatThrownBy(() -> snapshots.capture(close)).isInstanceOf(ServiceException.class)
+            .hasMessage("已跨业务日，取消收工快照");
+        assertThat(queryLong("SELECT COUNT(*) FROM t_plant_plot_snapshot_day")).isZero();
+        assertThat(queryLong("SELECT COUNT(*) FROM t_plant_plot_status_daily")).isZero();
+    }
+
+    @Test
+    void annualPlantingRoundsUseLatestOrExactYearEndDenominator() throws Exception {
+        LocalDate december = LocalDate.of(2025, 12, 31);
+        businessDate = december.minusDays(2);
+        sql("INSERT INTO t_plant_plot_zone (id, zone_status) VALUES (1,1)");
+        sql("INSERT INTO t_plant_plot_info (id, zone_id, plot_area) VALUES (10,1,2),(20,1,3)");
+        sql("INSERT INTO t_plant_plant_plan (id, plan_year) VALUES (1,2025)");
+        detail(1, 1, 10, 111, 2, 2, "2025-02-04", "2025-02-05", null, null);
+        detail(2, 1, 10, 111, 3, 2, "2025-03-04", "2025-03-05", null, null);
+        detail(3, 1, 20, 111, 12, 2, "2025-12-04", null, null, null);
+        captureSnapshot.accept(businessDate);
+
+        LocalDate rerun = december.minusDays(1);
+        businessDate = december;
+        service.recalculate(rerun, rerun);
+        assertThat(service.query(rerun, rerun).annual().getFirst().averagePlantingsPerPlot())
+            .as("种植 54，当年用最近快照，同一块种两次除以 2").isEqualByComparingTo("1.00");
+
+        businessDate = december.plusDays(1);
+        service.recalculate(december, december);
+        assertThat(service.query(december, december).annual().getFirst().averagePlantingsPerPlot())
+            .as("种植 54，已有 12-29 但缺 12-31，上一年仍为空").isNull();
+    }
+
+    @Test
+    void yearEndSnapshotUsesSameDayCompletionsAndStaysFixedAfterYearCloses() throws Exception {
+        LocalDate december = LocalDate.of(2025, 12, 31);
+        businessDate = december.minusDays(2);
+        sql("INSERT INTO t_plant_plot_zone (id, zone_status) VALUES (1,1)");
+        sql("INSERT INTO t_plant_plot_info (id, zone_id, plot_area) VALUES (10,1,2),(20,1,3)");
+        captureSnapshot.accept(businessDate);
+        businessDate = december;
+        sql("INSERT INTO t_plant_plot_info (id, zone_id, plot_area) VALUES (30,1,5)");
+        sql("INSERT INTO t_plant_plant_plan (id, plan_year) VALUES (1,2025),(2,2024)");
+        detail(1, 1, 10, 111, 2, 2, "2025-02-04", "2025-02-05", null, null);
+        detail(2, 2, 10, 111, 12, 2, "2025-12-31", "2025-12-31", null, null);
+        LocalDate priorDay = december.minusDays(1);
+        service.recalculate(priorDay, priorDay);
+        assertThat(service.query(priorDay, priorDay).annual().getFirst().averagePlantingsPerPlot())
+            .as("种植 54，最新快照早于今天，1 次完工 ÷ 2 块地").isEqualByComparingTo("0.50");
+
+        captureSnapshot.accept(december);
+        service.recalculate(priorDay, priorDay);
+        var openYear = service.query(priorDay, priorDay);
+        assertThat(openYear.annual().getFirst().averagePlantingsPerPlot()).as("种植 54，最新快照当天完工也计，2 ÷ 3")
+            .isEqualByComparingTo("0.67");
+        assertThat(openYear.monthly().getFirst().idleArea()).as("种植 48，当月已有当天快照取当天").isEqualByComparingTo("10");
+        assertThat(openYear.monthly().getFirst().plantedPlotCount()).as("种植 29，P1 事件仍统计到昨天").isZero();
+
+        businessDate = december.plusDays(2);
+        sql("UPDATE t_plant_plot_zone SET zone_status=0 WHERE id=1");
+        captureSnapshot.accept(businessDate);
+        service.recalculate(december, december);
+        assertThat(service.query(december, december).annual().getFirst().averagePlantingsPerPlot())
+            .as("种植 54，上一年只取 12-31 三块地，后续片区停用不改变分母").isEqualByComparingTo("0.67");
+    }
+
+    @Test
+    void capturedZeroPlotsDiffersFromMissingSnapshot() throws Exception {
+        LocalDate december = LocalDate.of(2025, 12, 31);
+        businessDate = december;
+        sql("INSERT INTO t_plant_plot_zone (id, zone_status) VALUES (1,1)");
+        sql("INSERT INTO t_plant_plot_info (id, zone_id, plot_area) VALUES (10,1,2)");
+        captureSnapshot.accept(december);
+        sql("UPDATE t_plant_plot_zone SET zone_status=0 WHERE id=1");
+        captureSnapshot.accept(december);
+        businessDate = december.plusDays(1);
+
+        service.recalculate(december, december);
+        var report = service.query(december, december);
+        assertThat(report.daily().getFirst().totalPlotCount()).as("种植 11，采集成功且有效地块为 0").isZero();
+        assertThat(report.daily().getFirst().inFieldCropCount()).as("种植 9，零地块零作物").isZero();
+        assertThat(report.monthly().getFirst().plotUtilizationPercent()).as("种植 30，零分母").isEqualByComparingTo("0.00");
+        assertThat(report.annual().getFirst().averagePlantingsPerPlot()).as("种植 54，年末已有快照，零分母")
+            .isEqualByComparingTo("0.00");
     }
 
     @Test
@@ -1035,6 +1342,13 @@ class ProductionIndicatorsMysqlTest {
             INSERT INTO t_warehouse_stock_flow (id,plot_id,flow_date,flow_type,inout_type,change_quantity,crop_id)
             VALUES (?,?,?,?,'IN',?,?)
             """, id, plot, stamp, type, weight, crop);
+    }
+
+    private long queryLong(String statement) throws Exception {
+        try (var query = connection.createStatement(); var rows = query.executeQuery(statement)) {
+            assertThat(rows.next()).isTrue();
+            return rows.getLong(1);
+        }
     }
 
     private void sql(String statement, Object... values) throws Exception {
