@@ -88,7 +88,7 @@ class AppletPlantManageDashboardServiceImplTest {
     }
 
     @Test
-    @DisplayName("getAnnualPlan happy：计划走 plan_year、已种植走结束年+完成、已采摘走 actual_yield 按采摘开始年")
+    @DisplayName("getAnnualPlan happy：计划走 plan_year、已种植走结束年+完成、已采摘使用当年实际入库量")
     void getAnnualPlanHappyPath() {
         // 计划维度（plan_year）
         AppletPlantManageDashboardMapper.AnnualPlanRow plan = new AppletPlantManageDashboardMapper.AnnualPlanRow();

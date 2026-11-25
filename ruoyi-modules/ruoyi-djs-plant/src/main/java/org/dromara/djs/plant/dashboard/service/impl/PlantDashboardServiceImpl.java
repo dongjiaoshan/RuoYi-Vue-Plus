@@ -70,8 +70,7 @@ public class PlantDashboardServiceImpl implements IPlantDashboardService {
         vo.setTodayIdleMgmtPlotCount(nz(dashboardMapper.countTodayIdleMgmt(tenantId)));
         vo.setTodayPlantMgmtPlotCount(nz(dashboardMapper.countTodayPlantMgmt(tenantId)));
         vo.setTodayDisasterPlotCount(nz(dashboardMapper.countTodayDisaster(tenantId)));
-        // 今日采摘活动处理总重量：t_plant_plant_activity 当天 SUM(daily_weight)（kg），
-        // 与采摘明细页 / 班组绩效同源同口径（pick_dest 非空、daily_weight>0）。
+        // 今日实际采摘入库公斤数，沿用现有 JSON 字段。
         vo.setTodayPickActivityWeight(nzBd(dashboardMapper.selectTodayPickActivityWeight(tenantId)));
 
         // 块 ② 当月完成率

@@ -39,6 +39,7 @@ import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plan.service.IPlantPlanService;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.plot.service.PlotIdleIntervalService;
 import org.dromara.djs.plant.zone.domain.PlotZone;
 import org.dromara.djs.plant.zone.mapper.PlotZoneMapper;
 import org.dromara.djs.plant.team.domain.PlantWorkPeople;
@@ -117,6 +118,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     private final IPlantActivityService plantActivityService;
     private final org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
     private final IPlantPlanService plantPlanService;
+    private final PlotIdleIntervalService idleIntervals;
 
     public FarmRecordsServiceImpl(FarmRecordsMapper baseMapper,
                                   PlotInfoMapper plotInfoMapper,
@@ -128,7 +130,8 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                                   ImageUrlResolver imageUrlResolver,
                                   IPlantActivityService plantActivityService,
                                   org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService,
-                                  IPlantPlanService plantPlanService) {
+                                  IPlantPlanService plantPlanService,
+                                  PlotIdleIntervalService idleIntervals) {
         super(baseMapper);
         this.plotInfoMapper = plotInfoMapper;
         this.plotZoneMapper = plotZoneMapper;
@@ -140,6 +143,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         this.plantActivityService = plantActivityService;
         this.teamLinkService = teamLinkService;
         this.plantPlanService = plantPlanService;
+        this.idleIntervals = idleIntervals;
     }
 
     /**
@@ -311,7 +315,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         // ① 目标地块入计划（满种明细）——plan 模块构建/校验/插入 + 目标 plot_status=2 + recalc
         List<Long> targetPlotIds = baseMapper.selectTransplantTargetPlots(cropId, sourcePlotId);
         if (CollUtil.isNotEmpty(targetPlotIds)) {
-            plantPlanService.materializeTransplantTargets(planId, sourcePlotId, cropId, targetPlotIds);
+            plantPlanService.materializeTransplantTargets(planId, sourcePlotId, cropId, targetPlotIds, farmDate);
         }
         // ② 源育苗明细标采摘完成（保留明细走退茬）。{0} 为 MP 参数绑定占位（LocalDate），非拼接，无注入面。
         plantDetailsMapper.update(null,
@@ -329,23 +333,20 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                 .eq(PlotInfo::getId, sourcePlotId)
                 .set(PlotInfo::getPlotStatus, 3)
                 .set(PlotInfo::getUpdateBy, updateBy));
+        idleIntervals.recordAfterPlotWrite(sourcePlotId, farmDate, "transplant_source");
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long submitRotation(RotationRecordBo bo) {
-        // 前置校验与副作用与批量退茬同源（applyRotationSideEffect），避免两条入口口径漂移。
-        // 先校验再落记录：校验不过时不留下一条"退了但没生效"的农事记录。
-        requireRotatable(bo.getPlotId());
-
         FarmRecords r = new FarmRecords();
         buildBase(r, "rotation", bo.getPlotId(), bo.getCropId(), bo.getPlantId(),
             firstFarmTeam(effFarmTeams(bo.getFarmByIds(), bo.getFarmBy())),
             bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
+        r.setPlantDetailId(applyRotationSideEffect(bo.getPlotId(), bo.getCropId(), bo.getFarmDate()));
         baseMapper.insert(r);
         applyFarmTeamLinks(r.getId(), bo.getFarmByIds(), bo.getFarmBy());
 
-        applyRotationSideEffect(bo.getPlotId(), bo.getCropId());
         return r.getId();
     }
 
@@ -363,13 +364,12 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             buildBase(r, type, target.getPlotId(), target.getCropId(), target.getPlantId(),
                 firstFarmTeam(effFarmTeams(bo.getFarmByIds(), bo.getFarmBy())),
                 bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
+            if (isRotation) {
+                r.setPlantDetailId(applyRotationSideEffect(target.getPlotId(), target.getCropId(), bo.getFarmDate()));
+            }
             baseMapper.insert(r);
             applyFarmTeamLinks(r.getId(), bo.getFarmByIds(), bo.getFarmBy());
             count++;
-            // 退茬副作用：每条 plot_status=1（空闲）。plant_status/end_actualdate 归「种植完成」独占。
-            if (isRotation) {
-                applyRotationSideEffect(target.getPlotId(), target.getCropId());
-            }
         }
         return count;
     }
@@ -471,7 +471,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
      *
      * <p>{@code plant_status='completed'} + {@code end_actualdate} 归「种植完成」finishPlant 独占，退茬不写。</p>
      */
-    private void applyRotationSideEffect(Long plotId, Long cropId) {
+    private Long applyRotationSideEffect(Long plotId, Long cropId, LocalDate farmDate) {
         requireRotatable(plotId);
 
         PlantDetails target = plantDetailsMapper.selectOne(
@@ -488,16 +488,21 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             // 否则又会退掉地块上别的茬（正是 PLT-ROTATE-ONCE-001 要根治的那条路径）。
             throw new ServiceException("该地块的这一茬已经退过茬了，无需重复退茬");
         }
-        plantDetailsMapper.update(null,
+        int updated = plantDetailsMapper.update(null,
             new LambdaUpdateWrapper<PlantDetails>()
                 .eq(PlantDetails::getId, target.getId())
                 .isNull(PlantDetails::getRotatedAt)
                 .set(PlantDetails::getRotatedAt, LocalDateTime.now()));
+        if (updated != 1) {
+            throw new ServiceException("该地块的这一茬已经退过茬了，无需重复退茬");
+        }
 
         plotInfoMapper.update(null,
             new LambdaUpdateWrapper<PlotInfo>()
                 .eq(PlotInfo::getId, plotId)
                 .set(PlotInfo::getPlotStatus, 1));
+        idleIntervals.recordAfterPlotWrite(plotId, farmDate, "rotation");
+        return target.getId();
     }
 
     @Override
@@ -921,6 +926,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                     .eq(PlotInfo::getId, bo.getPlotId())
                     .set(PlotInfo::getPlotStatus, 3)
                     .set(PlotInfo::getUpdateBy, updateBy));
+            idleIntervals.recordAfterPlotWrite(bo.getPlotId(), bo.getAdjustDate(), "pick_adjust");
         }
 
         // 写一条 harvest_activity 农事记录留痕（不录重量）；row152：farm_by 写班组首值，全集另落 t_farm_records_team。

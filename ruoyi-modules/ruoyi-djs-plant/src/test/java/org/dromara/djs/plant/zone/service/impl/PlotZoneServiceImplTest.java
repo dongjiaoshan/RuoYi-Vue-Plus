@@ -9,6 +9,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.plot.service.PlotIdleIntervalService;
 import org.dromara.djs.plant.zone.domain.PlotZone;
 import org.dromara.djs.plant.zone.domain.bo.PlotZoneBo;
 import org.dromara.djs.plant.zone.domain.query.PlotZoneQuery;
@@ -53,14 +54,17 @@ class PlotZoneServiceImplTest {
     private PlotZoneMapper plotZoneMapper;
 
     @Mock
+    private PlotIdleIntervalService idleIntervals;
+    @Mock
     private PlotInfoMapper plotInfoMapper;
 
     private TestablePlotZoneServiceImpl service;
 
     /** 覆盖 toEntity 钩子，避开 MapStruct-Plus 容器。 */
     static class TestablePlotZoneServiceImpl extends PlotZoneServiceImpl {
-        TestablePlotZoneServiceImpl(PlotZoneMapper baseMapper, PlotInfoMapper plotInfoMapper) {
-            super(baseMapper, plotInfoMapper);
+        TestablePlotZoneServiceImpl(PlotZoneMapper baseMapper, PlotInfoMapper plotInfoMapper,
+                                    PlotIdleIntervalService idleIntervals) {
+            super(baseMapper, plotInfoMapper, idleIntervals);
         }
 
         @Override
@@ -79,7 +83,7 @@ class PlotZoneServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestablePlotZoneServiceImpl(plotZoneMapper, plotInfoMapper);
+        service = new TestablePlotZoneServiceImpl(plotZoneMapper, plotInfoMapper, idleIntervals);
     }
 
     private PlotZoneBo sampleBo() {
@@ -171,15 +175,20 @@ class PlotZoneServiceImplTest {
     }
 
     @Test
-    @DisplayName("deleteWithValidByIds: 无关联地块 happy → 走基类 softDelete")
+    @DisplayName("deleteWithValidByIds: 级联软删空闲地块并同步空闲区间")
     void testDeleteWithValidByIds_HappyPath() {
         when(plotInfoMapper.selectCount(any(LambdaQueryWrapper.class))).thenReturn(0L);
+        PlotInfo plot = new PlotInfo();
+        plot.setId(80001L);
+        when(plotInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(plot));
         when(plotZoneMapper.update(isNull(), any(UpdateWrapper.class))).thenReturn(1);
 
         int rows = service.deleteWithValidByIds(List.of(70001L, 70002L));
 
         assertThat(rows).isEqualTo(2);
         verify(plotZoneMapper, times(2)).update(isNull(), any(UpdateWrapper.class));
+        verify(plotInfoMapper).deleteByIds(List.of(80001L));
+        verify(idleIntervals).recordAfterPlotWrite(List.of(80001L), null, "zone_delete");
     }
 
     @Test

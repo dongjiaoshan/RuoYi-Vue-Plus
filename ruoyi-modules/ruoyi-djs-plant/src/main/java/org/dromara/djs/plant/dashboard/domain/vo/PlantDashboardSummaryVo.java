@@ -67,12 +67,12 @@ public class PlantDashboardSummaryVo implements Serializable {
     private BigDecimal totalPlotArea;
 
     /**
-     * 今日工作 - 种植（今日 {@code begin_actualdate = CURDATE()} 的不重复地块数）。
+     * 今日工作 - 种植（今日 {@code end_actualdate = CURDATE()} 的不重复地块数）。
      */
     private Integer todayPlantingPlotCount;
 
     /**
-     * 今日工作 - 采摘（今日 {@code begin_harvestdate = CURDATE()} 的不重复地块数）。
+     * 今日工作 - 采摘（今日 {@code end_harvestdate = CURDATE()} 的不重复地块数）。
      */
     private Integer todayHarvestPlotCount;
 
@@ -93,12 +93,7 @@ public class PlantDashboardSummaryVo implements Serializable {
      */
     private Integer todayDisasterPlotCount;
 
-    /**
-     * 今日工作 - 采摘活动量 kg（V1 恒 0）。
-     *
-     * <p>采摘活动已改只读报表，原数据源 {@code t_plant_pick_activity} 已废弃，故该指标 V1 恒返 0；
-     * 字段保留供前端继续读取，不删。</p>
-     */
+    /** 今日工作 - 实际采摘入库重量（kg）。 */
     private BigDecimal todayPickActivityWeight;
 
     /**

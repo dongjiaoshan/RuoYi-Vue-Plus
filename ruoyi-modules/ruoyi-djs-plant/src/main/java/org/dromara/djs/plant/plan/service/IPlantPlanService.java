@@ -16,6 +16,7 @@ import org.dromara.djs.plant.plan.domain.vo.PlantPlanVo;
 import org.dromara.djs.plant.plan.domain.vo.PlotByZoneVo;
 import org.dromara.djs.plant.plan.domain.vo.PlotYearPlanRowVo;
 
+import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
 
@@ -151,9 +152,11 @@ public interface IPlantPlanService {
      * @param sourcePlotId  源育苗地块 id
      * @param cropId        作物 id
      * @param targetPlotIds 目标地块 id 列表（来自移栽记录 DISTINCT transplant_plot）
+     * @param farmDate      移栽落地业务日
      * @return 实际新增的目标满种明细行数（幂等跳过的不计入）
      */
-    int materializeTransplantTargets(Long planId, Long sourcePlotId, Long cropId, java.util.List<Long> targetPlotIds);
+    int materializeTransplantTargets(Long planId, Long sourcePlotId, Long cropId, List<Long> targetPlotIds,
+                                    LocalDate farmDate);
 
     /**
      * row159：移栽提交时对本次所选「转移目标地块」做前移校验——用源育苗采摘窗口构造一条预期满种明细，

@@ -35,6 +35,7 @@ import org.dromara.djs.plant.plan.mapper.PlantPlanMapper;
 import org.dromara.djs.plant.plan.service.IPlantPlanService;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.plot.service.PlotIdleIntervalService;
 import org.dromara.djs.plant.team.domain.PlantWorkTeam;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
 import org.dromara.djs.plant.team.service.PlantTeamLinkService;
@@ -103,6 +104,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
     private final PlantWorkTeamMapper teamMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final PlantTeamLinkService teamLinkService;
+    private final PlotIdleIntervalService idleIntervals;
 
     public PlantPlanServiceImpl(
         PlantPlanMapper baseMapper,
@@ -112,7 +114,8 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         PlotZoneMapper zoneMapper,
         PlantWorkTeamMapper teamMapper,
         IBizCodeGenerator bizCodeGenerator,
-        PlantTeamLinkService teamLinkService) {
+        PlantTeamLinkService teamLinkService,
+        PlotIdleIntervalService idleIntervals) {
         super(baseMapper);
         this.detailsMapper = detailsMapper;
         this.cropMapper = cropMapper;
@@ -121,6 +124,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         this.teamMapper = teamMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.teamLinkService = teamLinkService;
+        this.idleIntervals = idleIntervals;
     }
 
     /**
@@ -718,7 +722,8 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public int materializeTransplantTargets(Long planId, Long sourcePlotId, Long cropId, List<Long> targetPlotIds) {
+    public int materializeTransplantTargets(Long planId, Long sourcePlotId, Long cropId, List<Long> targetPlotIds,
+                                            LocalDate farmDate) {
         if (planId == null || sourcePlotId == null || cropId == null || CollUtil.isEmpty(targetPlotIds)) {
             return 0;
         }
@@ -795,6 +800,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                 .in(PlotInfo::getId, newDetailPlotIds)
                 .set(PlotInfo::getPlotStatus, 2)
                 .set(PlotInfo::getUpdateBy, updateBy));
+        idleIntervals.recordAfterPlotWrite(newDetailPlotIds, farmDate, "transplant_target");
         // 新增目标满种明细后主表 totalPlot / totalArea / earliest·last_harvestdate / plant_status 需重算
         baseMapper.recalcAggregates(planId);
         baseMapper.recalcPlanStatus(planId);
@@ -1208,6 +1214,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                 .eq(PlotInfo::getId, plotId)
                 .set(PlotInfo::getPlotStatus, 1)
                 .set(PlotInfo::getUpdateBy, updateBy));
+        idleIntervals.recordAfterPlotWrite(plotId, null, "plant_revert");
     }
 
     /**
@@ -1483,6 +1490,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                     .in(PlotInfo::getId, plotIds)
                     .set(PlotInfo::getPlotStatus, 2)
                     .set(PlotInfo::getUpdateBy, updateBy));
+            idleIntervals.recordAfterPlotWrite(plotIds, bo.getBeginActualdate(), "plant_start");
         }
 
         // 派生重算受影响计划主表 plant_status（开工 done=0 时仍落 pending，无害；与 finishPlant 对称）；
@@ -1605,6 +1613,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                         .in(PlotInfo::getId, plotIds)
                         .set(PlotInfo::getPlotStatus, 2)
                         .set(PlotInfo::getUpdateBy, updateBy));
+                idleIntervals.recordAfterPlotWrite(plotIds, completeDate, "plant_finish");
             }
         }
 

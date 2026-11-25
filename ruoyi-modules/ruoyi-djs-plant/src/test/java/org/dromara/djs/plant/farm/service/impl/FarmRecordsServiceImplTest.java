@@ -34,6 +34,7 @@ import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.plot.service.PlotIdleIntervalService;
 import org.dromara.djs.plant.team.mapper.PlantWorkPeopleMapper;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
 import org.dromara.djs.plant.zone.mapper.PlotZoneMapper;
@@ -92,6 +93,8 @@ class FarmRecordsServiceImplTest {
     @Mock
     private FarmRecordsMapper baseMapper;
     @Mock
+    private PlotIdleIntervalService idleIntervals;
+    @Mock
     private PlotInfoMapper plotInfoMapper;
     @Mock
     private PlotZoneMapper plotZoneMapper;
@@ -131,7 +134,7 @@ class FarmRecordsServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, plotZoneMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver, plantActivityService, teamLinkService, plantPlanService);
+        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, plotZoneMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver, plantActivityService, teamLinkService, plantPlanService, idleIntervals);
         // mocking selectMaxRecordNoByPrefix 返 null（当日尚无序号）→ next=1
         when(baseMapper.selectMaxRecordNoByPrefix(any(), any())).thenReturn(null);
         // mocking plot / crop 落库快照（plot_type / crop_name 冗余）
@@ -264,11 +267,16 @@ class FarmRecordsServiceImplTest {
 
         Long id = service.submitRotation(bo);
         assertThat(id).isEqualTo(202L);
+        ArgumentCaptor<FarmRecords> saved = ArgumentCaptor.forClass(FarmRecords.class);
+        verify(baseMapper).insert(saved.capture());
+        assertThat(saved.getValue().getPlantDetailId()).isEqualTo(900L);
+        assertThat(saved.getValue().getPlotType()).isEqualTo(3);
 
         // 给那一茬打了 rotated_at
         verify(plantDetailsMapper).update(isNull(), any(Wrapper.class));
         // 地块转空闲
         verify(plotInfoMapper).update(isNull(), any(Wrapper.class));
+        verify(idleIntervals).recordAfterPlotWrite(1L, bo.getFarmDate(), "rotation");
     }
 
     @Test
@@ -326,6 +334,7 @@ class FarmRecordsServiceImplTest {
         PlantDetails target = new PlantDetails();
         target.setId(900L);
         when(plantDetailsMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(target);
+        when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
         when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
             FarmRecords r = inv.getArgument(0);
             r.setId(204L);
@@ -358,12 +367,6 @@ class FarmRecordsServiceImplTest {
         when(plantDetailsMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of());
         // 已无「未退茬的已采完明细」= 这一茬早退过了
         when(plantDetailsMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
-        when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
-            FarmRecords r = inv.getArgument(0);
-            r.setId(203L);
-            return 1;
-        });
-
         assertThatThrownBy(() -> service.submitRotation(bo))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("已经退过茬");
@@ -444,11 +447,12 @@ class FarmRecordsServiceImplTest {
         assertThat(id).isEqualTo(211L);
         verify(baseMapper).insert(any(FarmRecords.class));
         // ① 目标满种入计划：交 plan 模块落地，带全部目标地块
-        verify(plantPlanService).materializeTransplantTargets(7L, 1L, 2L, List.of(3L, 4L));
+        verify(plantPlanService).materializeTransplantTargets(7L, 1L, 2L, List.of(3L, 4L), bo.getFarmDate());
         // ② 源育苗明细标采摘完成（1 次 update）
         verify(plantDetailsMapper).update(isNull(), any(Wrapper.class));
         // ③ 源育苗地块转采摘态(待退茬)（1 次 update）
         verify(plotInfoMapper).update(isNull(), any(Wrapper.class));
+        verify(idleIntervals).recordAfterPlotWrite(1L, bo.getFarmDate(), "transplant_source");
     }
 
     @Test
@@ -475,7 +479,7 @@ class FarmRecordsServiceImplTest {
         when(plotInfoMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
         int landed = service.finalizeTransplant(bo);
         assertThat(landed).isEqualTo(1);
-        verify(plantPlanService).materializeTransplantTargets(7L, 1L, 2L, List.of(3L));
+        verify(plantPlanService).materializeTransplantTargets(7L, 1L, 2L, List.of(3L), bo.getFarmDate());
 
         // 源明细已采摘完成（已落地）→ 幂等返 0，不重复落地
         when(plantDetailsMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
@@ -513,6 +517,39 @@ class FarmRecordsServiceImplTest {
         // 非退茬：不触发地块状态回归 / 明细完结
         verify(plotInfoMapper, never()).updateById(any(PlotInfo.class));
         verify(plantDetailsMapper, never()).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    void submitGrowBatch_rotationStoresTheDetailActuallyAdvanced() {
+        GrowBatchBo bo = new GrowBatchBo();
+        bo.setFarmType("rotation");
+        bo.setFarmBy(10L);
+        bo.setFarmDate(LocalDate.of(2025, 11, 10));
+        GrowBatchBo.PlotTarget plot = new GrowBatchBo.PlotTarget();
+        plot.setPlotId(1L);
+        plot.setPlantId(7L);
+        plot.setCropId(2L);
+        bo.setTargets(List.of(plot));
+
+        PlotInfo active = new PlotInfo();
+        active.setId(1L);
+        active.setPlotStatus(3);
+        when(plotInfoMapper.selectById(1L)).thenReturn(active);
+        PlantDetails target = new PlantDetails();
+        target.setId(901L);
+        when(plantDetailsMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(target);
+        when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
+            ((FarmRecords) inv.getArgument(0)).setId(205L);
+            return 1;
+        });
+
+        assertThat(service.submitGrowBatch(bo)).isEqualTo(1);
+        ArgumentCaptor<FarmRecords> saved = ArgumentCaptor.forClass(FarmRecords.class);
+        verify(baseMapper).insert(saved.capture());
+        assertThat(saved.getValue().getPlantDetailId()).isEqualTo(901L);
+        assertThat(saved.getValue().getFarmDate()).isEqualTo(bo.getFarmDate());
+        verify(idleIntervals).recordAfterPlotWrite(1L, bo.getFarmDate(), "rotation");
     }
 
     @Test
@@ -583,8 +620,14 @@ class FarmRecordsServiceImplTest {
             return 1;
         });
 
+        PlotInfo plot = new PlotInfo();
+        plot.setId(1L);
+        plot.setPlotStatus(2);
+        when(plotInfoMapper.selectById(1L)).thenReturn(plot);
         int affected = service.adjustPlotPickStatus(bo);
         assertThat(affected).isEqualTo(1);
+        verify(plotInfoMapper).update(isNull(), any(Wrapper.class));
+        verify(idleIntervals).recordAfterPlotWrite(1L, bo.getAdjustDate(), "pick_adjust");
 
         ArgumentCaptor<Wrapper> cap = ArgumentCaptor.forClass(Wrapper.class);
         verify(plantDetailsMapper).update(isNull(), cap.capture());

@@ -11,6 +11,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.plot.service.PlotIdleIntervalService;
 import org.dromara.djs.plant.zone.domain.PlotZone;
 import org.dromara.djs.plant.zone.domain.bo.PlotZoneBo;
 import org.dromara.djs.plant.zone.domain.query.PlotZoneQuery;
@@ -40,10 +41,13 @@ import java.util.Map;
 public class PlotZoneServiceImpl extends DjsBaseServiceImpl<PlotZoneMapper, PlotZone> implements IPlotZoneService {
 
     private final PlotInfoMapper plotInfoMapper;
+    private final PlotIdleIntervalService idleIntervals;
 
-    public PlotZoneServiceImpl(PlotZoneMapper baseMapper, PlotInfoMapper plotInfoMapper) {
+    public PlotZoneServiceImpl(PlotZoneMapper baseMapper, PlotInfoMapper plotInfoMapper,
+                               PlotIdleIntervalService idleIntervals) {
         super(baseMapper);
         this.plotInfoMapper = plotInfoMapper;
+        this.idleIntervals = idleIntervals;
     }
 
     @Override
@@ -145,6 +149,7 @@ public class PlotZoneServiceImpl extends DjsBaseServiceImpl<PlotZoneMapper, Plot
             .stream().map(PlotInfo::getId).toList();
         if (!plotIds.isEmpty()) {
             plotInfoMapper.deleteByIds(plotIds);
+            idleIntervals.recordAfterPlotWrite(plotIds, null, "zone_delete");
         }
         return softDelete(ids);
     }

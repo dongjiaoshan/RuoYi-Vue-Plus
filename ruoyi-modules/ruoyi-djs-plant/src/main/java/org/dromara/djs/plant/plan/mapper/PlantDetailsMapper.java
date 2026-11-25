@@ -10,6 +10,7 @@ import org.dromara.djs.plant.plan.domain.vo.PlantMonthTaskVo;
 import org.dromara.djs.plant.plan.domain.vo.PlotYearPlanRowVo;
 import org.dromara.djs.plant.plan.domain.vo.SeedSummaryVo;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
@@ -141,45 +142,30 @@ public interface PlantDetailsMapper extends BaseMapperPlus<PlantDetails, PlantDe
         """)
     List<PlantCropTaskVo> selectCropTasks(@Param("month") Integer month);
 
-    /**
-     * mp 播种首页 3 KPI 聚合（FIX-PLT-MP-SEED-001 #6.5）：当月完成率 / 当日种植品种数 / 当日种植地块数。
-     *
-     * <p>口径：</p>
-     * <ul>
-     *   <li>{@code monthCompletionRate} = ROUND(当月已完成种植明细数 / 当月明细总数 × 100)，
-     *       当月无明细时 COALESCE 兜底返 0（不除零）；"当月" = {@code plant_month=#{month}}。
-     *       完成口径 = {@code plant_status='completed'}（取消开工分步后只有「待种植 / 已完成种植」两态）。</li>
-     *   <li>{@code todayCropKindCount}（当月种植品种数）= {@code plant_month=#{month}} 明细的 distinct
-     *       crop_id 数（= 首页「全部(N)」作物卡数，与 {@link #selectCropTasks} 同口径，KPI 与列表一致）。</li>
-     *   <li>{@code todayPlotCount}（当月完成种植地块数）= {@code plant_month=#{month}} 且
-     *       {@code plant_status='completed'} 明细的 distinct plot_id 数。</li>
-     * </ul>
-     *
-     * <p>三项统一按 {@code plant_month=#{month}} 计（r17：品种数/地块数原按 {@code begin_actualdate}
-     * 日期窗口，与列表 {@code plant_month} 口径不一致——首作物播种日落在当月首却被漏统计；
-     * 改与列表/完成率同源 {@code plant_month}，KPI = 列表「全部(N)」）。</p>
-     *
-     * <p>只读聚合，显式 {@code tenant_id='1001'} + {@code del_flag='0'}（对齐 {@link #selectMonthTasks}）。</p>
-     *
-     * @param month 当月 1-12（按 plant_month）
-     * @return 聚合 VO（永不返 null 行，各字段 COALESCE 兜底 0）
-     */
+    /** 月执行按实际完成月，达成率按本年本月计划与本月完成的交集。 */
     @Select("""
         SELECT
             COALESCE(ROUND(
-                SUM(CASE WHEN plant_month = #{month} AND plant_status = 'completed' THEN 1 ELSE 0 END)
-                / NULLIF(SUM(CASE WHEN plant_month = #{month} THEN 1 ELSE 0 END), 0) * 100
+                COUNT(CASE WHEN p.plan_year = #{year} AND d.plant_month = #{month}
+                             AND d.plant_status = 'completed'
+                             AND d.end_actualdate >= #{from} AND d.end_actualdate < #{until} THEN 1 END)
+                / NULLIF(COUNT(CASE WHEN p.plan_year = #{year} AND d.plant_month = #{month} THEN 1 END), 0) * 100
             ), 0) AS monthCompletionRate,
-            COALESCE(COUNT(DISTINCT CASE
-                WHEN plant_month = #{month} THEN crop_id END), 0) AS todayCropKindCount,
-            COALESCE(COUNT(DISTINCT CASE
-                WHEN plant_month = #{month}
-                 AND plant_status = 'completed' THEN plot_id END), 0) AS todayPlotCount
-          FROM t_plant_plant_details
-         WHERE del_flag = '0'
-           AND tenant_id = '1001'
+            COUNT(DISTINCT CASE WHEN d.plant_status = 'completed'
+                                  AND d.end_actualdate >= #{from} AND d.end_actualdate < #{until}
+                                THEN d.crop_id END) AS todayCropKindCount,
+            COUNT(CASE WHEN d.plant_status = 'completed'
+                         AND d.end_actualdate >= #{from} AND d.end_actualdate < #{until}
+                       THEN d.plot_id END) AS todayPlotCount
+          FROM t_plant_plant_details d
+          LEFT JOIN t_plant_plant_plan p ON p.id = d.plant_id AND p.tenant_id = #{tenantId} AND p.del_flag = '0'
+         WHERE d.tenant_id = #{tenantId} AND d.del_flag = '0'
+           AND ((p.plan_year = #{year} AND d.plant_month = #{month})
+                OR (d.end_actualdate >= #{from} AND d.end_actualdate < #{until}))
         """)
-    SeedSummaryVo selectSeedSummary(@Param("month") Integer month);
+    SeedSummaryVo selectSeedSummary(@Param("tenantId") String tenantId, @Param("year") int year,
+                                    @Param("month") int month, @Param("from") LocalDate from,
+                                    @Param("until") LocalDate until);
 
     /**
      * 向导 step3：批量统计某年份各地块的计划种植次数（轮作次数）（测试反馈 row27 子项1）。

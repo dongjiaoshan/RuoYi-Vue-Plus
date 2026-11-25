@@ -51,6 +51,9 @@ public class FarmRecords extends TenantEntity {
     /** FK → {@code t_plant_plant_plan.id}；空地处理时为空。 */
     private Long plantId;
 
+    /** 本次实际推进的退茬明细。 */
+    private Long plantDetailId;
+
     /** FK → {@code t_plant_plot_info.id}。 */
     private Long plotId;
 

@@ -28,6 +28,7 @@ import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plan.mapper.PlantPlanMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.plot.service.PlotIdleIntervalService;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
 import org.dromara.djs.plant.zone.mapper.PlotZoneMapper;
 import org.junit.jupiter.api.BeforeAll;
@@ -50,6 +51,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -92,6 +94,8 @@ class PlantPlanServiceImplTest {
     @Mock
     private CropInfoMapper cropMapper;
     @Mock
+    private PlotIdleIntervalService idleIntervals;
+    @Mock
     private PlotInfoMapper plotMapper;
     @Mock
     private PlotZoneMapper zoneMapper;
@@ -120,7 +124,7 @@ class PlantPlanServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new PlantPlanServiceImpl(planMapper, detailsMapper, cropMapper, plotMapper, zoneMapper, teamMapper, bizCodeGenerator, teamLinkService);
+        service = new PlantPlanServiceImpl(planMapper, detailsMapper, cropMapper, plotMapper, zoneMapper, teamMapper, bizCodeGenerator, teamLinkService, idleIntervals);
     }
 
     @Test
@@ -261,6 +265,7 @@ class PlantPlanServiceImplTest {
         assertThat(affected).isEqualTo(1);   // 仅 d1 开工
         verify(detailsMapper).update(isNull(), any(Wrapper.class));   // 批量回写明细
         verify(plotMapper).update(isNull(), any(Wrapper.class));      // 同步地块 plot_status=2
+        verify(idleIntervals).recordAfterPlotWrite(Set.of(101L), bo.getBeginActualdate(), "plant_start");
     }
 
     @Test
@@ -310,6 +315,21 @@ class PlantPlanServiceImplTest {
 
         assertThat(affected).isEqualTo(1);   // 仅 d1 完成（d2 已完成跳过）
         verify(plotMapper).update(isNull(), any(Wrapper.class));   // 待种植地块一步落地补 plot_status=2
+        verify(idleIntervals).recordAfterPlotWrite(Set.of(101L), bo.getEndActualdate(), "plant_finish");
+    }
+
+    @Test
+    void materializeTransplantTargetsClosesIdleAtFarmDate() {
+        PlantDetails source = plantedDetail();
+        PlotInfo target = new PlotInfo();
+        target.setId(102L);
+        when(detailsMapper.selectList(any())).thenReturn(List.of(source));
+        when(plotMapper.selectByIds(List.of(102L))).thenReturn(List.of(target));
+        LocalDate farmDate = LocalDate.of(2026, 9, 1);
+
+        assertThat(service.materializeTransplantTargets(1L, 101L, 30L, List.of(102L), farmDate)).isEqualTo(1);
+        verify(plotMapper).update(isNull(), any(Wrapper.class));
+        verify(idleIntervals).recordAfterPlotWrite(List.of(102L), farmDate, "transplant_target");
     }
 
     // ============================================================
@@ -503,6 +523,7 @@ class PlantPlanServiceImplTest {
         // 种植班组关联清空 + 地块放回空闲（否则 assertPlotsIdle 会把这块地永久锁死）
         verify(teamLinkService).syncDetailTeams(eq(11L), eq("plant"), eq(Collections.emptyList()));
         verify(plotMapper).update(isNull(), any(Wrapper.class));
+        verify(idleIntervals).recordAfterPlotWrite(101L, null, "plant_revert");
         verify(planMapper).recalcAggregates(1L);
         verify(planMapper).recalcPlanStatus(1L);
     }

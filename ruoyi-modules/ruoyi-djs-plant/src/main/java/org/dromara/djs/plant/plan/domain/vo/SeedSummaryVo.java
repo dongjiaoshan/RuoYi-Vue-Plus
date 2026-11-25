@@ -12,9 +12,9 @@ import java.io.Serializable;
  * 取代此前借用 {@code getPickSummary} 的采摘口径（品种数 / 采摘 kg）。</p>
  *
  * <ul>
- *   <li>{@code monthCompletionRate}：当月明细 已完成种植(plant_status='completed') / 当月明细总数 × 100（整数百分比）</li>
- *   <li>{@code todayCropKindCount}（当月种植品种数）：当月 {@code begin_actualdate} 区间内明细的 distinct crop_id 数</li>
- *   <li>{@code todayPlotCount}（当月完成种植地块数）：当月 {@code begin_actualdate} 区间内且
+ *   <li>{@code monthCompletionRate}：本月计划且本月完成的明细数 / 本月计划明细数 × 100（整数百分比）</li>
+ *   <li>{@code todayCropKindCount}（当月种植品种数）：当月 {@code end_actualdate} 区间内明细的 distinct crop_id 数</li>
+ *   <li>{@code todayPlotCount}（当月完成种植地块数）：当月 {@code end_actualdate} 区间内且
  *       {@code plant_status='completed'} 明细的 distinct plot_id 数</li>
  * </ul>
  *
@@ -32,9 +32,9 @@ public class SeedSummaryVo implements Serializable {
     /** 当月完成率（整数百分比，0-100；当月无明细返 0）。 */
     private Integer monthCompletionRate;
 
-    /** 当月种植品种数（当月 begin_actualdate 区间内明细 distinct crop_id）。 */
+    /** 当月种植品种数（当月 end_actualdate 区间内明细 distinct crop_id）。 */
     private Integer todayCropKindCount;
 
-    /** 当月完成种植地块数（当月 begin_actualdate 区间内且 plant_status='completed' 明细 distinct plot_id）。 */
+    /** 当月完成种植地块数（当月 end_actualdate 区间内已完成明细的地块茬次）。 */
     private Integer todayPlotCount;
 }

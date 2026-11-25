@@ -11,6 +11,7 @@ import org.dromara.djs.plant.plot.domain.bo.PlotInfoBo;
 import org.dromara.djs.plant.plot.domain.query.PlotInfoQuery;
 import org.dromara.djs.plant.plot.domain.vo.PlotInfoVo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.plot.service.PlotIdleIntervalService;
 import org.dromara.djs.plant.zone.domain.PlotZone;
 import org.dromara.djs.plant.zone.mapper.PlotZoneMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,6 +37,7 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -52,6 +54,8 @@ import static org.mockito.Mockito.when;
 class PlotInfoServiceImplTest {
 
     @Mock
+    private PlotIdleIntervalService idleIntervals;
+    @Mock
     private PlotInfoMapper plotInfoMapper;
 
     @Mock
@@ -60,8 +64,9 @@ class PlotInfoServiceImplTest {
     private TestablePlotInfoServiceImpl service;
 
     static class TestablePlotInfoServiceImpl extends PlotInfoServiceImpl {
-        TestablePlotInfoServiceImpl(PlotInfoMapper baseMapper, PlotZoneMapper plotZoneMapper) {
-            super(baseMapper, plotZoneMapper);
+        TestablePlotInfoServiceImpl(PlotInfoMapper baseMapper, PlotZoneMapper plotZoneMapper,
+                                    PlotIdleIntervalService idleIntervals) {
+            super(baseMapper, plotZoneMapper, idleIntervals);
         }
 
         @Override
@@ -84,7 +89,7 @@ class PlotInfoServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestablePlotInfoServiceImpl(plotInfoMapper, plotZoneMapper);
+        service = new TestablePlotInfoServiceImpl(plotInfoMapper, plotZoneMapper, idleIntervals);
     }
 
     private PlotInfoBo sampleBo() {
@@ -122,6 +127,7 @@ class PlotInfoServiceImplTest {
         verify(plotInfoMapper, times(1)).insert(captor.capture());
         PlotInfo saved = captor.getValue();
         assertThat(saved.getPlotStatus()).as("默认 1").isEqualTo(1);
+        verify(idleIntervals).recordAfterPlotWrite(80001L, null, "plot_create");
         assertThat(saved.getIsLease()).as("默认 0").isEqualTo(0);
         assertThat(saved.getZoneId()).isEqualTo(70001L);
     }
@@ -187,6 +193,8 @@ class PlotInfoServiceImplTest {
         ArgumentCaptor<PlotInfo> captor = ArgumentCaptor.forClass(PlotInfo.class);
         verify(plotInfoMapper).updateById(captor.capture());
         assertThat(captor.getValue().getPlotCode()).isEqualTo("P001");
+        assertThat(captor.getValue().getPlotStatus()).isNull();
+        verifyNoInteractions(idleIntervals);
         assertThat(captor.getValue().getPlotName()).isEqualTo("A 区 1 号地块（改）");
     }
 
@@ -199,6 +207,7 @@ class PlotInfoServiceImplTest {
 
         assertThat(rows).isEqualTo(2);
         verify(plotInfoMapper, times(2)).update(isNull(), any(UpdateWrapper.class));
+        verify(idleIntervals).recordAfterPlotWrite(List.of(80001L, 80002L), null, "plot_delete");
     }
 
     @Test

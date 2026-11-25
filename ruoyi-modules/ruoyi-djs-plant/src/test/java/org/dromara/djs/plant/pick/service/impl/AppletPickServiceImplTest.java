@@ -13,7 +13,9 @@ import org.dromara.djs.plant.pick.event.PlantPickedEvent;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plan.mapper.PlantPlanMapper;
+import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.plot.service.PlotIdleIntervalService;
 import org.dromara.djs.plant.team.mapper.PlantWorkPeopleMapper;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
 import org.junit.jupiter.api.BeforeAll;
@@ -66,6 +68,8 @@ class AppletPickServiceImplTest {
     @Mock
     private PlantPlanMapper planMapper;
     @Mock
+    private PlotIdleIntervalService idleIntervals;
+    @Mock
     private PlotInfoMapper plotMapper;
     @Mock
     private CropInfoMapper cropMapper;
@@ -101,7 +105,7 @@ class AppletPickServiceImplTest {
     void setUp() {
         // farmRecordsMapper（row267 预计产量扣灾害用）：默认返空 → 无灾害记录，预计产量保持原值
         service = new AppletPickServiceImpl(detailsMapper, planMapper, plotMapper, cropMapper, teamMapper, peopleMapper,
-            farmRecordsService, farmRecordsMapper, eventPublisher, imageUrlResolver, teamLinkService, activityMapper);
+            farmRecordsService, farmRecordsMapper, eventPublisher, imageUrlResolver, teamLinkService, activityMapper, idleIntervals);
     }
 
     private PlantDetails detailFixture() {
@@ -130,9 +134,16 @@ class AppletPickServiceImplTest {
         bo.setHarvestDate(LocalDate.of(2026, 6, 1));
         bo.setFinish(false);
         bo.setTeamId(55L);
+        PlotInfo plot = new PlotInfo();
+        plot.setId(20L);
+        plot.setPlotStatus(1);
+        when(plotMapper.selectById(20L)).thenReturn(plot);
 
         service.submitPick(bo);
 
+        assertThat(plot.getPlotStatus()).isEqualTo(3);
+        verify(plotMapper).updateById(plot);
+        verify(idleIntervals).recordAfterPlotWrite(20L, bo.getHarvestDate(), "pick_submit");
         ArgumentCaptor<PlantDetails> cap = ArgumentCaptor.forClass(PlantDetails.class);
         verify(detailsMapper).updateById(cap.capture());
         PlantDetails saved = cap.getValue();

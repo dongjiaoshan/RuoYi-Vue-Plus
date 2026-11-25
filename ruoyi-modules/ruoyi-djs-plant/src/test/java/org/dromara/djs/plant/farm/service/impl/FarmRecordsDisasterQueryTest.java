@@ -14,6 +14,7 @@ import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.plot.service.PlotIdleIntervalService;
 import org.dromara.djs.plant.team.domain.PlantWorkTeam;
 import org.dromara.djs.plant.team.mapper.PlantWorkPeopleMapper;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
@@ -62,6 +63,8 @@ class FarmRecordsDisasterQueryTest {
     @Mock
     private FarmRecordsMapper baseMapper;
     @Mock
+    private PlotIdleIntervalService idleIntervals;
+    @Mock
     private PlotInfoMapper plotInfoMapper;
     @Mock
     private PlotZoneMapper plotZoneMapper;
@@ -96,7 +99,7 @@ class FarmRecordsDisasterQueryTest {
 
     @BeforeEach
     void setUp() {
-        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, plotZoneMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver, plantActivityService, teamLinkService, plantPlanService);
+        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, plotZoneMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver, plantActivityService, teamLinkService, plantPlanService, idleIntervals);
     }
 
     private FarmRecordsVo buildDisasterVo() {

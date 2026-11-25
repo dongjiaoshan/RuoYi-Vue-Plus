@@ -105,10 +105,7 @@ public class AppletPlantManageDashboardServiceImpl implements IAppletPlantManage
             vo.setPlantedCropCount(nz(exec.getPlantedCropCount()));
         }
 
-        // 执行维度（row4/row18）：已采摘总产量 = SUM(t_plant_plant_details.actual_yield)，按实际采摘开始日
-        // begin_harvestdate 年份统计。actual_yield 是全站采摘量权威列（毛菜处理称重回写 /「采摘活动管理·采摘
-        // 重量录入」都累加进它）；采摘流水表 t_plant_plant_activity 仅走「采摘重量录入」入口才有行、基地正常采收
-        // 不写它，故不以它为源（否则恒 0）。与采摘记录列表重量口径一致。
+        // 已采摘总产量按实际入库年归属，保留接口的吨单位。
         BigDecimal harvestedKg = dashboardMapper.sumHarvestedYieldByYear(tenantId, y);
         vo.setHarvestedYieldTon(toTon(harvestedKg));
         return vo;

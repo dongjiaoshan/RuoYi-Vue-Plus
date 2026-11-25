@@ -11,6 +11,7 @@ import org.dromara.djs.plant.perf.domain.vo.PerfAggRow;
 import org.dromara.djs.plant.perf.domain.vo.PlotCropTeamRow;
 import org.dromara.djs.plant.perf.domain.vo.PerfListRow;
 import org.dromara.djs.plant.perf.domain.vo.PlantWorkPerformanceVo;
+import org.dromara.djs.plant.indicator.mapper.ProductionIndicatorSourceMapper;
 
 import java.util.Collection;
 import java.util.List;
@@ -207,13 +208,12 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
     /**
      * 批量统计农事次数：对 {@code t_plant_farm_records} 按 (班组, 月) 计数（rework 134 农事次数列）。
      *
-     * <p>口径：全部 {@code farm_type}（不过滤采摘类，与详情农事记录 tab 现有口径一致）。
-     * 月份维度 {@code DATE_FORMAT(farm_date,'%Y-%m')}。仅统计入参 (teamId, statMonth) 组合，
-     * 一次取回避免 N+1。</p>
+     * <p>按农事业务月和现有班组归属计十类有效农事，游客采摘记录不进入白名单。</p>
      *
      * <p>显式 {@code tenant_id='1001' AND del_flag='0'}（V1 单租户，原生 SQL 不自动注入）。</p>
      *
-     * @param pairs (farmBy, statMonth) 组合集合（已 dedupe，非空；每元素为长度 2 的对象数组 [Long teamId, String month]）
+     * @param teamIds 班组集合
+     * @param months 统计月集合
      * @return 命中的 (farmBy / statMonth / cnt) 行；未命中组合不返回（service 端默认 0）
      */
     @Select("""
@@ -225,6 +225,8 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
           FROM t_plant_farm_records
          WHERE tenant_id = '1001'
            AND del_flag = '0'
+           AND farm_type IN
+        """ + ProductionIndicatorSourceMapper.WORK_TYPES + """
            AND farm_by IN
         <foreach collection='teamIds' item='tid' open='(' separator=',' close=')'>#{tid}</foreach>
            AND DATE_FORMAT(farm_date, '%Y-%m') IN

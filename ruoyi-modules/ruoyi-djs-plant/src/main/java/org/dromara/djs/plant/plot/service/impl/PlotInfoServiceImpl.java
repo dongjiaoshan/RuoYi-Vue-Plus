@@ -18,10 +18,12 @@ import org.dromara.djs.plant.plot.domain.vo.PlotOrganicRefVo;
 import org.dromara.djs.plant.plot.domain.vo.PlotPlantingRecordVo;
 import org.dromara.djs.plant.plot.domain.vo.PlotPlantingStatVo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.plot.service.PlotIdleIntervalService;
 import org.dromara.djs.plant.plot.service.IPlotInfoService;
 import org.dromara.djs.plant.zone.domain.PlotZone;
 import org.dromara.djs.plant.zone.mapper.PlotZoneMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collection;
 import java.util.HashMap;
@@ -47,10 +49,13 @@ import java.util.stream.Collectors;
 public class PlotInfoServiceImpl extends DjsBaseServiceImpl<PlotInfoMapper, PlotInfo> implements IPlotInfoService {
 
     private final PlotZoneMapper plotZoneMapper;
+    private final PlotIdleIntervalService idleIntervals;
 
-    public PlotInfoServiceImpl(PlotInfoMapper baseMapper, PlotZoneMapper plotZoneMapper) {
+    public PlotInfoServiceImpl(PlotInfoMapper baseMapper, PlotZoneMapper plotZoneMapper,
+                               PlotIdleIntervalService idleIntervals) {
         super(baseMapper);
         this.plotZoneMapper = plotZoneMapper;
+        this.idleIntervals = idleIntervals;
     }
 
     @Override
@@ -85,6 +90,7 @@ public class PlotInfoServiceImpl extends DjsBaseServiceImpl<PlotInfoMapper, Plot
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public int insertByBo(PlotInfoBo bo) {
         PlotInfo entity = toEntity(bo);
         if (entity == null) {
@@ -101,7 +107,11 @@ public class PlotInfoServiceImpl extends DjsBaseServiceImpl<PlotInfoMapper, Plot
         if (entity.getIsLease() == null) {
             entity.setIsLease(0);
         }
-        return baseMapper.insert(entity);
+        int inserted = baseMapper.insert(entity);
+        if (inserted > 0) {
+            idleIntervals.recordAfterPlotWrite(entity.getId(), null, "plot_create");
+        }
+        return inserted;
     }
 
     @Override
@@ -132,6 +142,7 @@ public class PlotInfoServiceImpl extends DjsBaseServiceImpl<PlotInfoMapper, Plot
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public int deleteWithValidByIds(Collection<Long> ids) {
         if (ids == null || ids.isEmpty()) {
             return 0;
@@ -144,7 +155,11 @@ public class PlotInfoServiceImpl extends DjsBaseServiceImpl<PlotInfoMapper, Plot
                 throw new ServiceException("地块 [" + name + "] 处于种植/采摘状态，不允许删除");
             }
         }
-        return softDelete(ids);
+        int deleted = softDelete(ids);
+        if (deleted > 0) {
+            idleIntervals.recordAfterPlotWrite(ids, null, "plot_delete");
+        }
+        return deleted;
     }
 
     @Override

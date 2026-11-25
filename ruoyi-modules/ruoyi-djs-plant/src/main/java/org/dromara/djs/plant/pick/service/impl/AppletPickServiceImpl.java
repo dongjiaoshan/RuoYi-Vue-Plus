@@ -24,6 +24,7 @@ import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plan.mapper.PlantPlanMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.plot.service.PlotIdleIntervalService;
 import org.dromara.djs.plant.team.domain.PlantWorkPeople;
 import org.dromara.djs.plant.team.domain.PlantWorkTeam;
 import org.dromara.djs.plant.team.mapper.PlantWorkPeopleMapper;
@@ -73,6 +74,7 @@ public class AppletPickServiceImpl implements IAppletPickService {
     private final org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
     /** row260：取「已录入未落地块」的采摘量（销售去向未结算部分），与 Σactual_yield 相加成已采产量。 */
     private final org.dromara.djs.plant.activity.mapper.PlantActivityMapper activityMapper;
+    private final PlotIdleIntervalService idleIntervals;
 
     /** 作物 L2 默认图统一走果蔬（IMG-LIB-001）。 */
     private static final String CROP_BELONG_TYPE = "vegetable";
@@ -185,6 +187,7 @@ public class AppletPickServiceImpl implements IAppletPickService {
                 if (plot != null) {
                     plot.setPlotStatus(3);
                     plotMapper.updateById(plot);
+                    idleIntervals.recordAfterPlotWrite(plot.getId(), bo.getHarvestDate(), "pick_submit");
                 }
             }
         }

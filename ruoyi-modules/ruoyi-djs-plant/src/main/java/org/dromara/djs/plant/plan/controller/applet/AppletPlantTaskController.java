@@ -4,7 +4,10 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.dromara.djs.common.job.DjsJobRunner;
+import org.dromara.djs.plant.indicator.service.ProductionIndicatorService;
 import org.dromara.djs.plant.plan.domain.bo.PlantFinishBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantStartBo;
 import org.dromara.djs.plant.plan.domain.vo.PlantCropTaskVo;
@@ -21,6 +24,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
+import java.time.YearMonth;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -108,19 +113,19 @@ public class AppletPlantTaskController {
         return R.ok(rows);
     }
 
-    /**
-     * 播种首页 3 KPI（FIX-PLT-MP-SEED-001 #6.5，种植口径）：当月完成率 / 当月种植品种数 / 当月完成种植地块数。
-     *
-     * <p>三项 KPI（完成率 / 品种数 / 完成地块数）统一按 {@code plant_month=month} 计（r17）：
-     * 与首页作物卡列表「全部(N)」及完成率同源，KPI 与列表一致。</p>
-     *
-     * @param month 月份 1-12，不传默认当前系统月
-     */
+    /** 播种首页三项 KPI，月份按当前业务年解释。 */
     @SaCheckLogin
     @GetMapping("/seedSummary")
     public R<SeedSummaryVo> seedSummary(@RequestParam(required = false) Integer month) {
-        int m = (month == null || month < 1 || month > 12) ? LocalDate.now().getMonthValue() : month;
-        return R.ok(plantDetailsMapper.selectSeedSummary(m));
+        LocalDate now = LocalDate.now(ZoneId.of(ProductionIndicatorService.BUSINESS_ZONE));
+        int m = (month == null || month < 1 || month > 12) ? now.getMonthValue() : month;
+        YearMonth period = YearMonth.of(now.getYear(), m);
+        String tenant = TenantHelper.getTenantId();
+        if (tenant == null || tenant.isBlank()) {
+            tenant = DjsJobRunner.DEFAULT_TENANT;
+        }
+        return R.ok(plantDetailsMapper.selectSeedSummary(tenant, period.getYear(), m,
+            period.atDay(1), period.plusMonths(1).atDay(1)));
     }
 
     /**

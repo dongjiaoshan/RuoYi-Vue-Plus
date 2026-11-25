@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.djs.plant.dashboard.domain.vo.CropPlantStatItemVo;
 import org.dromara.djs.plant.dashboard.domain.vo.MonthCompletionItemVo;
+import org.dromara.djs.plant.indicator.mapper.ProductionIndicatorSourceMapper;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -180,7 +181,7 @@ public interface PlantDashboardMapper {
     Integer countPendingPlot(@Param("tenantId") String tenantId);
 
     /**
-     * 今日工作 - 种植：今日实际开始种植（{@code begin_actualdate = CURDATE()}）的不重复地块数。
+     * 今日工作 - 种植：今日实际完成种植（{@code end_actualdate = CURDATE()}）的不重复地块数。
      *
      * @param tenantId 租户
      * @return 不重复地块数，无则 0
@@ -189,11 +190,11 @@ public interface PlantDashboardMapper {
         + "  FROM t_plant_plant_details d "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
-        + "   AND d.begin_actualdate = CURDATE()")
+        + "   AND d.plant_status = 'completed' AND d.end_actualdate = CURDATE()")
     Integer countTodayPlanting(@Param("tenantId") String tenantId);
 
     /**
-     * 今日工作 - 采摘：今日实际开始采摘（{@code begin_harvestdate = CURDATE()}）的不重复地块数。
+     * 今日工作 - 采摘：今日实际完成采摘（{@code end_harvestdate = CURDATE()}）的不重复地块数。
      *
      * @param tenantId 租户
      * @return 不重复地块数，无则 0
@@ -202,7 +203,7 @@ public interface PlantDashboardMapper {
         + "  FROM t_plant_plant_details d "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
-        + "   AND d.begin_harvestdate = CURDATE()")
+        + "   AND d.harvest_status = 'completed' AND d.end_harvestdate = CURDATE()")
     Integer countTodayHarvest(@Param("tenantId") String tenantId);
 
     /**
@@ -255,21 +256,12 @@ public interface PlantDashboardMapper {
         + "   AND farm_type = 'disaster'")
     Integer countTodayDisaster(@Param("tenantId") String tenantId);
 
-    /**
-     * 今日工作 - 采摘活动处理总重量：今日（{@code activity_date = CURDATE()}）采摘活动明细
-     * {@code SUM(daily_weight)}（kg）。与采摘明细页 / 班组绩效同源同口径（只计 {@code pick_dest} 非空、
-     * {@code daily_weight > 0} 的采摘活动行，排除旧农事路径行防与毛菜过磅双算）。
-     *
-     * @param tenantId 租户
-     * @return 当天采摘活动处理总重量 kg，无则 0
-     */
-    @Select("SELECT COALESCE(SUM(daily_weight), 0) "
-        + "  FROM t_plant_plant_activity "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0' "
-        + "   AND activity_date = CURDATE() "
-        + "   AND pick_dest IS NOT NULL "
-        + "   AND daily_weight > 0")
+    /** 今日实际采摘入库公斤数，沿用看板字段名。 */
+    @Select("SELECT COALESCE(SUM(" + ProductionIndicatorSourceMapper.INBOUND_WEIGHT + "), 0)"
+        + " FROM t_warehouse_stock_flow f"
+        + " WHERE f.tenant_id = #{tenantId} AND f.flow_date >= CURDATE()"
+        + " AND f.flow_date < CURDATE() + INTERVAL 1 DAY"
+        + ProductionIndicatorSourceMapper.INBOUND_FILTER)
     BigDecimal selectTodayPickActivityWeight(@Param("tenantId") String tenantId);
 
     // ============================ 块 ② 当月完成率 ============================
