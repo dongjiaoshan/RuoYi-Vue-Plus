@@ -139,11 +139,11 @@ public class PigIntroServiceImpl implements IPigIntroService {
         resolveBarnPenCodes(bo);
         validate(bo, 1);
 
-        PigIntroduce intro = persistIntroduce(bo, 1, null, bo.getPigSex());
         loadBarn(bo.getBarnId());
 
-        // 单头分配 1 个 EAR_NO（ADR-0011：品系+品种+公母+出生日 当天级 max+1；单头 BO 无 startEarNo 字段，纯后端生成）
+        // 单头也保存实际首耳号，供日表按引种单追溯个体。
         String earNo = earNoAllocator.allocateOne(bo.getPigStrainCode(), bo.getPigBreedCode(), bo.getPigSex(), bo.getBirthDate());
+        PigIntroduce intro = persistIntroduce(bo, 1, earNo, bo.getPigSex());
         Pig pig = createOnePig(bo, earNo, intro.getId());
         penCountUpdater.increase(bo.getPenId(), 1);
 
@@ -198,11 +198,11 @@ public class PigIntroServiceImpl implements IPigIntroService {
         validate(bo, count);
 
         log.info("[BRD-EVENT-001] {} batch={}", I18nMessages.t("intro.batch_started", count), count);
-        PigIntroduce intro = persistIntroduce(bo, count, bo.getStartEarNo(), bo.getPigSex());
         loadBarn(bo.getBarnId());
 
-        // 批量一次性分配 N 个连续耳号（ADR-0011：品系+品种+公母+出生日 当天级 max+1 连号）
+        // 批量一次性分配 N 个连续耳号，保存实际首号（含后端自动分配）。
         List<String> earNos = allocateEarNos(bo, count);
+        PigIntroduce intro = persistIntroduce(bo, count, earNos.getFirst(), bo.getPigSex());
 
         List<Pig> pigs = new ArrayList<>(count);
         for (String earNo : earNos) {

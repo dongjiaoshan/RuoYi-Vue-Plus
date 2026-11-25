@@ -19,6 +19,7 @@ import org.dromara.djs.breed.dashboard.mapper.FarmIndicatorRecordMapper;
 import org.dromara.djs.breed.dashboard.mapper.MonthlyProductionMapper;
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper;
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.GroupMember;
+import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.IndividualWeaning;
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.MarketingEvent;
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.WeanedLitter;
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.WeaningBatchRow;
@@ -474,6 +475,15 @@ class DashboardServiceImplTest {
             snap("piglet", "", 20)
         ));
         when(aggregateQueryMapper.countReserve230OnSnapshot(anyString(), any())).thenReturn(1);
+        when(productionIndicatorMapper.countIntroducedReserve(anyString(), any())).thenReturn(1);
+        List<GroupMember> endGroups = new ArrayList<>();
+        for (int i = 1; i <= 30; i++) {
+            endGroups.add(new GroupMember(i, "fattening", "fattening", null));
+        }
+        for (int i = 31; i <= 50; i++) {
+            endGroups.add(new GroupMember(i, "piglet", "piglet", null));
+        }
+        when(productionIndicatorMapper.endGroupMembers(anyString(), any())).thenReturn(endGroups);
 
         // 两笔正常育肥出栏共 200 kg，独立背膘取样合计 90 mm。
         LocalDateTime at = LocalDate.of(2026, 6, 25).atTime(12, 0);
@@ -501,8 +511,8 @@ class DashboardServiceImplTest {
         FarmIndicatorRecord r = cap.getValue();
         // 生产母猪 = 非后备非终止非空 = PZ(3) + FM(5) + KH(1) = 9
         assertThat(r.getEndProductionSowCount()).isEqualTo(9);
-        // 后备 = HB = 2；非生产 = KH = 1
-        assertThat(r.getEndReserveCount()).isEqualTo(2);
+        // 后备以引种和首配记录核实，仅一头符合；非生产 = KH = 1。
+        assertThat(r.getEndReserveCount()).isEqualTo(1);
         assertThat(r.getEndNonprodSowCount()).isEqualTo(1);
         // 公/肥/仔
         assertThat(r.getEndBoarCount()).isEqualTo(4);
@@ -1018,7 +1028,9 @@ class DashboardServiceImplTest {
         when(productionIndicatorMapper.farrowTotals(anyString(), any(), any()))
             .thenReturn(mapOfAll("deformedBorn", 0, "firstParity", 1));
         when(productionIndicatorMapper.abnormalTotals(anyString(), any(), any()))
-            .thenReturn(mapOfAll("returnHeat", 1, "emptySow", 2, "abortion", 3));
+            .thenReturn(mapOfAll("abortion", 3));
+        when(productionIndicatorMapper.dailyAbnormalTotals(anyString(), any(), any()))
+            .thenReturn(mapOfAll("returnHeat", 1, "emptySow", 2, "abortion", 2));
         when(productionIndicatorMapper.countFirstReserveBreeding(anyString(), any(), any())).thenReturn(2);
         when(productionIndicatorMapper.endGroupMembers(anyString(), eq(date)))
             .thenReturn(List.of(new GroupMember(5, "sow", "sow", null)));
@@ -1044,6 +1056,7 @@ class DashboardServiceImplTest {
         assertThat(daily.getValue().getNewProductionSowCount()).isEqualTo(2);
         assertThat(daily.getValue().getReturnHeatCount()).isEqualTo(1);
         assertThat(daily.getValue().getEmptySowCount()).isEqualTo(2);
+        assertThat(daily.getValue().getAbortionCount()).isEqualTo(2);
         assertThat(monthly.getValue().getAbortionCount()).isEqualTo(3);
         assertThat(monthly.getValue().getReserveFirstBreedCount()).isEqualTo(2);
         assertThat(monthly.getValue().getAvgWeanAgeDays()).isEqualByComparingTo("23");
@@ -1053,6 +1066,52 @@ class DashboardServiceImplTest {
         assertThat(monthly.getValue().getAvgBirthLitterWeanedPiglets()).isEqualByComparingTo("1");
         assertThat(annual.getValue().getAvgMarketingWeight()).isEqualByComparingTo("110");
         assertThat(annual.getValue().getAvgWeanedPerLitter()).isEqualByComparingTo("1");
+    }
+
+    @Test
+    void dailyIndicatorsUsePriorDayValidSamplesAndResolvedGroups() {
+        stubAggregateSkeleton();
+        LocalDate date = LocalDate.of(2025, 2, 1);
+        FarmIndicatorRecord previous = new FarmIndicatorRecord();
+        previous.setEndProductionSowCount(91);
+        previous.setEndFatteningCount(1);
+        when(farmIndicatorRecordMapper.selectEndStockForUpdate(anyString(), eq(date.minusDays(1))))
+            .thenReturn(previous);
+        when(productionIndicatorMapper.endGroupMembers(anyString(), eq(date))).thenReturn(List.of(
+            new GroupMember(1, "fattening", "fattening", date),
+            new GroupMember(2, "fattening", "fattening", date.plusDays(1))));
+        when(productionIndicatorMapper.individualWeanings(anyString(), eq(date)))
+            .thenReturn(List.of(new IndividualWeaning(1, "fattening", date)));
+        when(productionIndicatorMapper.weanedPigletMeasures(anyString(), any(), any()))
+            .thenReturn(mapOfAll("ageDaysSum", 64, "ageValidCount", 3,
+                "weightSum", new BigDecimal("16"), "weightValidCount", 3));
+        when(aggregateQueryMapper.countDistinctEventInDay(eq("t_farm_pig_farrow"), anyString(), anyString(),
+            anyString(), any(), any())).thenReturn(2);
+        when(aggregateQueryMapper.sumLiveBornInRange(anyString(), any(), any())).thenReturn(21);
+        when(productionIndicatorMapper.countDeathCull(anyString(), any(), any())).thenReturn(2);
+        when(productionIndicatorMapper.countPregnancyLoss(anyString(), any(), any())).thenReturn(1);
+        when(productionIndicatorMapper.feedTotals(anyString(), any(), any()))
+            .thenReturn(mapOfAll("weightKg", new BigDecimal("120"), "organicWeightKg", new BigDecimal("100"), "nonKgCount", 1));
+
+        service.aggregateDay("1001", date);
+
+        var daily = ArgumentCaptor.forClass(FarmIndicatorRecord.class);
+        verify(farmIndicatorRecordMapper).insert(daily.capture());
+        var row = daily.getValue();
+        assertThat(row.getBeginProductionSowCount()).isEqualTo(91);
+        assertThat(row.getBeginFatteningCount()).isEqualTo(1);
+        assertThat(row.getEndFatteningCount()).isEqualTo(1);
+        assertThat(row.getEndPigletCount()).isEqualTo(1);
+        assertThat(row.getNewFatteningCount()).isEqualTo(1);
+        assertThat(row.getAvgLiveBornPerLitter()).isEqualByComparingTo("10.500");
+        assertThat(row.getAvgWeanAgeDays()).isEqualByComparingTo("21.3");
+        assertThat(row.getAvgEntryWeight()).isEqualByComparingTo("5.333");
+        assertThat(row.getFeedWeightKg()).isEqualByComparingTo("120.000");
+        assertThat(row.getOrganicFeedWeightKg()).isEqualByComparingTo("100.000");
+        assertThat(row.getNonKgFeedRecordCount()).isEqualTo(1);
+        assertThat(row.getDeathCullCount()).isEqualTo(2);
+        assertThat(row.getPregnancyLossCount()).isEqualTo(1);
+        verify(farmIndicatorRecordMapper).updateBeginningStock("1001", date.plusDays(1), 0, 1);
     }
 
     private MonthlyProduction newMonth(YearMonth ym) {

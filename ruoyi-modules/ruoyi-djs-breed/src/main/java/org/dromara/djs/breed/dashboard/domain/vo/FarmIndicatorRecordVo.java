@@ -30,6 +30,33 @@ public class FarmIndicatorRecordVo implements Serializable {
     /** 统计日期。 */
     private LocalDate statDate;
 
+    /** 前一自然日的期末生产母猪存栏，缺日报为 null。 */
+    private Integer beginProductionSowCount;
+
+    /** 前一自然日的期末育肥猪存栏，缺日报为 null。 */
+    private Integer beginFatteningCount;
+
+    /** 当日新进入育肥群的个体头数。 */
+    private Integer newFatteningCount;
+
+    /** 窝均活仔数，分子 liveBornCount，分母 farrowSowCount。 */
+    private BigDecimal avgLiveBornPerLitter;
+
+    /** 同猪取最后一次有效死淘操作后归日。 */
+    private Integer deathCullCount;
+
+    /** 全部猪用饲喂重量（kg）。 */
+    private BigDecimal feedWeightKg;
+
+    /** 猪用有机果蔬饲喂重量（kg）。 */
+    private BigDecimal organicFeedWeightKg;
+
+    /** 当日猪用仓库饲喂中有商品但无法折算 kg 的条数（含单位缺失）。 */
+    private Integer nonKgFeedRecordCount;
+
+    /** 同一次配种取最早有效妊娠损失后归日，同猪同日去重。 */
+    private Integer pregnancyLossCount;
+
     /** 生产母猪头天数。 */
     private Integer productionSowHeadDays;
 
@@ -39,13 +66,13 @@ public class FarmIndicatorRecordVo implements Serializable {
     /** 后备首配转生产母猪头数。 */
     private Integer newProductionSowCount;
 
-    /** 返情异常记录数。 */
+    /** 返情母猪去重头数。 */
     private Integer returnHeatCount;
 
-    /** 空怀异常记录数。 */
+    /** 空怀母猪去重头数。 */
     private Integer emptySowCount;
 
-    /** 流产异常记录数。 */
+    /** 流产母猪去重头数。 */
     private Integer abortionCount;
 
     /** 分娩死胎数。 */

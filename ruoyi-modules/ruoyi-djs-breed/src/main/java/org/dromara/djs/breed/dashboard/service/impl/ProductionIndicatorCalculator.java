@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper;
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.GroupChange;
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.GroupMember;
+import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.IndividualWeaning;
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.MarketingEvent;
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.TypeChange;
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.WeanedLitter;
@@ -11,6 +12,7 @@ import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.WeaningB
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
@@ -40,6 +42,31 @@ class ProductionIndicatorCalculator {
 
     Map<String, Object> abnormalTotals(String tenantId, LocalDateTime from, LocalDateTime to) {
         return mapper.abnormalTotals(tenantId, from, to);
+    }
+
+    Map<String, Object> dailyAbnormalTotals(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return mapper.dailyAbnormalTotals(tenantId, from, to);
+    }
+
+    int countIntroducedReserve(String tenantId, LocalDate day) {
+        return mapper.countIntroducedReserve(tenantId, day);
+    }
+
+    Map<String, Object> feedTotals(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return mapper.feedTotals(tenantId, from, to);
+    }
+
+    int countDeathCull(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return mapper.countDeathCull(tenantId, from, to);
+    }
+
+    int countPregnancyLoss(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return mapper.countPregnancyLoss(tenantId, from, to);
+    }
+
+    static BigDecimal dailyAverage(BigDecimal sum, int validCount, int scale) {
+        return validCount == 0 ? BigDecimal.ZERO.setScale(scale)
+            : sum.divide(BigDecimal.valueOf(validCount), scale, RoundingMode.HALF_UP);
     }
 
     int firstReserveBreeding(String tenantId, LocalDateTime from, LocalDateTime to) {
@@ -96,48 +123,81 @@ class ProductionIndicatorCalculator {
         return new Weaning(litters.size(), normal, lactationDays, litters.size(), birthLitterPiglets);
     }
 
-    HeadDays headDays(String tenantId, LocalDate day) {
+    DailyGroups dailyGroups(String tenantId, LocalDate day) {
         LocalDateTime from = day.atStartOfDay();
         LocalDateTime to = day.plusDays(1).atStartOfDay();
         Set<Long> sows = new HashSet<>();
         Set<Long> fattening = new HashSet<>();
+        Set<Long> newFattening = new HashSet<>();
+        int endFattening = 0;
+        int endPiglets = 0;
         List<GroupMember> members = mapper.endGroupMembers(tenantId, day);
         List<GroupChange> changes = mapper.groupChanges(tenantId, from, to);
+        Map<Long, IndividualWeaning> weanings = mapper.individualWeanings(tenantId, day).stream()
+            .collect(Collectors.toMap(IndividualWeaning::pigId, weaning -> weaning));
         Set<Long> replayIds = changes.stream().map(GroupChange::pigId).collect(Collectors.toSet());
+        replayIds.addAll(weanings.keySet());
         for (GroupMember member : members) {
-            if (needsIndividualType(member, day)) {
+            if (needsIndividualType(member, day, effectiveWeanDate(weanings, member.pigId(), member.weanDate()))) {
                 replayIds.add(member.pigId());
             }
         }
         var histories = typeHistories(tenantId, replayIds);
         for (GroupMember member : members) {
-            if (SOW.equals(member.pigType())) {
+            LocalDate weanDate = effectiveWeanDate(weanings, member.pigId(), member.weanDate());
+            String type = needsIndividualType(member, day, weanDate)
+                ? typeBefore(histories.getOrDefault(member.pigId(), List.of()), Long.MAX_VALUE, to.minusNanos(1),
+                    null, member.currentPigType(), weanDate)
+                : member.pigType();
+            if (SOW.equals(type)) {
                 sows.add(member.pigId());
-            } else {
-                String type = needsIndividualType(member, day)
-                    ? typeBefore(histories.getOrDefault(member.pigId(), List.of()), Long.MAX_VALUE, to.minusNanos(1),
-                        null, member.currentPigType(), member.weanDate())
-                    : member.pigType();
-                if (FATTENING.equals(type)) {
-                    fattening.add(member.pigId());
-                }
+            } else if (FATTENING.equals(type)) {
+                fattening.add(member.pigId());
+                endFattening++;
+            } else if (PIGLET.equals(type)) {
+                endPiglets++;
             }
         }
         for (GroupChange change : changes) {
             long pigId = change.pigId();
             String before = typeBefore(histories.getOrDefault(pigId, List.of()), change.id(), change.changeTime(),
-                change.oldPigType(), change.currentPigType(), change.weanDate());
-            addGroup(sows, fattening, pigId, before, change.oldStatus());
+                change.oldPigType(), change.currentPigType(), effectiveWeanDate(weanings, pigId, change.weanDate()));
             String after = change.newPigType() == null ? before : change.newPigType();
+            addGroup(sows, fattening, pigId, before, change.oldStatus());
             addGroup(sows, fattening, pigId, after, change.newStatus());
+            boolean directEntry = "INTRO".equals(change.eventType()) && change.oldStatus() == null
+                && change.oldPigType() == null;
+            if (FATTENING.equals(after) && !"END".equals(change.newStatus())
+                && (!FATTENING.equals(before) || directEntry)) {
+                newFattening.add(pigId);
+            }
         }
-        return new HeadDays(sows.size(), fattening.size());
+        for (var weaning : weanings.values()) {
+            if (!day.equals(weaning.weanDate())) {
+                continue;
+            }
+            String before = typeBefore(histories.getOrDefault(weaning.pigId(), List.of()), Long.MAX_VALUE,
+                from.minusNanos(1), null, weaning.currentPigType(), day);
+            if (PIGLET.equals(before)) {
+                newFattening.add(weaning.pigId());
+            }
+        }
+        return new DailyGroups(sows.size(), fattening.size(), endFattening, endPiglets, newFattening.size());
     }
 
-    private static boolean needsIndividualType(GroupMember member, LocalDate day) {
-        return member.weanDate() != null
+    private static LocalDate effectiveWeanDate(Map<Long, IndividualWeaning> weanings, long pigId, LocalDate savedDate) {
+        IndividualWeaning corrected = weanings.get(pigId);
+        if (corrected == null) {
+            return savedDate;
+        }
+        // 已撤销的断奶按尚未发生处理；显式类型变更仍能独立证明已转育肥。
+        return corrected.weanDate() == null ? LocalDate.MAX : corrected.weanDate();
+    }
+
+    private static boolean needsIndividualType(GroupMember member, LocalDate day, LocalDate weanDate) {
+        return weanDate != null
             && (PIGLET.equals(member.pigType())
-                || FATTENING.equals(member.pigType()) && day.isBefore(member.weanDate()));
+                || FATTENING.equals(member.pigType()) && day.isBefore(weanDate));
     }
 
     Marketing marketing(String tenantId, LocalDateTime from, LocalDateTime to) {
@@ -219,7 +279,7 @@ class ProductionIndicatorCalculator {
 
     record Weaning(int count, int normalCount, int lactationDays, int validLactationCount, int birthLitterPiglets) {}
 
-    record HeadDays(int productionSow, int fattening) {}
+    record DailyGroups(int productionSowHeadDays, int fatteningHeadDays, int endFattening, int endPiglets, int newFattening) {}
 
     record Marketing(int count, BigDecimal weight) {}
 }

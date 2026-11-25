@@ -5,7 +5,10 @@ import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigCreateBo;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.intro.domain.PigIntroduce;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBatchBo;
@@ -23,6 +26,7 @@ import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.common.validate.BizReferenceChecker;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -105,6 +109,13 @@ class PigIntroServiceImplTest {
     private org.dromara.djs.breed.farm.service.PenCapacityChecker penCapacityChecker;
     private org.dromara.djs.breed.farm.service.PenCountUpdater penCountUpdater;
 
+    @BeforeAll
+    static void initPigLambdaCache() {
+        var assistant = new MapperBuilderAssistant(new MybatisConfiguration(), "");
+        assistant.setCurrentNamespace(PigIntroServiceImplTest.class.getName());
+        TableInfoHelper.initTableInfo(assistant, Pig.class);
+    }
+
     @BeforeEach
     void setup() {
         innerPigMapper = org.mockito.Mockito.mock(org.dromara.djs.breed.core.mapper.PigMapper.class);
@@ -182,6 +193,7 @@ class PigIntroServiceImplTest {
 
         assertThat(result.getIntroduce().getIntroduceNo()).isEqualTo("INT202605260001");
         assertThat(result.getIntroduce().getPigCount()).isEqualTo(1);
+        assertThat(result.getIntroduce().getStartEarNo()).isEqualTo("4-04-251200-001");
         assertThat(result.getPigs()).hasSize(1);
         assertThat(result.getPigs().get(0).getCurrentStatus()).isEqualTo("HB");
         assertThat(result.getPigs().get(0).getPigType()).isEqualTo("sow");
@@ -310,6 +322,7 @@ class PigIntroServiceImplTest {
         PigIntroResultVo result = service.introduceBatch(bo);
 
         assertThat(result.getIntroduce().getPigCount()).isEqualTo(5);
+        assertThat(result.getIntroduce().getStartEarNo()).isEqualTo("4-04-251200-001");
         assertThat(result.getPigs()).hasSize(5);
         assertThat(result.getPigs()).allMatch(s -> "HB".equals(s.getCurrentStatus()));
 

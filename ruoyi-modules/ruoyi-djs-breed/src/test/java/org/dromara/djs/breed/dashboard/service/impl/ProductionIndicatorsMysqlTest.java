@@ -25,7 +25,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 
 import java.lang.reflect.InvocationTargetException;
@@ -38,13 +41,14 @@ import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.RETURNS_DEFAULTS;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 
-/** 单连接临时表上的真实 Mapper SQL、看板聚合写入和 VO 读取。 */
+/** 本机 MySQL 上的真实 Mapper SQL、看板聚合写入和 VO 读取。 */
 @Tag("local")
 @Tag("dev")
 @EnabledIfEnvironmentVariable(named = "DJS_STAT_MYSQL_URL", matches = "jdbc:mysql://127\\.0\\.0\\.1:(3306|3316)/.*")
@@ -57,15 +61,19 @@ class ProductionIndicatorsMysqlTest {
     private static final YearMonth FEB = YearMonth.from(FEB1);
     private static final short YEAR = 2025;
 
-    // 同一连接不能重复打开 MySQL 临时表；现有快照重放在别处完成，本套件直接灌快照，
-    // 与本任务无关的台账、性能和出栏背膘 SQL 不在本套件执行范围。
+    // 快照重放与个体断奶查询会多次引用同一张表，测试库使用独立 schema 中的普通表。
+    private static final String SNAPSHOT_REPLAY = "snapshot-replay";
+    private static final Set<String> REPLAY_QUERIES = Set.of("deletePigSnapshotOnDate", "rebuildPigSnapshotForDate");
+    // 与日表取数无关的台账、性能和出栏背膘 SQL 使用测试替身。
     private static final Set<String> AGGREGATES = Set.of(
         "countDistinctEventInDay", "countDistinctAbnormalSowInRange", "countStatusEventInRange",
         "aggregateWeanDetailForDay", "sumWeanedInRange", "sumIntroducedSowInRange", "snapshotByTypeStatusOnDate",
+        "sumEventInDayDate", "sumLiveBornInRange", "countReserve230OnSnapshot",
         "countIndicatorDays", "sumIndicatorRange", "sumMonthlyProductionRange", "findLateEntriesBeforeWindow"
     );
 
     private Connection connection;
+    private String testSchema;
     private SqlSession session;
     private DashboardServiceImpl service;
     private FarmIndicatorRecordMapper days;
@@ -74,22 +82,37 @@ class ProductionIndicatorsMysqlTest {
     private long nextStatusId;
 
     @BeforeEach
-    void openTemporaryTables() throws Exception {
+    void openTables(TestInfo test) throws Exception {
         connection = DriverManager.getConnection(System.getenv("DJS_STAT_MYSQL_URL"),
             System.getenv("DJS_STAT_MYSQL_USER"), System.getenv("DJS_STAT_MYSQL_PASSWORD"));
+        String sourceCatalog = connection.getCatalog();
+        String schema = "b1r1_" + UUID.randomUUID().toString().replace("-", "");
+        execute("CREATE DATABASE " + schema + " CHARACTER SET utf8mb4");
+        testSchema = schema;
+        connection.setCatalog(testSchema);
         connection.setAutoCommit(false);
-        table("t_farm_pig_info", "id BIGINT PRIMARY KEY, pig_type VARCHAR(16), birth_date DATE, wean_date DATE");
+        table("t_farm_pig_info", "id BIGINT PRIMARY KEY, pig_type VARCHAR(16), birth_date DATE, wean_date DATE,"
+            + " ear_no VARCHAR(32), introduce_type VARCHAR(16), introduce_date DATE, mother_ear VARCHAR(32)");
         table("t_farm_pig_introduce", "id BIGINT PRIMARY KEY, introduce_type VARCHAR(16), introduce_date DATE,"
-            + " pig_count INT, pig_sex CHAR(1)");
+            + " pig_count INT, pig_sex CHAR(1), pig_id BIGINT, start_ear_no VARCHAR(32)");
         table("t_farm_status_record", "id BIGINT PRIMARY KEY, pig_id BIGINT, event_type VARCHAR(16),"
             + " old_status VARCHAR(16), new_status VARCHAR(16), related_event_id BIGINT, change_time DATETIME,"
-            + " old_pig_type VARCHAR(16), new_pig_type VARCHAR(16), create_time DATETIME");
-        table("t_farm_pig_snapshot", "snap_date DATE, pig_id BIGINT, pig_type VARCHAR(16), current_status VARCHAR(16)");
+            + " old_pig_type VARCHAR(16), new_pig_type VARCHAR(16), create_time DATETIME, ear_no VARCHAR(32)");
+        table("t_farm_pig_snapshot", "snap_date DATE, pig_id BIGINT, pig_type VARCHAR(16), current_status VARCHAR(16), birth_date DATE");
         table("t_farm_pig_farrow", "id BIGINT PRIMARY KEY, pig_id BIGINT, farrow_date DATETIME, parity INT,"
-            + " dead_born INT, mummy_born INT, deformed_born INT, weak_culled INT, weak_born INT, create_time DATETIME");
+            + " dead_born INT, mummy_born INT, deformed_born INT, weak_culled INT, weak_born INT, create_time DATETIME,"
+            + " breeding_id BIGINT, total_born INT, live_born INT");
         table("t_farm_pig_breeding", "id BIGINT PRIMARY KEY, pig_id BIGINT, breeding_date DATETIME");
         table("t_farm_pig_abnormal", "id BIGINT PRIMARY KEY, pig_id BIGINT, abnormal_date DATETIME,"
-            + " abnormal_type CHAR(1), create_time DATETIME");
+            + " abnormal_type CHAR(1), create_time DATETIME, related_breeding_id BIGINT");
+        table("t_farm_pig_death", "id BIGINT PRIMARY KEY, pig_id BIGINT, death_date DATETIME,"
+            + " death_pig_type VARCHAR(16), create_time DATETIME, update_time DATETIME");
+        table("t_farm_pig_culling", "id BIGINT PRIMARY KEY, pig_id BIGINT, culling_date DATETIME,"
+            + " create_time DATETIME, update_time DATETIME");
+        table("t_warehouse_feed_log", "id BIGINT PRIMARY KEY, feed_date DATETIME, feed_type VARCHAR(20),"
+            + " feed_animal VARCHAR(20), product_id BIGINT, crop_id BIGINT, location_id BIGINT, feed_weight DECIMAL(12,3)");
+        table("t_warehouse_product_info", "id BIGINT PRIMARY KEY, product_unit VARCHAR(16),"
+            + " belong_type VARCHAR(32), buy_class VARCHAR(32)");
         table("t_farm_pig_marketing", "id BIGINT PRIMARY KEY, pig_id BIGINT, marketing_date DATETIME,"
             + " out_weight DECIMAL(12,2), create_time DATETIME");
         table("t_farm_pig_weaning", "id BIGINT PRIMARY KEY, pig_id BIGINT, farrow_id BIGINT NOT NULL,"
@@ -100,24 +123,28 @@ class ProductionIndicatorsMysqlTest {
             + " pig_id BIGINT, del_unique BIGINT DEFAULT 0, tag_date DATETIME");
         table("t_farm_pig_growth", "id BIGINT PRIMARY KEY, pig_id BIGINT, measure_date DATE");
         for (String table : List.of("t_farm_indicator_record", "t_farm_monthly_production", "t_farm_year_production")) {
-            copyIndicatorDefinition(table);
+            copyTableDefinition(sourceCatalog, table);
         }
-        Path migration = Path.of("../../ruoyi-admin/src/main/resources/db/migration",
-            "V202609300900__BRD-STAT-V11-production-indicators.sql");
-        for (String statement : Files.readString(migration).split(";")) {
-            if (!statement.isBlank()) {
-                execute(statement);
+        for (String migration : List.of("V202609300900__BRD-STAT-V11-production-indicators.sql",
+            "V202609301400__BRD-STAT-V12-daily-indicators.sql")) {
+            Path sql = Path.of("../../ruoyi-admin/src/main/resources/db/migration", migration);
+            for (String statement : Files.readString(sql).split(";")) {
+                if (!statement.isBlank()) {
+                    execute(statement);
+                }
             }
         }
 
-        var configuration = new MybatisConfiguration(new Environment("local-temporary-tables",
+        var configuration = new MybatisConfiguration(new Environment("local-mysql",
             new JdbcTransactionFactory(), new SingleConnectionDataSource(connection, true)));
         configuration.setMapUnderscoreToCamelCase(true);
         configuration.addMappers(AggregateQueryMapper.class.getPackageName());
         session = new MybatisSqlSessionFactoryBuilder().build(configuration).openSession(connection);
         var source = session.getMapper(AggregateQueryMapper.class);
+        boolean replaySnapshots = test.getTags().contains(SNAPSHOT_REPLAY);
         AggregateQueryMapper other = mock(AggregateQueryMapper.class, invocation -> {
-            if (!AGGREGATES.contains(invocation.getMethod().getName())) {
+            String method = invocation.getMethod().getName();
+            if (!AGGREGATES.contains(method) && !(replaySnapshots && REPLAY_QUERIES.contains(method))) {
                 return RETURNS_DEFAULTS.answer(invocation);
             }
             try {
@@ -136,14 +163,20 @@ class ProductionIndicatorsMysqlTest {
     }
 
     @AfterEach
-    void closeTemporaryTables() throws Exception {
+    void closeTables() throws Exception {
         try {
-            if (session != null) {
-                session.close();
+            if (testSchema != null) {
+                execute("DROP DATABASE " + testSchema);
             }
         } finally {
-            if (connection != null && !connection.isClosed()) {
-                connection.close();
+            try {
+                if (session != null) {
+                    session.close();
+                }
+            } finally {
+                if (connection != null && !connection.isClosed()) {
+                    connection.close();
+                }
             }
         }
     }
@@ -174,6 +207,8 @@ class ProductionIndicatorsMysqlTest {
         FarmIndicatorRecord day = day(JAN31);
         assertThat(day.getProductionSowHeadDays()).as("养殖 3 含当天淘汰、死亡和转育肥的母猪").isEqualTo(13);
         assertThat(day.getEndProductionSowCount()).as("养殖 4").isEqualTo(10);
+        assertThat(day.getPregnantSowCount()).as("养殖 8 已配种待分娩").isEqualTo(10);
+        assertThat(day.getEndBoarCount()).as("养殖 10 公猪").isEqualTo(1);
         assertThat(day.getFatteningHeadDays()).as("养殖 12 含当天转出和淘汰的育肥猪").isEqualTo(13);
         assertThat(day.getEndFatteningCount()).as("养殖 13").isEqualTo(11);
     }
@@ -208,7 +243,457 @@ class ProductionIndicatorsMysqlTest {
         snapshot(3, "piglet", "");
         FarmIndicatorRecord day = day(JAN31);
         assertThat(day.getFatteningHeadDays()).as("养殖 12 个体断奶快照与显式转育肥").isEqualTo(2);
-        assertThat(day.getEndFatteningCount()).as("养殖 13 原期末存栏快照").isEqualTo(1);
+        assertThat(day.getEndFatteningCount()).as("养殖 13 期末与头天共用个体断奶修正").isEqualTo(2);
+    }
+
+    @Test
+    void reserveStockRequiresAnIntroductionAndNoBreedingAsOfDayEnd() throws Exception {
+        for (int i = 1; i <= 3; i++) {
+            pig(i, "sow", "2024-04-01", null);
+            snapshot(i, "sow", "HB");
+        }
+        execute("UPDATE t_farm_pig_snapshot SET birth_date='2024-04-01'");
+        execute("UPDATE t_farm_pig_info SET introduce_type='external', introduce_date='2025-01-01', "
+            + "ear_no=CONCAT('1-01-240401-00', id)");
+        execute("INSERT INTO t_farm_pig_introduce (id,introduce_type,introduce_date,pig_count,pig_sex,start_ear_no) "
+            + "VALUES (1,'external','2025-01-01',2,'F','1-01-240401-001')");
+        execute("INSERT INTO t_farm_pig_breeding (id,pig_id,breeding_date) VALUES "
+            + "(1,2,'2025-01-29'),(2,1,'2025-02-01')");
+        FarmIndicatorRecord row = day(JAN31);
+        assertThat(row.getEndReserveCount()).as("养殖 9 外引两头中仅一头未配，普通建档不算").isEqualTo(1);
+        assertThat(row.getEndReserve230Count()).as("既有 230 日龄分母独立").isEqualTo(3);
+
+        execute("INSERT INTO t_farm_pig_introduce (id,pig_id,introduce_type,introduce_date,pig_count,pig_sex) "
+            + "VALUES (2,3,'internal','2025-01-30',1,'F')");
+        assertThat(day(JAN31).getEndReserveCount()).as("养殖 9 场内留种按引种单关联").isEqualTo(2);
+        execute("UPDATE t_farm_pig_introduce SET del_flag='1' WHERE id=1");
+        assertThat(day(JAN31).getEndReserveCount()).as("养殖 9 撤销外引").isEqualTo(1);
+
+        execute("UPDATE t_farm_pig_info SET ear_no='1-01-240401-1000' WHERE id=1");
+        change(1, "INTRO", null, "HB", null, "2025-01-01 00:00:00", null, null);
+        execute("UPDATE t_farm_status_record SET ear_no='1-01-240401-1000' WHERE event_type='INTRO'");
+        execute("UPDATE t_farm_pig_info SET ear_no='1-01-240401-150' WHERE id=1");
+        execute("INSERT INTO t_farm_pig_introduce (id,introduce_type,introduce_date,pig_count,pig_sex,start_ear_no) "
+            + "VALUES (3,'external','2025-01-01',2,'F','1-01-240401-999')");
+        assertThat(day(JAN31).getEndReserveCount()).as("养殖 9 连号跨三位、改耳号后仍可追溯").isEqualTo(2);
+    }
+
+    @Test
+    void legacyIntroductionOrdersWithoutEarNumbersIncludeAllIntroducedReserves() throws Exception {
+        for (int i = 1; i <= 4; i++) {
+            pig(i, "sow", "2024-04-01", null);
+            snapshot(i, "sow", "HB");
+        }
+        execute("UPDATE t_farm_pig_info SET introduce_type='external', "
+            + "introduce_date=IF(id=3,'2025-01-02','2025-01-01')");
+        change(1, "INTRO", null, "HB", null, "2025-01-01 08:00:00", null, null);
+        change(2, "INTRO", null, "HB", null, "2025-01-01 08:00:00", null, null);
+        change(3, "INTRO", null, "HB", null, "2025-01-02 08:00:00", null, null);
+        execute("INSERT INTO t_farm_pig_introduce (id,introduce_type,introduce_date,pig_count,pig_sex) "
+            + "VALUES (1,'external','2025-01-01',2,NULL),(2,'external','2025-01-02',1,'F')");
+
+        assertThat(day(JAN31).getEndReserveCount()).as("养殖 9 旧批量两头加旧单头，排除无流水的档案").isEqualTo(3);
+        execute("UPDATE t_farm_pig_introduce SET del_flag='1' WHERE id=2");
+        assertThat(day(JAN31).getEndReserveCount()).as("养殖 9 撤销的旧引种单排除").isEqualTo(2);
+    }
+
+    @Test
+    void legacyIntroductionCountsAreCappedBySameDayOrderTotal() throws Exception {
+        for (int i = 1; i <= 3; i++) {
+            pig(i, "sow", "2024-04-01", null);
+            snapshot(i, "sow", "HB");
+            change(i, "INTRO", null, "HB", null, "2025-01-01 08:00:00", null, null);
+        }
+        execute("UPDATE t_farm_pig_info SET introduce_type='external', introduce_date='2025-01-01'");
+        execute("INSERT INTO t_farm_pig_introduce (id,tenant_id,introduce_type,introduce_date,pig_count,pig_sex) VALUES "
+            + "(1,'1001','external','2025-01-01',1,'F'),"
+            + "(2,'1001','external','2025-01-02',9,'F'),(3,'2002','external','2025-01-01',9,'F')");
+        assertThat(day(JAN31).getEndReserveCount()).as("养殖 9 三头有流水，同租户同日旧单只有一头").isEqualTo(1);
+
+        execute("INSERT INTO t_farm_pig_introduce (id,introduce_type,introduce_date,pig_count,pig_sex) "
+            + "VALUES (4,'external','2025-01-01',2,NULL)");
+        assertThat(day(JAN31).getEndReserveCount()).as("养殖 9 同日两张旧单合计三头").isEqualTo(3);
+        execute("UPDATE t_farm_pig_introduce SET del_flag='1' WHERE id=1");
+        assertThat(day(JAN31).getEndReserveCount()).as("养殖 9 撤销一头的旧单后只剩两头").isEqualTo(2);
+
+        execute("INSERT INTO t_farm_pig_introduce (id,pig_id,introduce_type,introduce_date,pig_count,pig_sex) "
+            + "VALUES (5,1,'external','2025-01-01',1,'F')");
+        assertThat(day(JAN31).getEndReserveCount()).as("养殖 9 显式关联的一头与旧单两头均计入").isEqualTo(3);
+        execute("UPDATE t_farm_pig_introduce SET pig_count=3 WHERE id=4");
+        assertThat(day(JAN31).getEndReserveCount()).as("养殖 9 显式关联过的个体不能再次占用旧单").isEqualTo(3);
+    }
+
+    @Test
+    void legacyIntroductionRequiresMatchingTypeAndFemaleReserve() throws Exception {
+        pig(1, "sow", "2024-04-01", null);
+        pig(2, "sow", "2024-04-01", null);
+        pig(3, "boar", "2024-04-01", null);
+        snapshot(1, "sow", "HB");
+        snapshot(2, "sow", "HB");
+        snapshot(3, "boar", "HB"); // 旧流水有 HB 时，仍须按日末猪型排除公猪。
+        execute("UPDATE t_farm_pig_info SET introduce_type=IF(id=2,'internal','external'), introduce_date='2025-01-01'");
+        for (int i = 1; i <= 3; i++) {
+            change(i, "INTRO", null, "HB", null, "2025-01-01 08:00:00", null, null);
+        }
+        execute("INSERT INTO t_farm_pig_introduce (id,introduce_type,introduce_date,pig_count,pig_sex) "
+            + "VALUES (1,'external','2025-01-01',3,'F')");
+        assertThat(day(JAN31).getEndReserveCount()).as("养殖 9 同日外引单只匹配外引后备母猪").isEqualTo(1);
+
+        execute("UPDATE t_farm_pig_introduce SET pig_sex='M' WHERE id=1");
+        assertThat(day(JAN31).getEndReserveCount()).as("养殖 9 旧单只引入公猪时没有母猪名额").isZero();
+    }
+
+    @Test
+    @Tag(SNAPSHOT_REPLAY)
+    void replayedSnapshotCountsLegacyWholeLitterWeaningAsFatteningEntries() throws Exception {
+        for (int i = 1; i <= 3; i++) {
+            pig(i, "fattening", "2025-01-10", null);
+        }
+        execute("UPDATE t_farm_pig_info SET mother_ear='SOW-10'");
+        execute("INSERT INTO t_farm_pig_pigletno (id,farrow_id,piglet_ear_no,pig_id) VALUES "
+            + "(1,10,'A',1),(2,10,'B',2),(3,10,'C',3)");
+        execute("INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count) "
+            + "VALUES (1,11,10,'2025-01-31',3)");
+
+        FarmIndicatorRecord previous = day(JAN31.minusDays(1));
+        assertThat(previous.getEndPigletCount()).as("养殖 11 断奶前无档案断奶日的仔猪仍在哺乳").isEqualTo(3);
+        assertThat(previous.getEndFatteningCount()).as("养殖 13 断奶前期末育肥").isZero();
+        FarmIndicatorRecord entry = day(JAN31);
+        assertThat(entry.getBeginFatteningCount()).as("养殖 14 当日期初育肥").isZero();
+        assertThat(entry.getEndFatteningCount()).as("养殖 13 整窝断奶后期末育肥").isEqualTo(3);
+        assertThat(entry.getNewFatteningCount()).as("养殖 15 无逐头明细或转群日志的整窝断奶").isEqualTo(3);
+        assertThat(entry.getWeanedPigletCount()).as("养殖 39 整窝断奶头数").isEqualTo(3);
+        assertThat(entry.getBeginFatteningCount() + entry.getNewFatteningCount())
+            .as("当日无转出或死淘，期初加新进等于期末").isEqualTo(entry.getEndFatteningCount());
+        assertThat(day(JAN31)).isEqualTo(entry);
+        assertThat(day(FEB1).getNewFatteningCount()).as("次日不重复计入").isZero();
+    }
+
+    @Test
+    @Tag(SNAPSHOT_REPLAY)
+    void replayedSnapshotCountsWholeLitterWithAnonymousWeaningDetails() throws Exception {
+        for (int i = 1; i <= 3; i++) {
+            pig(i, "fattening", "2025-01-10", null);
+        }
+        execute("UPDATE t_farm_pig_info SET mother_ear='SOW-10'");
+        execute("INSERT INTO t_farm_pig_pigletno (id,farrow_id,piglet_ear_no,pig_id) VALUES "
+            + "(1,10,'A',1),(2,10,'B',2),(3,10,'C',3)");
+        execute("INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count) "
+            + "VALUES (1,11,10,'2025-01-31',3)");
+        execute("INSERT INTO t_farm_pig_weaning_detail (id,weaning_id,ear_no,birth_farrow_id,weight) VALUES "
+            + "(1,1,NULL,10,7),(2,1,NULL,10,7),(3,1,NULL,10,7)");
+
+        assertThat(day(JAN31.minusDays(1)).getEndPigletCount()).as("养殖 11 断奶前仍有三头哺乳仔猪").isEqualTo(3);
+        FarmIndicatorRecord entry = day(JAN31);
+        assertThat(entry.getBeginFatteningCount()).as("养殖 14 期初育肥").isZero();
+        assertThat(entry.getNewFatteningCount()).as("养殖 15 三条匿名明细按整窝日进育肥").isEqualTo(3);
+        assertThat(entry.getEndFatteningCount()).as("养殖 13 期末育肥").isEqualTo(3);
+        assertThat(entry.getBeginFatteningCount() + entry.getNewFatteningCount()).isEqualTo(entry.getEndFatteningCount());
+        assertThat(day(FEB1).getNewFatteningCount()).as("养殖 15 次日不重复计入").isZero();
+    }
+
+    @Test
+    @Tag(SNAPSHOT_REPLAY)
+    void replayedSnapshotPrefersIndividualWeaningDateOverMixedLitterSummary() throws Exception {
+        for (int i = 1; i <= 3; i++) {
+            pig(i, "fattening", "2025-01-10", null);
+        }
+        execute("UPDATE t_farm_pig_info SET mother_ear='SOW-10'");
+        execute("INSERT INTO t_farm_pig_pigletno (id,farrow_id,piglet_ear_no,pig_id) VALUES "
+            + "(1,10,'A',1),(2,10,'B',2),(3,10,'C',3)");
+        execute("INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count) VALUES "
+            + "(1,11,10,'2025-01-31',2),(2,11,10,'2025-02-02',1)");
+        execute("INSERT INTO t_farm_pig_weaning_detail (id,weaning_id,ear_no,birth_farrow_id) VALUES "
+            + "(1,1,'A',10),(2,1,'',10),(3,2,'C',10)");
+
+        FarmIndicatorRecord first = day(JAN31);
+        assertThat(first.getNewFatteningCount()).as("养殖 15 首日逐头 A 加匿名 B，排除尚未断奶的 C").isEqualTo(2);
+        assertThat(first.getEndFatteningCount()).as("养殖 13 首日育肥两头").isEqualTo(2);
+        assertThat(first.getEndPigletCount()).as("养殖 11 C 仍在哺乳").isEqualTo(1);
+        assertThat(day(FEB1).getNewFatteningCount()).as("养殖 15 次日不重复计入").isZero();
+        FarmIndicatorRecord second = day(FEB1.plusDays(1));
+        assertThat(second.getBeginFatteningCount()).as("养殖 14 第二批前两头").isEqualTo(2);
+        assertThat(second.getNewFatteningCount()).as("养殖 15 C 按逐头日转入").isEqualTo(1);
+        assertThat(second.getEndFatteningCount()).as("养殖 13 第二批后共三头").isEqualTo(3);
+    }
+
+    @Test
+    @Tag(SNAPSHOT_REPLAY)
+    void replayedSnapshotIgnoresDeletedIndividualOrderWhenActiveSummaryExists() throws Exception {
+        wholeLitterPiglets(null);
+        execute("INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count,del_flag) VALUES "
+            + "(1,11,10,'2025-01-31',1,'1'),(2,11,10,'2025-02-02',3,'0')");
+        execute("INSERT INTO t_farm_pig_weaning_detail (id,weaning_id,ear_no,birth_farrow_id) VALUES "
+            + "(1,1,'E1',10),(2,2,NULL,10),(3,2,NULL,10),(4,2,NULL,10)");
+
+        FarmIndicatorRecord before = day(FEB1);
+        assertThat(before.getEndPigletCount()).isEqualTo(3);
+        assertThat(before.getEndFatteningCount()).isZero();
+        FarmIndicatorRecord entry = day(FEB1.plusDays(1));
+        assertThat(entry.getNewFatteningCount()).as("养殖 15 删除的逐头单不影响有效整窝断奶").isEqualTo(3);
+        assertThat(entry.getEndPigletCount()).isZero();
+        assertThat(entry.getEndFatteningCount()).isEqualTo(3);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"ELIMINATE, true", "ELIMINATE, false", "DIE, true", "DIE, false"})
+    @Tag(SNAPSHOT_REPLAY)
+    void replayedSnapshotExcludesExitedPigletsFromWholeLitterWeaning(String eventType, boolean anonymousDetails)
+        throws Exception {
+        wholeLitterPiglets(null);
+        execute("UPDATE t_farm_pig_info SET pig_type='piglet' WHERE id=3");
+        change(3, eventType, "", "END", 1L, "2025-01-20 09:00:00", null, null);
+        if ("DIE".equals(eventType)) {
+            execute("INSERT INTO t_farm_pig_death (id,pig_id,death_date,death_pig_type) "
+                + "VALUES (1,3,'2025-01-20 09:00:00','piglet')");
+            execute("UPDATE t_farm_pig_pigletno SET del_flag='1', del_unique=id WHERE pig_id=3");
+        } else {
+            execute("INSERT INTO t_farm_pig_culling (id,pig_id,culling_date) VALUES (1,3,'2025-01-20 09:00:00')");
+        }
+        execute("INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count) "
+            + "VALUES (1,11,10,'2025-01-31',2)");
+        if (anonymousDetails) {
+            execute("INSERT INTO t_farm_pig_weaning_detail (id,weaning_id,ear_no,birth_farrow_id) VALUES "
+                + "(1,1,NULL,10),(2,1,NULL,10)");
+        }
+
+        assertThat(day(JAN31.minusDays(1)).getEndPigletCount()).isEqualTo(2);
+        FarmIndicatorRecord entry = day(JAN31);
+        assertThat(entry.getBeginFatteningCount()).isZero();
+        assertThat(entry.getEndFatteningCount()).isEqualTo(2);
+        assertThat(entry.getNewFatteningCount()).as("养殖 15 已离群仔猪不参加整窝断奶").isEqualTo(2);
+    }
+
+    @Test
+    @Tag(SNAPSHOT_REPLAY)
+    void replayedSnapshotKeepsWholeLitterWeaningOnRecalculationAfterLaterCulling() throws Exception {
+        wholeLitterPiglets(null);
+        execute("INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count) "
+            + "VALUES (1,11,10,'2025-01-31',3)");
+
+        FarmIndicatorRecord original = day(JAN31);
+        recordLitterCulling(3, "2025-02-05 09:00:00", "2025-02-05 09:00:00");
+
+        assertThat(original.getNewFatteningCount()).isEqualTo(3);
+        assertThat(original.getEndFatteningCount()).isEqualTo(3);
+        assertThat(original.getFatteningHeadDays()).isEqualTo(3);
+        assertThat(day(JAN31)).isEqualTo(original);
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "00:00:00, true",
+        "00:00:00, false",
+        "10:00:00, false"
+    })
+    @Tag(SNAPSHOT_REPLAY)
+    void replayedSnapshotPrefersPigletsStillInGroupAfterSameDayCulling(String weaningTime, boolean anonymousDetails)
+        throws Exception {
+        wholeLitterPiglets(null);
+        execute("UPDATE t_farm_pig_info SET pig_type='piglet' WHERE id=3");
+        recordLitterCulling(3, "2025-01-31 09:00:00", "2025-01-31 09:00:00");
+        execute("INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count) VALUES (1,11,10,?,2)",
+            "2025-01-31 " + weaningTime);
+        if (anonymousDetails) {
+            execute("INSERT INTO t_farm_pig_weaning_detail (id,weaning_id,ear_no,birth_farrow_id) VALUES "
+                + "(1,1,NULL,10),(2,1,NULL,10)");
+        }
+
+        assertThat(day(JAN31.minusDays(1)).getEndFatteningCount()).isZero();
+        FarmIndicatorRecord entry = day(JAN31);
+        assertThat(entry.getBeginFatteningCount()).isZero();
+        assertThat(entry.getNewFatteningCount()).isEqualTo(2);
+        assertThat(entry.getEndFatteningCount()).isEqualTo(2);
+        assertThat(entry.getFatteningHeadDays()).isEqualTo(2);
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "00:00:00, 00:00:00, 2025-02-01 10:00:00",
+        "09:00:00, 10:00:00, 2025-01-31 10:00:00"
+    })
+    @Tag(SNAPSHOT_REPLAY)
+    void replayedSnapshotCountsWholeLitterWeaningBeforeSameDayCulling(
+        String weaningTime, String cullingTime, String cullingRecordedAt
+    ) throws Exception {
+        wholeLitterPiglets(null);
+        execute("INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count) VALUES (1,11,10,?,3)",
+            "2025-01-31 " + weaningTime);
+        recordLitterCulling(3, "2025-01-31 " + cullingTime, cullingRecordedAt);
+
+        assertThat(day(JAN31.minusDays(1)).getEndFatteningCount()).isZero();
+        FarmIndicatorRecord entry = day(JAN31);
+        assertThat(entry.getBeginFatteningCount()).isZero();
+        assertThat(entry.getNewFatteningCount()).isEqualTo(3);
+        assertThat(entry.getEndFatteningCount()).isEqualTo(2);
+        assertThat(entry.getFatteningHeadDays()).isEqualTo(3);
+        assertThat(entry.getWeanedPigletCount()).isEqualTo(3);
+    }
+
+    @Test
+    @Tag(SNAPSHOT_REPLAY)
+    void replayedSnapshotCapsWholeLitterFallbackAfterMatchingEarTags() throws Exception {
+        wholeLitterPiglets(null);
+        execute("UPDATE t_farm_pig_info SET pig_type='piglet' WHERE id=1");
+        pig(4, "fattening", "2025-01-10", null);
+        execute("UPDATE t_farm_pig_info SET mother_ear='SOW-10' WHERE id=4");
+        execute("INSERT INTO t_farm_pig_pigletno (id,farrow_id,piglet_ear_no,pig_id) VALUES (4,10,'E4',4)");
+        recordLitterCulling(1, "2025-01-31 09:00:00", "2025-01-31 09:00:00");
+        execute("INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count) "
+            + "VALUES (1,11,10,'2025-01-31',2)");
+        execute("INSERT INTO t_farm_pig_weaning_detail (id,weaning_id,ear_no,birth_farrow_id) VALUES "
+            + "(1,1,'E2',10),(2,1,NULL,10)");
+
+        FarmIndicatorRecord entry = day(JAN31);
+        assertThat(entry.getNewFatteningCount()).isEqualTo(2);
+        assertThat(entry.getEndFatteningCount()).isEqualTo(2);
+        assertThat(entry.getFatteningHeadDays()).isEqualTo(2);
+        assertThat(entry.getEndPigletCount()).isEqualTo(1);
+        var weanings = session.getMapper(ProductionIndicatorMapper.class).individualWeanings(TENANT, JAN31);
+        assertThat(weanings).filteredOn(weaning -> JAN31.equals(weaning.weanDate()))
+            .extracting(weaning -> weaning.pigId()).containsExactlyInAnyOrder(2L, 3L);
+    }
+
+    @Test
+    @Tag(SNAPSHOT_REPLAY)
+    void replayedSnapshotPrefersPigRecordWeaningDateOverLitterSummary() throws Exception {
+        wholeLitterPiglets("2025-02-02");
+        execute("INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count) "
+            + "VALUES (1,11,10,'2025-01-31',2)");
+
+        FarmIndicatorRecord summaryDay = day(JAN31);
+        assertThat(summaryDay.getNewFatteningCount()).as("养殖 15 E1 的猪档断奶日优先").isEqualTo(2);
+        assertThat(summaryDay.getEndPigletCount()).isEqualTo(1);
+        assertThat(summaryDay.getEndFatteningCount()).isEqualTo(2);
+        assertThat(day(FEB1).getNewFatteningCount()).isZero();
+        FarmIndicatorRecord savedDay = day(FEB1.plusDays(1));
+        assertThat(savedDay.getBeginFatteningCount()).isEqualTo(2);
+        assertThat(savedDay.getNewFatteningCount()).isEqualTo(1);
+        assertThat(savedDay.getEndPigletCount()).isZero();
+        assertThat(savedDay.getEndFatteningCount()).isEqualTo(3);
+    }
+
+    @Test
+    @Tag(SNAPSHOT_REPLAY)
+    void replayedSnapshotKeepsUnweanedPigletAndIgnoresDeletedEarTag() throws Exception {
+        pig(1, "fattening", "2025-01-10", "2025-01-31");
+        pig(2, "fattening", "2025-01-10", "2025-02-02");
+        pig(3, "piglet", "2025-01-10", null);
+        execute("UPDATE t_farm_pig_info SET mother_ear='SOW-10'");
+        execute("INSERT INTO t_farm_pig_pigletno (id,farrow_id,piglet_ear_no,pig_id,del_flag,del_unique) VALUES "
+            + "(1,10,'A',1,'0',0),(2,10,'B',2,'0',0),(3,10,'A',3,'1',3),(4,10,'C',3,'0',0)");
+        execute("INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count) VALUES "
+            + "(1,11,10,'2025-01-31',1),(2,11,10,'2025-02-02',1)");
+        execute("INSERT INTO t_farm_pig_weaning_detail (id,weaning_id,ear_no,birth_farrow_id) VALUES "
+            + "(1,1,'A',10),(2,2,'B',10)");
+
+        FarmIndicatorRecord first = day(JAN31);
+        assertThat(first.getEndPigletCount()).as("养殖 11 第二批和未断奶仔猪保留，删除耳号不配对").isEqualTo(2);
+        assertThat(first.getEndFatteningCount()).as("养殖 13 首批只进一头").isEqualTo(1);
+        assertThat(first.getNewFatteningCount()).as("养殖 15 首批只进一头").isEqualTo(1);
+        FarmIndicatorRecord second = day(FEB1.plusDays(1));
+        assertThat(second.getEndPigletCount()).as("养殖 11 无断奶日、无断奶明细的哺乳仔猪仍在栏").isEqualTo(1);
+        assertThat(second.getEndFatteningCount()).as("养殖 13 第二批后两头").isEqualTo(2);
+        assertThat(second.getNewFatteningCount()).as("养殖 15 第二批当天只进一头").isEqualTo(1);
+    }
+
+    @Test
+    void staggeredWeaningKeepsPigletsUntilTheirIndividualDay() throws Exception {
+        LocalDate feb2 = FEB1.plusDays(1);
+        pig(1, "fattening", "2025-01-10", "2025-01-31");
+        pig(2, "fattening", "2025-01-10", "2025-02-02");
+        for (int i = 1; i <= 2; i++) {
+            snapshot(i, "fattening", "");
+            snapshot(feb2, i, "fattening", "");
+        }
+        FarmIndicatorRecord jan31 = day(JAN31);
+        assertThat(jan31.getEndFatteningCount()).as("养殖 13 首批期末仅 1 头").isEqualTo(1);
+        assertThat(jan31.getEndPigletCount()).as("养殖 11 第二批仍在哺乳").isEqualTo(1);
+        assertThat(day(feb2).getEndFatteningCount()).as("养殖 13 第二批后 2 头").isEqualTo(2);
+        assertThat(day(feb2).getBeginFatteningCount()).as("养殖 14 缺 2-01 日报，不能跳日").isNull();
+    }
+
+    @Test
+    void tenPigletsCountOnlyActualEntriesAndIncludeOtherFatteningTransfers() throws Exception {
+        for (int i = 1; i <= 10; i++) {
+            pig(i, "fattening", "2025-01-10", i <= 4 ? "2025-01-31" : "2025-02-02");
+            snapshot(i, "fattening", "");
+        }
+        execute("INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count) "
+            + "VALUES (1,11,1,'2025-01-31',4)");
+        FarmIndicatorRecord first = day(JAN31);
+        assertThat(first.getEndPigletCount()).as("养殖 11 十头同窝仅四头断奶").isEqualTo(6);
+        assertThat(first.getNewFatteningCount()).as("养殖 15 四头实际入群").isEqualTo(4);
+        assertThat(first.getWeanedPigletCount()).as("养殖 29、39 主单无明细").isEqualTo(4);
+
+        execute("UPDATE t_farm_pig_info SET wean_date='2025-02-02' WHERE id=4");
+        execute("UPDATE t_farm_pig_weaning SET weaned_count=3 WHERE id=1");
+        change(1, "TRANSFER", "", "", null, "2025-01-31 10:00:00", "piglet", "fattening");
+        pig(11, "sow", null, null);
+        snapshot(11, "sow", "DN");
+        change(11, "TRANSFER", "DN", "DN", null, "2025-01-31 10:00:00", null, null);
+        FarmIndicatorRecord corrected = day(JAN31);
+        assertThat(corrected.getNewFatteningCount()).as("养殖 15 断奶三头，重复转群及母猪均不增加").isEqualTo(3);
+        assertThat(corrected.getEndNonprodSowCount()).as("养殖 7 待配母猪").isEqualTo(1);
+        pig(12, "fattening", null, null);
+        snapshot(12, "fattening", "");
+        change(12, "TRANSFER", "", "", null, "2025-01-31 10:00:00", "piglet", "fattening");
+        change(12, "TRANSFER", "", "", null, "2025-01-31 11:00:00", "fattening", "fattening");
+        FarmIndicatorRecord transferred = day(JAN31);
+        assertThat(transferred.getNewFatteningCount()).as("养殖 15 另有一头非断奶转育肥").isEqualTo(4);
+        assertThat(transferred.getWeanedPigletCount()).as("养殖 39 仍只有断奶三头").isEqualTo(3);
+        assertThat(day(JAN31)).isEqualTo(transferred);
+    }
+
+    @Test
+    void correctedWeaningBusinessDateOverridesStalePigSnapshot() throws Exception {
+        LocalDate feb2 = FEB1.plusDays(1);
+        pig(1, "fattening", "2025-01-10", "2025-01-31");
+        snapshot(1, "fattening", "");
+        snapshot(feb2, 1, "fattening", "");
+        execute("INSERT INTO t_farm_pig_pigletno (id,farrow_id,piglet_ear_no,pig_id) VALUES (1,10,'A',1)");
+        execute("INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count) "
+            + "VALUES (1,11,10,'2025-01-31',1)");
+        execute("INSERT INTO t_farm_pig_weaning_detail (id,weaning_id,ear_no,birth_farrow_id) VALUES (1,1,'A',10)");
+        assertThat(day(JAN31).getEndFatteningCount()).isEqualTo(1);
+        assertThat(day(JAN31).getNewFatteningCount()).isEqualTo(1);
+
+        execute("UPDATE t_farm_pig_weaning SET weaning_date='2025-02-02' WHERE id=1");
+        FarmIndicatorRecord corrected = day(JAN31);
+        assertThat(corrected.getEndPigletCount()).as("养殖 11 断奶单改期后仍哺乳").isEqualTo(1);
+        assertThat(corrected.getEndFatteningCount()).as("养殖 13 不读过期档案日期").isZero();
+        assertThat(corrected.getNewFatteningCount()).as("养殖 15 从旧业务日移出").isZero();
+        assertThat(day(feb2).getNewFatteningCount()).as("养殖 15 改按新业务日入群").isEqualTo(1);
+
+        execute("UPDATE t_farm_pig_weaning SET del_flag='1' WHERE id=1");
+        assertThat(day(feb2).getNewFatteningCount()).as("养殖 15 撤销断奶").isZero();
+        assertThat(day(feb2).getEndPigletCount()).as("养殖 11 撤销后个体仍按哺乳计").isEqualTo(1);
+    }
+
+    @Test
+    void openingStockRequiresPreviousCalendarDayAndFollowsItsCorrection() throws Exception {
+        LocalDate nov1 = LocalDate.of(2025, 11, 1);
+        LocalDate nov23 = nov1.withDayOfMonth(23);
+        LocalDate nov24 = nov23.plusDays(1);
+        assertThat(day(nov1).getBeginProductionSowCount()).as("养殖 5 缺 10-31 日报").isNull();
+        assertThat(day(nov1).getBeginFatteningCount()).as("养殖 14 缺 10-31 日报").isNull();
+        for (int i = 1; i <= 91; i++) {
+            snapshot(nov23, i, "sow", "PZ");
+        }
+        snapshot(nov23, 100, "fattening", "");
+        assertThat(day(nov24).getBeginProductionSowCount()).isNull();
+        day(nov23);
+        FarmIndicatorRecord next = readDay(nov24);
+        assertThat(next.getBeginProductionSowCount()).as("养殖 5 前一日报期末 91").isEqualTo(91);
+        assertThat(next.getBeginFatteningCount()).as("养殖 14 前一日报期末 1").isEqualTo(1);
+        assertThat(day(nov24)).isEqualTo(next);
+        execute("DELETE FROM t_farm_pig_snapshot WHERE snap_date = ? AND pig_id = 100", nov23);
+        day(nov23);
+        assertThat(readDay(nov24).getBeginFatteningCount()).as("养殖 14 前日更正为实点 0").isZero();
+        execute("UPDATE t_farm_indicator_record SET del_flag='1' WHERE stat_date = ?", nov23);
+        FarmIndicatorRecord missing = day(nov24);
+        assertThat(missing.getBeginProductionSowCount()).isNull();
+        assertThat(missing.getBeginFatteningCount()).isNull();
     }
 
     @Test
@@ -220,7 +705,10 @@ class ProductionIndicatorsMysqlTest {
         change(2, "BREED", "DN", "PZ", 12L, "2025-01-31 08:00:00", null, null);
         change(3, "BREED", "HB", "PZ", 13L, "2025-01-30 08:00:00", null, null);
         change(3, "BREED", "HB", "PZ", 14L, "2025-01-31 08:00:00", null, null);
-        assertThat(day(JAN31).getNewProductionSowCount()).as("养殖 6").isEqualTo(1);
+        FarmIndicatorRecord jan31 = day(JAN31);
+        assertThat(jan31.getNewProductionSowCount()).as("养殖 6").isEqualTo(1);
+        execute("INSERT INTO t_farm_pig_breeding (id,pig_id,breeding_date) VALUES (15,1,'2025-01-31 10:00:00')");
+        assertThat(day(JAN31).getBreedingSowCount()).as("养殖 16 同头同日重复配种只计一次").isEqualTo(3);
         assertThat(day(FEB1).getNewProductionSowCount()).isZero();
         rollups(JAN, FEB);
         assertThat(month(JAN).getReserveFirstBreedCount()).as("养殖 47").isEqualTo(2);
@@ -232,6 +720,10 @@ class ProductionIndicatorsMysqlTest {
         execute("INSERT INTO t_farm_pig_abnormal (id,pig_id,abnormal_date,abnormal_type,create_time) VALUES "
             + "(1,1,'2025-01-31','R','2025-01-31'),(2,1,'2025-01-31','N','2025-01-31'),"
             + "(3,2,'2025-01-31','A','2025-02-01'),(4,3,'2025-02-01','A','2025-02-01')");
+        execute("INSERT INTO t_farm_pig_abnormal (id,pig_id,abnormal_date,abnormal_type) VALUES "
+            + "(5,1,'2025-01-31 10:00:00','R'),(6,2,'2025-01-31','R'),(7,1,'2025-01-31','N'),"
+            + "(8,2,'2025-01-31','A'),(9,3,'2025-01-31','A')");
+        execute("UPDATE t_farm_pig_abnormal SET del_flag='1' WHERE id=9");
         change(1, "BREED", "KH", "PZ", null, "2025-01-31 14:00:00", null, null);
         execute("INSERT INTO t_farm_pig_farrow (id,pig_id,farrow_date,parity,dead_born,mummy_born,"
             + "deformed_born,weak_culled,weak_born,create_time) VALUES "
@@ -239,10 +731,17 @@ class ProductionIndicatorsMysqlTest {
             + "(2,2,'2025-01-31',NULL,1,NULL,NULL,NULL,5,'2025-01-31'),"
             + "(3,1,'2025-01-31',1,NULL,NULL,NULL,NULL,NULL,'2025-01-31'),"
             + "(4,3,'2025-02-01',2,NULL,NULL,NULL,NULL,NULL,'2025-02-01')");
+        execute("UPDATE t_farm_pig_farrow SET total_born=12, live_born=10 WHERE id=1");
+        execute("UPDATE t_farm_pig_farrow SET total_born=14, live_born=11 WHERE id=2");
         FarmIndicatorRecord day = day(JAN31);
-        assertThat(day.getReturnHeatCount()).as("养殖 17").isEqualTo(1);
-        assertThat(day.getEmptySowCount()).as("养殖 18").isEqualTo(1);
-        assertThat(day.getAbortionCount()).as("养殖 19").isEqualTo(1);
+        assertThat(day.getReturnHeatCount()).as("养殖 17 三条有效记录属于两头").isEqualTo(2);
+        assertThat(day.getEmptySowCount()).as("养殖 18 同头同日两条只计一头").isEqualTo(1);
+        assertThat(day.getAbortionCount()).as("养殖 19 同头重复、撤销的另一头均不重复计入").isEqualTo(1);
+        assertThat(day.getTotalBornCount()).as("养殖 20 直接按总仔列").isEqualTo(26);
+        assertThat(day.getLiveBornCount()).as("养殖 21").isEqualTo(21);
+        assertThat(day.getFarrowSowCount()).as("养殖 26 同母同日三单只两头").isEqualTo(2);
+        assertThat(day.getAvgLiveBornPerLitter()).as("养殖 27 两窝活仔 10、11").isEqualByComparingTo("10.500");
+        assertThat(day(JAN31.minusDays(1)).getAvgLiveBornPerLitter()).as("养殖 27 分母零").isZero();
         assertThat(day.getAbnormalSowCount()).isEqualTo(2);
         assertThat(day.getFarrowDeadBornCount()).as("养殖 22").isEqualTo(3);
         assertThat(day.getFarrowMummyBornCount()).as("养殖 23").isEqualTo(2);
@@ -251,7 +750,7 @@ class ProductionIndicatorsMysqlTest {
         assertThat(day(FEB1).getFarrowDeformedBornCount()).as("养殖 24 历史缺值").isNull();
         rollups(JAN, FEB);
         assertThat(month(JAN).getFarrowSowCount()).as("养殖 56").isEqualTo(2);
-        assertThat(month(JAN).getAbortionCount()).as("养殖 95 跨月补录").isEqualTo(1);
+        assertThat(month(JAN).getAbortionCount()).as("养殖 95 现行月表仍按有效记录计数").isEqualTo(2);
         assertThat(month(FEB).getAbortionCount()).isEqualTo(1);
         assertThat(month(JAN).getFirstParityFarrowSowCount()).as("养殖 105").isEqualTo(1);
         assertThat(month(FEB).getFirstParityFarrowSowCount()).isZero();
@@ -283,19 +782,40 @@ class ProductionIndicatorsMysqlTest {
         assertThat(day.getAvgWeanAgeDays()).as("养殖 42 进栏与断奶用同一日龄列").isEqualByComparingTo("23");
         assertThat(day.getWeanAgeDaysSum()).isEqualTo(46);
         assertThat(day.getWeanAgeValidCount()).isEqualTo(2);
-        assertThat(day(JAN31.minusDays(1)).getAvgWeanAgeDays()).isNull();
+        assertThat(day(JAN31.minusDays(1)).getAvgWeanAgeDays()).as("养殖 30、42 无日龄样本").isZero();
         assertThat(day(FEB1).getAvgWeanAgeDays()).isEqualByComparingTo("22");
         execute("INSERT INTO t_farm_pig_farrow (id,pig_id,farrow_date) VALUES (2,22,'2025-01-14')");
         execute("INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count) "
             + "VALUES (4,22,2,'2025-01-29',1)");
         execute("INSERT INTO t_farm_pig_weaning_detail (id,weaning_id,birth_farrow_id,weight) VALUES (6,4,2,0)");
-        assertThat(day(JAN31.minusDays(2)).getAvgEntryWeight()).isNull();
+        assertThat(day(JAN31.minusDays(2)).getAvgEntryWeight()).as("养殖 41 无有效称重").isZero();
         var vo = new FarmIndicatorRecordToFarmIndicatorRecordVoMapperImpl().convert(day);
         assertThat(vo.getAvgWeanAgeDays()).isEqualByComparingTo("23");
         assertThat(vo.getAvgEntryWeight()).isEqualByComparingTo("6");
         rollups(JAN, FEB);
         assertThat(month(JAN).getAvgWeanAgeDays()).as("养殖 71 一月按有效头数加权 (21+25+15)/3").isEqualByComparingTo("20.333");
         assertThat(month(FEB).getAvgWeanAgeDays()).as("养殖 71 跨月第二批").isEqualByComparingTo("22");
+    }
+
+    @Test
+    void dailyWeaningAgeRoundsToOneDecimalAndExcludesUnknownDates() throws Exception {
+        execute("INSERT INTO t_farm_pig_farrow (id,pig_id,farrow_date) VALUES "
+            + "(1,11,'2025-01-10'),(2,12,'2025-01-09')");
+        execute("INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count) VALUES "
+            + "(1,11,1,'2025-01-31',4),(2,11,1,'2025-02-01',1)");
+        execute("INSERT INTO t_farm_pig_weaning_detail (id,weaning_id,birth_farrow_id,weight) VALUES "
+            + "(1,1,1,5),(2,1,1,5),(3,1,2,6),(4,1,NULL,NULL),(5,2,NULL,NULL)");
+
+        FarmIndicatorRecord row = day(JAN31);
+        assertThat(row.getAvgWeanAgeDays()).as("养殖 30、42：21、21、22，缺出生日的排除").isEqualByComparingTo("21.3");
+        assertThat(row.getWeanAgeDaysSum()).isEqualTo(64);
+        assertThat(row.getWeanAgeValidCount()).isEqualTo(3);
+        assertThat(row.getAvgEntryWeight()).as("养殖 41：16 kg 除以已称三头").isEqualByComparingTo("5.333");
+        assertThat(row.getWeanWeightValidCount()).isEqualTo(3);
+        FarmIndicatorRecord missing = day(FEB1);
+        assertThat(missing.getWeanedPigletCount()).isEqualTo(1);
+        assertThat(missing.getAvgWeanAgeDays()).as("养殖 30、42 有断奶但全部缺出生日").isZero();
+        assertThat(missing.getAvgEntryWeight()).as("养殖 41 有断奶但没有称重样本").isZero();
     }
 
     @Test
@@ -468,8 +988,149 @@ class ProductionIndicatorsMysqlTest {
         assertThat(year()).isEqualTo(firstYear);
     }
 
+    @Test
+    void deathCullRebuildMovesTheCountToTheLastValidOperation() throws Exception {
+        LocalDate nov10 = LocalDate.of(2025, 11, 10);
+        LocalDate nov12 = nov10.plusDays(2);
+        execute("INSERT INTO t_farm_pig_culling (id,pig_id,culling_date,create_time) "
+            + "VALUES (1,1,'2025-11-10','2025-11-11')");
+        assertThat(day(nov10).getDeathCullCount()).as("养殖 36 首次 11-10 淘汰").isEqualTo(1);
+
+        execute("INSERT INTO t_farm_pig_death (id,pig_id,death_date,death_pig_type,create_time) "
+            + "VALUES (2,1,'2025-11-12','fattening','2025-11-14')");
+        try (var spring = mockStatic(SpringUtils.class)) {
+            spring.when(() -> SpringUtils.getAopProxy(service)).thenReturn(service);
+            assertThat(service.triggerAggregateRange(nov10, nov12)).contains("ok=3", "failed=[]");
+        }
+        assertThat(readDay(nov10).getDeathCullCount()).as("养殖 36 回刷后旧日期为 0").isZero();
+        assertThat(readDay(nov12).getDeathCullCount()).as("养殖 36 最终归业务日 11-12").isEqualTo(1);
+        assertThat(day(nov12.plusDays(2)).getDeathCullCount()).isZero();
+        execute("UPDATE t_farm_pig_culling SET update_time='2025-11-20' WHERE id=1");
+        assertThat(day(nov10).getDeathCullCount()).as("养殖 36 修改早录的淘汰单，旧业务日仍为 0").isZero();
+        assertThat(day(nov12).getDeathCullCount()).as("养殖 36 编辑不改变计数归属").isEqualTo(1);
+        execute("UPDATE t_farm_pig_death SET del_flag='1' WHERE id=2");
+        assertThat(day(nov10).getDeathCullCount()).as("养殖 36 后续操作撤销后回到有效淘汰").isEqualTo(1);
+        assertThat(day(nov12).getDeathCullCount()).isZero();
+    }
+
+    @Test
+    void deathCullUsesRecordingOrderBeforeBusinessDateAndBreaksTiesById() throws Exception {
+        LocalDate nov10 = LocalDate.of(2025, 11, 10);
+        LocalDate nov12 = nov10.plusDays(2);
+        execute("INSERT INTO t_farm_pig_death (id,pig_id,death_date,death_pig_type,create_time) "
+            + "VALUES (1,1,'2025-11-12','fattening','2025-11-14')");
+        execute("INSERT INTO t_farm_pig_culling (id,pig_id,culling_date,create_time) "
+            + "VALUES (2,1,'2025-11-10','2025-11-15')");
+
+        assertThat(day(nov10).getDeathCullCount()).as("养殖 36 后补录的淘汰计在较早业务日").isEqualTo(1);
+        assertThat(day(nov12).getDeathCullCount()).as("养殖 36 先录入的死亡不重复计数").isZero();
+        execute("UPDATE t_farm_pig_culling SET create_time='2025-11-14' WHERE id=2");
+        assertThat(day(nov10).getDeathCullCount()).as("养殖 36 同录入时间取较大 ID").isEqualTo(1);
+        assertThat(day(nov12).getDeathCullCount()).isZero();
+    }
+
+    @Test
+    void pigFeedConvertsMaterialUnitsAndCountsUnconvertibleRecords() throws Exception {
+        execute("INSERT INTO t_warehouse_product_info (id,product_unit,belong_type) VALUES "
+            + "(1,'吨','feed'),(2,'斤','feed'),(3,'克','feed'),(4,'公斤','feed'),"
+            + "(5,' KG ','feed'),(6,'袋','feed'),(7,'包','feed')");
+        execute("INSERT INTO t_warehouse_feed_log (id,feed_date,feed_type,feed_animal,product_id,feed_weight) VALUES "
+            + "(1,'2025-01-31','warehouse','pig',1,0.02),"
+            + "(2,'2025-02-01','warehouse','pig',2,4),(3,'2025-02-01','warehouse','pig',3,500),"
+            + "(4,'2025-02-01','warehouse','pig',4,3),(5,'2025-02-01','warehouse','pig',5,4),"
+            + "(6,'2025-02-01','warehouse','pig',6,2),(7,'2025-02-01','warehouse','pig',7,3)");
+
+        FarmIndicatorRecord tonnes = day(JAN31);
+        assertThat(tonnes.getFeedWeightKg()).as("养殖 37 教槽料 0.02 吨").isEqualByComparingTo("20");
+        assertThat(tonnes.getNonKgFeedRecordCount()).isZero();
+        FarmIndicatorRecord other = day(FEB1);
+        assertThat(other.getFeedWeightKg()).as("养殖 37 斤、克、公斤和 kg").isEqualByComparingTo("9.500");
+        assertThat(other.getNonKgFeedRecordCount()).as("养殖 37 袋、包各记一条").isEqualTo(2);
+        assertThat(other.getOrganicFeedWeightKg()).as("养殖 38 饲料物资不进有机果蔬重量").isZero();
+    }
+
+    @Test
+    void pigFeedConvertsSpacedUnitAliasesAndCountsMissingUnits() throws Exception {
+        execute("INSERT INTO t_warehouse_product_info (id,product_unit,belong_type) VALUES "
+            + "(1,'　G　','feed'),(2,'　t ','feed'),(3,'　k　g　','feed'),"
+            + "(4,NULL,'feed'),(5,'','feed'),(6,'　 ','feed')");
+        execute("INSERT INTO t_warehouse_feed_log (id,feed_date,feed_type,feed_animal,product_id,feed_weight) VALUES "
+            + "(1,'2025-01-31','warehouse','pig',1,500),(2,'2025-02-01','warehouse','pig',2,0.02),"
+            + "(3,'2025-02-02','warehouse','pig',3,3),(4,'2025-01-31','warehouse','pig',4,10),"
+            + "(5,'2025-02-01','warehouse','pig',5,11),(6,'2025-02-02','warehouse','pig',6,12)");
+
+        FarmIndicatorRecord grams = day(JAN31);
+        assertThat(grams.getFeedWeightKg()).as("养殖 37 500 g 折 0.5 kg").isEqualByComparingTo("0.500");
+        assertThat(grams.getNonKgFeedRecordCount()).as("养殖 37 NULL 单位记一条").isEqualTo(1);
+        FarmIndicatorRecord tonnes = day(FEB1);
+        assertThat(tonnes.getFeedWeightKg()).as("养殖 37 0.02 t 折 20 kg").isEqualByComparingTo("20");
+        assertThat(tonnes.getNonKgFeedRecordCount()).as("养殖 37 空字符串单位记一条").isEqualTo(1);
+        FarmIndicatorRecord kilograms = day(FEB1.plusDays(1));
+        assertThat(kilograms.getFeedWeightKg()).as("养殖 37 去掉单位中的全角空格").isEqualByComparingTo("3");
+        assertThat(kilograms.getNonKgFeedRecordCount()).as("养殖 37 纯空格单位记一条").isEqualTo(1);
+    }
+
+    @Test
+    void pigFeedUsesOneLedgerAndSeparatesOrganicAndNonKgMaterials() throws Exception {
+        execute("INSERT INTO t_warehouse_product_info (id,product_unit,belong_type,buy_class) VALUES "
+            + "(1,'kg',NULL,'feed'),(2,'袋',NULL,'feed'),(3,'千克','vegetable',NULL)");
+        execute("INSERT INTO t_warehouse_feed_log (id,feed_date,feed_type,feed_animal,product_id,feed_weight) VALUES "
+            + "(1,'2025-01-31 08:00:00','veg_handle','pig',NULL,100),"
+            + "(2,'2025-01-31 09:00:00','warehouse','pig',1,20),"
+            + "(3,'2025-01-31','veg_handle','poultry',NULL,30),"
+            + "(4,'2025-01-31','warehouse','pig',2,2),"
+            + "(5,'2025-02-01','warehouse','pig',3,15),"
+            + "(6,'2025-01-31','warehouse','pig',999,999),"
+            + "(7,'2025-01-31','warehouse','pig',1,40),"
+            + "(8,'2025-01-31','warehouse','pig',1,50),"
+            + "(9,'2025-02-01',NULL,'pig',NULL,10)");
+        execute("UPDATE t_warehouse_feed_log SET tenant_id='2002' WHERE id=7");
+        execute("UPDATE t_warehouse_feed_log SET del_flag='1' WHERE id=8");
+        FarmIndicatorRecord day = day(JAN31);
+        assertThat(day.getFeedWeightKg()).as("养殖 37：红薯100 kg + 教槽料20 kg").isEqualByComparingTo("120.000");
+        assertThat(day.getOrganicFeedWeightKg()).as("养殖 38：家禽、饲料物资排除").isEqualByComparingTo("100.000");
+        assertThat(day.getNonKgFeedRecordCount()).as("养殖 37：两袋是一条非kg记录").isEqualTo(1);
+        assertThat(day(FEB1).getOrganicFeedWeightKg()).as("养殖 38 仓库果蔬 15 + 旧毛菜台账 10").isEqualByComparingTo("25");
+        var vo = new FarmIndicatorRecordToFarmIndicatorRecordVoMapperImpl().convert(day);
+        assertThat(vo.getFeedWeightKg()).isEqualByComparingTo(day.getFeedWeightKg());
+        assertThat(vo.getOrganicFeedWeightKg()).isEqualByComparingTo(day.getOrganicFeedWeightKg());
+        assertThat(vo.getNonKgFeedRecordCount()).isEqualTo(1);
+    }
+
+    @Test
+    void pregnancyLossIsFirstEventPerBreedingAndOneSowPerDay() throws Exception {
+        LocalDate nov5 = LocalDate.of(2025, 11, 5);
+        LocalDate nov8 = nov5.plusDays(3);
+        execute("INSERT INTO t_farm_pig_breeding (id,pig_id,breeding_date) VALUES "
+            + "(1,11,'2025-10-15'),(2,12,'2025-10-16'),(3,13,'2025-07-10'),(4,14,'2025-10-20'),"
+            + "(5,11,'2025-11-06'),(6,15,'2025-10-15'),(7,16,'2025-10-15')");
+        execute("INSERT INTO t_farm_pig_abnormal (id,pig_id,abnormal_date,abnormal_type,related_breeding_id) VALUES "
+            + "(1,11,'2025-11-05','R',1),(2,11,'2025-11-05 10:00:00','A',1),"
+            + "(3,11,'2025-11-08','N',1),(4,13,'2025-11-08','A',3),(5,99,'2025-11-08','R',NULL)");
+        execute("INSERT INTO t_farm_pig_farrow (id,pig_id,breeding_id,farrow_date) VALUES (1,13,3,'2025-11-03')");
+        execute("INSERT INTO t_farm_pig_death (id,pig_id,death_date,death_pig_type) VALUES "
+            + "(1,12,'2025-11-08','sow'),(2,15,'2025-11-05','fattening')");
+        execute("INSERT INTO t_farm_pig_culling (id,pig_id,culling_date) VALUES (1,14,'2025-11-09')");
+        change(14, "ELIMINATE", "PZ", "END", 1L, "2025-11-09 00:00:00", null, null);
+        execute("INSERT INTO t_farm_pig_culling (id,pig_id,culling_date) VALUES (2,16,'2025-11-09')");
+        change(16, "ELIMINATE", "DN", "END", 2L, "2025-11-09 00:00:00", null, null);
+        assertThat(day(nov5).getPregnancyLossCount()).as("养殖 43 同一配种同日多原因仅 1").isEqualTo(1);
+        assertThat(day(nov8).getPregnancyLossCount()).as("养殖 43 A 空怀不重计，仅 B 妊娠中死亡").isEqualTo(1);
+        assertThat(day(nov8.plusDays(1)).getPregnancyLossCount()).as("养殖 43 只计妊娠中淘汰").isEqualTo(1);
+        execute("INSERT INTO t_farm_pig_abnormal (id,pig_id,abnormal_date,abnormal_type) "
+            + "VALUES (6,11,'2025-11-10','R')");
+        assertThat(day(nov8.plusDays(2)).getPregnancyLossCount()).as("养殖 43 重新配种后是另一胎").isEqualTo(1);
+        execute("UPDATE t_farm_pig_abnormal SET del_flag='1' WHERE id IN (1,2)");
+        assertThat(day(nov5).getPregnancyLossCount()).isZero();
+        assertThat(day(nov8).getPregnancyLossCount()).as("养殖 43 撤销首损失后，旧胎转计 11-08").isEqualTo(2);
+    }
+
     private FarmIndicatorRecord day(LocalDate date) {
         service.aggregateDay(TENANT, date);
+        return readDay(date);
+    }
+
+    private FarmIndicatorRecord readDay(LocalDate date) {
         return days.selectOne(new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<FarmIndicatorRecord>()
             .eq("stat_date", date));
     }
@@ -493,6 +1154,15 @@ class ProductionIndicatorsMysqlTest {
             id, type, birthDate, weanDate);
     }
 
+    private void wholeLitterPiglets(String firstPigWeanDate) throws Exception {
+        pig(1, "fattening", "2025-01-10", firstPigWeanDate);
+        pig(2, "fattening", "2025-01-10", null);
+        pig(3, "fattening", "2025-01-10", null);
+        execute("UPDATE t_farm_pig_info SET mother_ear='SOW-10'");
+        execute("INSERT INTO t_farm_pig_pigletno (id,farrow_id,piglet_ear_no,pig_id) VALUES "
+            + "(1,10,'E1',1),(2,10,'E2',2),(3,10,'E3',3)");
+    }
+
     private void change(long pig, String event, String oldStatus, String newStatus, Long related, String at,
                         String oldType, String newType) throws Exception {
         execute("INSERT INTO t_farm_status_record (id,pig_id,event_type,old_status,new_status,"
@@ -500,9 +1170,19 @@ class ProductionIndicatorsMysqlTest {
             ++nextStatusId, pig, event, oldStatus, newStatus, related, at, oldType, newType);
     }
 
+    private void recordLitterCulling(long pig, String date, String recordedAt) throws Exception {
+        change(pig, "ELIMINATE", null, "END", 1L, date, null, null);
+        execute("INSERT INTO t_farm_pig_culling (id,pig_id,culling_date,create_time) VALUES (1,?,?,?)",
+            pig, date, recordedAt);
+    }
+
     private void snapshot(long pig, String type, String status) throws Exception {
+        snapshot(JAN31, pig, type, status);
+    }
+
+    private void snapshot(LocalDate day, long pig, String type, String status) throws Exception {
         execute("INSERT INTO t_farm_pig_snapshot (snap_date,pig_id,pig_type,current_status) VALUES (?,?,?,?)",
-            JAN31, pig, type, status);
+            day, pig, type, status);
     }
 
     private void marketing(long id, String date, int weight, String event) throws Exception {
@@ -513,18 +1193,18 @@ class ProductionIndicatorsMysqlTest {
         }
     }
 
-    private void copyIndicatorDefinition(String table) throws Exception {
+    private void copyTableDefinition(String sourceCatalog, String table) throws Exception {
         String ddl;
         try (var statement = connection.createStatement();
-             var result = statement.executeQuery("SHOW CREATE TABLE " + table)) {
+             var result = statement.executeQuery("SHOW CREATE TABLE `" + sourceCatalog.replace("`", "``") + "`." + table)) {
             assertThat(result.next()).isTrue();
             ddl = result.getString(2);
         }
-        execute(ddl.replaceFirst("^CREATE TABLE ", "CREATE TEMPORARY TABLE "));
+        execute(ddl);
     }
 
     private void table(String name, String columns) throws Exception {
-        execute("CREATE TEMPORARY TABLE " + name + " (" + columns
+        execute("CREATE TABLE " + name + " (" + columns
             + ", tenant_id VARCHAR(20) DEFAULT '1001', del_flag CHAR(1) DEFAULT '0')");
     }
 

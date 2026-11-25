@@ -1340,8 +1340,7 @@ public class DashboardServiceImpl implements IDashboardService {
     /**
      * 落盘养殖农场日数据 t_farm_indicator_record（BRD-STAT-001，row10 全 30+ 列）。
      *
-     * <p>事件类按 statDate 自然日 [00:00, 次日 00:00) 区间聚合；期末存栏取 T-1 当日 current_status 快照
-     * （A#4：不做历史回算，直接读 t_farm_pig_info 当前态）。BigDecimal 全部 setScale(3) 控精度。</p>
+     * <p>事件类按 statDate 自然日聚合；期末存栏读重放快照并按个体断奶校正。期初取前一自然日的日表。</p>
      */
     private void upsertFarmIndicator(String tenantId, LocalDate statDate) {
         LocalDate dayFrom = statDate;
@@ -1352,6 +1351,11 @@ public class DashboardServiceImpl implements IDashboardService {
 
         FarmIndicatorRecord r = new FarmIndicatorRecord();
         r.setStatDate(statDate);
+        FarmIndicatorRecord previous = farmIndicatorRecordMapper.selectEndStockForUpdate(tenantId, statDate.minusDays(1));
+        if (previous != null) {
+            r.setBeginProductionSowCount(previous.getEndProductionSowCount());
+            r.setBeginFatteningCount(previous.getEndFatteningCount());
+        }
 
         // ---- 当日事件类（头数） ----
         r.setFarrowSowCount(aggregateQueryMapper.countDistinctEventInDay("t_farm_pig_farrow", "farrow_date", "pig_id", tenantId, dayFrom, dayTo));
@@ -1416,7 +1420,7 @@ public class DashboardServiceImpl implements IDashboardService {
         r.setDeathSowCount(aggregateQueryMapper.countDeathByPigTypeInDay(tenantId, "sow", dtFrom, dtTo));
         r.setDeathPigletCount(aggregateQueryMapper.countDeathByPigTypeInDay(tenantId, "piglet", dtFrom, dtTo));
 
-        // ---- 期末存栏快照（T-1 当日 current_status 当前快照，A#4 不回算） ----
+        // ---- 期末母猪状态和公猪存栏读当日重放快照 ----
         fillEndStock(r, tenantId, statDate);
 
         // ---- 妊娠损失天数（甲方 V6 行232，口径 D-0096）= 当天由配种转出为返空流死淘的母猪，
@@ -1445,6 +1449,7 @@ public class DashboardServiceImpl implements IDashboardService {
             r.setId(existing.getId());
             farmIndicatorRecordMapper.updateById(r);
         }
+        farmIndicatorRecordMapper.updateBeginningStock(tenantId, dayTo, r.getEndProductionSowCount(), r.getEndFatteningCount());
     }
 
     private void fillDailyProductionIndicators(FarmIndicatorRecord row, String tenantId,
@@ -1455,7 +1460,7 @@ public class DashboardServiceImpl implements IDashboardService {
         row.setFarrowDeformedBornCount(nullableInt(farrow, "deformedBorn"));
         row.setFarrowWeakCulledCount(nullableInt(farrow, "weakCulled"));
 
-        var abnormal = productionIndicators.abnormalTotals(tenantId, from, to);
+        var abnormal = productionIndicators.dailyAbnormalTotals(tenantId, from, to);
         row.setReturnHeatCount(mapInt(abnormal, "returnHeat"));
         row.setEmptySowCount(mapInt(abnormal, "emptySow"));
         row.setAbortionCount(mapInt(abnormal, "abortion"));
@@ -1468,28 +1473,31 @@ public class DashboardServiceImpl implements IDashboardService {
         int weightCount = mapInt(measures, "weightValidCount");
         row.setWeanAgeDaysSum(ageSum);
         row.setWeanAgeValidCount(ageCount);
-        row.setAvgWeanAgeDays(measuredAverage(BigDecimal.valueOf(ageSum), ageCount));
+        row.setAvgWeanAgeDays(ProductionIndicatorCalculator.dailyAverage(BigDecimal.valueOf(ageSum), ageCount, 1));
         row.setWeanValidWeightSum(weightSum);
         row.setWeanWeightValidCount(weightCount);
-        row.setAvgEntryWeight(measuredAverage(weightSum, weightCount));
+        row.setAvgEntryWeight(ProductionIndicatorCalculator.dailyAverage(weightSum, weightCount, 3));
+        row.setAvgLiveBornPerLitter(ProductionIndicatorCalculator.dailyAverage(
+            BigDecimal.valueOf(row.getLiveBornCount()), row.getFarrowSowCount(), 3));
 
-        var headDays = productionIndicators.headDays(tenantId, from.toLocalDate());
-        row.setProductionSowHeadDays(headDays.productionSow());
-        row.setFatteningHeadDays(headDays.fattening());
+        var groups = productionIndicators.dailyGroups(tenantId, from.toLocalDate());
+        row.setProductionSowHeadDays(groups.productionSowHeadDays());
+        row.setFatteningHeadDays(groups.fatteningHeadDays());
+        row.setEndFatteningCount(groups.endFattening());
+        row.setEndPigletCount(groups.endPiglets());
+        row.setNewFatteningCount(groups.newFattening());
+
+        row.setDeathCullCount(productionIndicators.countDeathCull(tenantId, from, to));
+        row.setPregnancyLossCount(productionIndicators.countPregnancyLoss(tenantId, from, to));
+        var feed = productionIndicators.feedTotals(tenantId, from, to);
+        row.setFeedWeightKg(scale3(mapBd(feed, "weightKg")));
+        row.setOrganicFeedWeightKg(scale3(mapBd(feed, "organicWeightKg")));
+        row.setNonKgFeedRecordCount(mapInt(feed, "nonKgCount"));
     }
 
-    /**
-     * 填期末存栏 7 项快照（按 pig_type + current_status 一次分组查回，service 端汇总）。
-     *
-     * <p>口径（ADR-0016 解耦：current_status 是种母猪繁殖态轴，非种母猪平时空串）：</p>
-     * <ul>
-     *   <li>生产母猪头数 = sow 且 status ∈ {PZ,FM,DN,LC,KH,FQ}（非后备 HB、非终止 END、非空串）；</li>
-     *   <li>后备母猪 = sow 且 status='HB'；非生产母猪 = sow 且 status ∈ {KH,FQ,LC,DN}；</li>
-     *   <li>种公猪 = boar、肥猪 = fattening、仔猪 = piglet（status&lt;&gt;'END' 已在查询过滤）。</li>
-     * </ul>
-     */
+    /** 母猪和公猪期末存栏读当日重放快照。 */
     private void fillEndStock(FarmIndicatorRecord r, String tenantId, LocalDate asOf) {
-        int prodSow = 0, reserveSow = 0, nonprodSow = 0, pregnantSow = 0, boar = 0, fattening = 0, piglet = 0;
+        int prodSow = 0, nonprodSow = 0, pregnantSow = 0, boar = 0;
         // BRD-STAT-003：期末存栏只认当日快照，而快照是 upsertFarmIndicator 之前刚按业务时间重放出来的。
         // 这里**不再回落实时主表** —— 回落会把「今天的猪群」写进历史行，滚动重算时直接污染历史
         // （旧实现的 bug：任何没有快照的历史日期一重算，期末存栏就变成当天的值）。
@@ -1500,9 +1508,7 @@ public class DashboardServiceImpl implements IDashboardService {
             int cnt = mapInt(row, "cnt");
             switch (type) {
                 case "sow" -> {
-                    if ("HB".equals(cs)) {
-                        reserveSow += cnt;
-                    } else if (!cs.isEmpty()) {
+                    if (!cs.isEmpty() && !"HB".equals(cs) && !"END".equals(cs)) {
                         // PZ/FM/DN/LC/KH/FQ 均算「生产母猪」（非后备非终止非空）
                         prodSow += cnt;
                         if ("KH".equals(cs) || "FQ".equals(cs) || "LC".equals(cs) || "DN".equals(cs)) {
@@ -1517,21 +1523,17 @@ public class DashboardServiceImpl implements IDashboardService {
                     }
                 }
                 case "boar" -> boar += cnt;
-                case "fattening" -> fattening += cnt;
-                case "piglet" -> piglet += cnt;
                 default -> {
                     // 未知 pig_type 不计入任何期末项
                 }
             }
         }
         r.setEndProductionSowCount(prodSow);
-        r.setEndReserveCount(reserveSow);
+        r.setEndReserveCount(productionIndicators.countIntroducedReserve(tenantId, asOf));
         r.setEndNonprodSowCount(nonprodSow);
         r.setPregnantSowCount(pregnantSow);
         r.setEndBoarCount(boar);
-        r.setEndFatteningCount(fattening);
-        r.setEndPigletCount(piglet);
-        // 230 日龄后备同口径：读当日快照（birth_date 随快照重放，日龄基准 = asOf）。
+        // 既有配种率分母使用全部 HB 中满 230 日龄的母猪，独立于第 9 行。
         r.setEndReserve230Count(aggregateQueryMapper.countReserve230OnSnapshot(tenantId, asOf));
     }
 
