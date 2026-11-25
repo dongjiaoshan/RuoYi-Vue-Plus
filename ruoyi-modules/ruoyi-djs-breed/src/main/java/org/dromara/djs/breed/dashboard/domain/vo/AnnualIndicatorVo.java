@@ -1,9 +1,9 @@
 package org.dromara.djs.breed.dashboard.domain.vo;
 
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 import java.io.Serial;
-import java.io.Serializable;
 import java.math.BigDecimal;
 
 /**
@@ -16,7 +16,8 @@ import java.math.BigDecimal;
  * @since BRD-DASH-001
  */
 @Data
-public class AnnualIndicatorVo implements Serializable {
+@EqualsAndHashCode(callSuper = true)
+public class AnnualIndicatorVo extends AnnualProductionMetricsVo {
 
     @Serial
     private static final long serialVersionUID = 1L;
@@ -38,7 +39,7 @@ public class AnnualIndicatorVo implements Serializable {
 
     /** PSY 每头母猪年产断奶仔数 =（Σ日妊娠天数/母猪头日）×（365/115）× 窝均断奶数，列 decimal(8,2)。 */
     private BigDecimal psy;
-    /** 死亡率（DEATH / (DEATH + ALIVE)，4 位小数）。 */
+    /** 年生产母猪死亡率，接口以比例返回（0.0400 表示 4.00%）。 */
     private BigDecimal mortalityRate;
     /** 肥猪死亡数（当年 Σ日 death_fattening_count）。 */
     private Integer totalFatteningDeath;

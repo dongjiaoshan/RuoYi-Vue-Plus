@@ -1,0 +1,15 @@
+ALTER TABLE t_farm_year_production
+  ADD COLUMN production_sow_cull_rate DECIMAL(16,2) NULL DEFAULT NULL COMMENT '117 年生产母猪淘汰率（%）',
+  ADD COLUMN fattening_cull_rate DECIMAL(16,2) NULL DEFAULT NULL COMMENT '119 年育肥猪淘汰率（%）',
+  ADD COLUMN fattening_death_rate DECIMAL(16,2) NULL DEFAULT NULL COMMENT '120 年育肥猪死亡率（%）',
+  ADD COLUMN psy_stat_to DATE NULL DEFAULT NULL COMMENT '121 PSY统计区间最后一份有效日报的日期（含）',
+  ADD COLUMN farrowings_per_sow DECIMAL(16,2) NULL DEFAULT NULL COMMENT '122 实际分娩窝数除以年平均生产母猪存栏，不年化',
+  ADD COLUMN feed_weight_kg DECIMAL(16,3) NULL DEFAULT NULL COMMENT '123 日表喂猪耗料量合计（kg）',
+  ADD COLUMN organic_feed_weight_kg DECIMAL(16,3) NULL DEFAULT NULL COMMENT '124 日表喂猪有机饲料消耗量合计（kg）',
+  ADD COLUMN vaccine_pig_times INT NULL DEFAULT NULL COMMENT '125 年疫苗头次数',
+  ADD COLUMN health_pig_times INT NULL DEFAULT NULL COMMENT '126 年保健头次数',
+  ADD COLUMN treatment_pig_times INT NULL DEFAULT NULL COMMENT '127 年治疗头次数',
+  ADD COLUMN avg_marketing_age_days DECIMAL(16,1) NULL DEFAULT NULL COMMENT '128 育肥出栏猪平均日龄（天）',
+  ADD COLUMN marketing_missing_birth_count INT NULL DEFAULT NULL COMMENT '128 育肥出栏猪缺出生日头数',
+  ADD COLUMN avg_gestation_days DECIMAL(16,1) NULL DEFAULT NULL COMMENT '130 同胎配种分娩有效配对的平均妊娠天数',
+  ADD COLUMN avg_fattening_stock DECIMAL(16,3) NULL DEFAULT NULL COMMENT '日期末育肥存栏合计除以有日报天数';

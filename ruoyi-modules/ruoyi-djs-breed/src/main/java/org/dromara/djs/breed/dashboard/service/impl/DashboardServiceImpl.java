@@ -15,6 +15,7 @@ import org.dromara.djs.breed.production.domain.SowPerformance;
 import org.dromara.djs.breed.dashboard.domain.vo.Activity7dVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AgeBucketVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AnnualIndicatorVo;
+import org.dromara.djs.breed.dashboard.domain.vo.AnnualProductionMetricsVo;
 import org.dromara.djs.breed.dashboard.domain.vo.BreedingAnnualVo;
 import org.dromara.djs.breed.dashboard.domain.vo.CohortLedgerVo;
 import org.dromara.djs.breed.dashboard.domain.vo.DailyOverviewVo;
@@ -287,7 +288,10 @@ public class DashboardServiceImpl implements IDashboardService {
         vo.setMarketingWeight(Optional.ofNullable(ai.getMarketingWeight()).orElse(BigDecimal.ZERO));
         vo.setAvgMarketingWeight(Optional.ofNullable(ai.getAvgMarketingWeight()).orElse(BigDecimal.ZERO));
         vo.setPsy(Optional.ofNullable(ai.getPsy()).orElse(BigDecimal.ZERO));
-        vo.setMortalityRate(Optional.ofNullable(ai.getMortalityRate()).orElse(BigDecimal.ZERO));
+        // 旧看板的文字和仪表盘都以比例读值，回刷后将库内百分比还原为接口比例。
+        BigDecimal mortality = bdZero(ai.getMortalityRate());
+        vo.setMortalityRate(ai.getPsyStatTo() == null ? mortality : mortality.movePointLeft(2));
+        populateAnnualMetrics(vo, ai);
         vo.setTotalFatteningDeath(zeroIfNull(ai.getTotalFatteningDeath()));
         return vo;
     }
@@ -590,7 +594,6 @@ public class DashboardServiceImpl implements IDashboardService {
             vo.setAvgLiveBornPerLitter(BigDecimal.ZERO);
             vo.setAvgWeanedPerLitter(BigDecimal.ZERO);
             vo.setFarrowingLossRate(BigDecimal.ZERO);
-            vo.setPsyStatDays(0);
             return vo;
         }
         // ②年度繁殖与配种：其余字段仍以年表 t_farm_year_production 落盘值为权威源（甲方口径）。
@@ -598,8 +601,7 @@ public class DashboardServiceImpl implements IDashboardService {
         // R72：年度繁殖卡首格由「配种率」改「PSY」，取年表 psy（头/母猪·年）。mateRate 仍保留兼容不再前端展示。
         //   分娩率 / 配种率两格已在上面从台账取过，此处不再覆盖。
         vo.setPsy(bdZero(ai.getPsy()));
-        vo.setPsyStatFrom(ai.getPsyStatFrom() == null ? null : ai.getPsyStatFrom().toString());
-        vo.setPsyStatDays(zeroIfNull(ai.getPsyStatDays()));
+        populateAnnualMetrics(vo, ai);
         vo.setWeanMateInterval(bdZero(ai.getWeanBreedInterval()));
         vo.setAvgNonProductiveDays(bdZero(ai.getAvgNpdDays()));
         // ③年度产房与仔猪质量
@@ -609,6 +611,26 @@ public class DashboardServiceImpl implements IDashboardService {
         vo.setAvgWeanedPerLitter(bdZero(ai.getAvgWeanedPerLitter()));
         vo.setFarrowingLossRate(bdZero(ai.getFarrowLossRate()));
         return vo;
+    }
+
+    private static void populateAnnualMetrics(AnnualProductionMetricsVo vo, AnnualIndicator annual) {
+        vo.setPsyStatFrom(annual.getPsyStatFrom() == null ? null : annual.getPsyStatFrom().toString());
+        vo.setPsyStatTo(annual.getPsyStatTo() == null ? null : annual.getPsyStatTo().toString());
+        vo.setPsyStatDays(zeroIfNull(annual.getPsyStatDays()));
+        vo.setAvgProdSowStock(annual.getAvgProdSowStock());
+        vo.setAvgFatteningStock(annual.getAvgFatteningStock());
+        vo.setProductionSowCullRate(annual.getProductionSowCullRate());
+        vo.setFatteningCullRate(annual.getFatteningCullRate());
+        vo.setFatteningDeathRate(annual.getFatteningDeathRate());
+        vo.setFarrowingsPerSow(annual.getFarrowingsPerSow());
+        vo.setFeedWeightKg(annual.getFeedWeightKg());
+        vo.setOrganicFeedWeightKg(annual.getOrganicFeedWeightKg());
+        vo.setVaccinePigTimes(annual.getVaccinePigTimes());
+        vo.setHealthPigTimes(annual.getHealthPigTimes());
+        vo.setTreatmentPigTimes(annual.getTreatmentPigTimes());
+        vo.setAvgMarketingAgeDays(annual.getAvgMarketingAgeDays());
+        vo.setMarketingMissingBirthCount(annual.getMarketingMissingBirthCount());
+        vo.setAvgGestationDays(annual.getAvgGestationDays());
     }
 
     /** 年表 BigDecimal 字段取值：null → ZERO。 */
@@ -1441,7 +1463,7 @@ public class DashboardServiceImpl implements IDashboardService {
         r.setMedicatedPigCount(aggregateQueryMapper.countMedicatedPigInDay(tenantId, dtFrom, dtTo));
 
         // 出栏统计按事件时点的育肥群收口，背膘保留独立取样口径。
-        var marketing = productionIndicators.marketing(tenantId, dtFrom, dtTo);
+        var marketing = productionIndicators.marketing(tenantId, dtFrom, dtTo, false);
         int marketingCount = marketing.count();
         BigDecimal marketingWeight = marketing.weight();
         Map<String, Object> backfat = aggregateQueryMapper.aggregateBackfatForDay(tenantId, dtFrom, dtTo);
@@ -1806,7 +1828,7 @@ public class DashboardServiceImpl implements IDashboardService {
         int cullingCount = useDaily ? mapInt(sum, "sumCullingPig")
             : aggregateQueryMapper.countStatusEventInRange(tenantId, "ELIMINATE", dtFrom, dtTo);
         // 新口径直接覆盖完整统计期，避免 60 天窗口边缘的旧日/月行混入。
-        var marketing = productionIndicators.marketing(tenantId, dtFrom, dtTo);
+        var marketing = productionIndicators.marketing(tenantId, dtFrom, dtTo, false);
         LocalDateTime cutoff = today.atStartOfDay();
         var weaning = productionIndicators.weaningForMonth(tenantId, dtFrom, dtTo, cutoff);
         int lactationDaysByFarrow = productionIndicators.lactationDaysByFarrowMonth(tenantId, dtFrom, dtTo, cutoff);
@@ -1941,7 +1963,7 @@ public class DashboardServiceImpl implements IDashboardService {
             month.getReserveFirstBreedAgeDaysSum(), month.getReserveFirstBreedAgeValidCount(), 1));
 
         // 57–66、106–108 同一批分娩源。健仔率的分母只来自有健仔记录的分娩单。
-        var farrow = productionIndicators.monthlyFarrowMeasures(tenantId, start, end);
+        var farrow = productionIndicators.farrowMeasures(tenantId, start, end, false);
         int litters = month.getFarrowSowCount();
         month.setFarrowParitySum(mapInt(farrow, "paritySum"));
         month.setFarrowParityValidCount(mapInt(farrow, "parityCount"));
@@ -2028,7 +2050,7 @@ public class DashboardServiceImpl implements IDashboardService {
         // 83–87、91、93–96 计数和期末快照。
         month.setFeedWeightKg(mapBd(daily, "sumFeedWeight"));
         month.setOrganicFeedWeightKg(mapBd(daily, "sumOrganicFeedWeight"));
-        var medicine = productionIndicators.medicineTimes(tenantId, start, end);
+        var medicine = productionIndicators.medicineTimes(tenantId, start, end, false);
         month.setVaccinePigTimes(mapInt(medicine, "vaccine"));
         month.setHealthPigTimes(mapInt(medicine, "health"));
         month.setTreatmentPigTimes(mapInt(medicine, "treatment"));
@@ -2077,10 +2099,7 @@ public class DashboardServiceImpl implements IDashboardService {
         LocalDateTime dtFrom = from.atStartOfDay();
         LocalDateTime dtTo = to.atStartOfDay();
 
-        // row44①：其余基础指标取月表 Σ。V1.1 的出栏统计直接用全年的有效育肥出栏单。
-        //   月表各行已按日表 Σ 落盘（当月行为 T-1 口径，caller 先跑 upsertMonthlyProduction 刷新当月行），
-        //   Σ 月即得 T-1 年度总量，年↔月逐层可对账（年 = 其各月之和）。仅汇总有月行的月份；
-        //   无月行的月份（如日/月统计上线前）不计入——年表口径 = 月表已跟踪运营月之和。
+        // 原有基础指标取月表 Σ；112–130 的年度指标按实际日报覆盖的业务日归期。
         String fromMonth = String.format("%04d-01", year);
         // 月行汇总右闭界 = min(当年 12 月, T-1 所在月)：历史年恒取全年 12 个月，当年只到昨天所在月。
         YearMonth endMonth = YearMonth.of(year, 12);
@@ -2093,31 +2112,23 @@ public class DashboardServiceImpl implements IDashboardService {
         int introduceCount = mapInt(mSum, "introduceCount");
         int introduceBoarCount = mapInt(mSum, "introduceBoarCount");
         int bornCount = mapInt(mSum, "bornCount");
-        int weanedCount = mapInt(mSum, "weanedCount");
         int deathCount = mapInt(mSum, "deathCount");
         int cullingCount = mapInt(mSum, "cullingCount");
-        var marketing = productionIndicators.marketing(tenantId, dtFrom, dtTo);
-
-        // 死亡率 = DEATH / (DEATH + alive sows)（4 位小数）
-        int aliveSows = aggregateQueryMapper.countAliveSows(tenantId);
-        int denom = deathCount + aliveSows;
-        BigDecimal mortalityRate = denom == 0
-            ? BigDecimal.ZERO
-            : new BigDecimal(deathCount).divide(new BigDecimal(denom), 4, RoundingMode.HALF_UP);
+        var marketing = productionIndicators.marketing(tenantId, dtFrom, dtTo, true);
 
         // ---- row14 高级指标（从当年已落盘 farm_indicator 日表 Σ 回读 + 部分实时算） ----
         Map<String, Object> sum = aggregateQueryMapper.sumIndicatorRange(tenantId, from, to);
         int sumFarrowSow = mapInt(sum, "sumFarrowSow");
         int sumTotalBorn = mapInt(sum, "sumTotalBorn");
         int sumLiveBorn = mapInt(sum, "sumLiveBorn");
-        int sumWeaningSow = productionIndicators.weaningSowCount(tenantId, dtFrom, dtTo);
-        int sumWeanedPiglet = aggregateQueryMapper.sumWeanedInRange(tenantId, from, to);
+        int sumWeaningSow = mapInt(sum, "sumWeaningSow");
+        int sumWeanedPiglet = mapInt(sum, "sumWeanedPiglet");
         int sumDeathFattening = mapInt(sum, "sumDeathFattening"); // T7 肥猪死亡数
         int sumEndProdSow = mapInt(sum, "sumEndProductionSow");
         int sumEndNonprodSow = mapInt(sum, "sumEndNonprodSow");
 
-        // 已历天数 = 当年日表已落盘行数（年初到 T-1）；为 0 时分母兜底为 1 避免除 0
-        int daysElapsed = aggregateQueryMapper.countIndicatorDays(tenantId, from, to);
+        Map<String, Object> psyBase = aggregateQueryMapper.selectSowDaysInRange(tenantId, from, to);
+        int daysElapsed = mapInt(psyBase, "dayRows");
         // 年均生产母猪存栏（row115 口径重构）= Σ日期末生产母猪头数 / 已历天数（去掉 230 后备，仅纯生产母猪）
         BigDecimal avgProdSowStock = scale3(divide(new BigDecimal(sumEndProdSow), daysElapsed));
 
@@ -2142,7 +2153,7 @@ public class DashboardServiceImpl implements IDashboardService {
         //   不是 row227 那个 farrow_gestation_days（那列在分娩当天把整个孕期一次性计入，是另一个量）。
         // 分子分母同取一批日表行（selectSowDaysInRange 一次查回），区间 = 当年日表实际覆盖段：
         //   日表 2026-07-17 才起，拿全年当分母而分子只有覆盖段的话，份额会被稀释。
-        //   起始日与天数落 psy_stat_from / psy_stat_days，mp 卡片据此标注区间。
+        //   起止日和日报天数随年表落盘并由接口返回。
         // 分子扣除妊娠损失天数（甲方 V6 行233 第 2 点，D-0100 覆盖 D-0086）：怀了一段最后返情/空怀/
         //   流产/死淘的，那几天不该算进「有效妊娠」。被减数 Σ日在怀头数与减数按同一批日表行取，
         //   同一头母猪的那几天在两边一一对应，不会重复扣。
@@ -2151,13 +2162,9 @@ public class DashboardServiceImpl implements IDashboardService {
         //   ② 跨年错配 —— 去年 12 月配的、今年 1 月返情，整段 duration_days 落在今年扣，
         //      而它的大部分天数计在去年的被减数里。这是甲方式子自带的边界，不是实现问题。
         //   负分子会让 PSY 变成负数，宁可钳零。
-        Map<String, Object> psyBase = aggregateQueryMapper.selectSowDaysInRange(tenantId, from, to);
         int sumPregLoss = mapInt(sum, "sumPregLossDays");
         int psyPregDays = Math.max(0, mapInt(psyBase, "pregDays") - sumPregLoss);
         int psySowDays = mapInt(psyBase, "sowDays");
-        int psyStatDays = mapInt(psyBase, "dayRows");
-        LocalDate psyFirstDay = mapDate(psyBase, "firstDay");
-        LocalDate psyFrom = psyFirstDay != null ? psyFirstDay : from;
         BigDecimal psy = psySowDays <= 0
             ? BigDecimal.ZERO
             : scale3(new BigDecimal(psyPregDays)
@@ -2240,13 +2247,12 @@ public class DashboardServiceImpl implements IDashboardService {
         a.setIntroduceCount(introduceCount);
         a.setIntroduceBoarCount(introduceBoarCount);
         a.setBornCount(bornCount);
-        a.setWeanedCount(weanedCount);
+        a.setWeanedCount(sumWeanedPiglet);
         a.setDeathCount(deathCount);
         a.setCullingCount(cullingCount);
         a.setMarketingCount(marketing.count());
         a.setMarketingWeight(marketing.weight());
         a.setPsy(psy);
-        a.setMortalityRate(mortalityRate);
         a.setAvgProdSowStock(avgProdSowStock);
         a.setBreedingCount(breedingCount);
         a.setTotalBornCount(sumTotalBorn);
@@ -2264,11 +2270,34 @@ public class DashboardServiceImpl implements IDashboardService {
         a.setYearBatchFarrowCount(cohortFarrow);
         a.setCohortMaturedCount(cohortMatured);
         a.setYearFarrowRate(yearFarrowRate);
-        a.setPsyStatFrom(psyFrom);
-        a.setPsyStatDays(psyStatDays);
+        a.setPsyStatFrom(mapDate(psyBase, "firstDay"));
+        a.setPsyStatTo(mapDate(psyBase, "lastDay"));
+        a.setPsyStatDays(daysElapsed);
         a.setAvgMarketingWeight(avgMarketingWeight);
         a.setFarrowLossRate(farrowLossRate);
         a.setTotalFatteningDeath(sumDeathFattening);
+
+        var terminals = productionIndicators.annualTerminals(tenantId, dtFrom, dtTo);
+        int sumEndFattening = mapInt(sum, "sumEndFattening");
+        a.setAvgFatteningStock(monthlyAverage(sumEndFattening, daysElapsed, 3));
+        // 117–120：用存栏头日和覆盖天数计算，避免用已经舍入的平均存栏再次舍入。
+        a.setProductionSowCullRate(stockPercent(terminals.sowCulls(), sumEndProdSow, daysElapsed));
+        a.setMortalityRate(stockPercent(terminals.sowDeaths(), sumEndProdSow, daysElapsed));
+        a.setFatteningCullRate(stockPercent(terminals.fatteningCulls(), sumEndFattening, daysElapsed));
+        a.setFatteningDeathRate(stockPercent(terminals.fatteningDeaths(), sumEndFattening, daysElapsed));
+
+        a.setFarrowingsPerSow(ProductionIndicatorCalculator.dailyAverage(
+            BigDecimal.valueOf(sumFarrowSow).multiply(BigDecimal.valueOf(daysElapsed)), sumEndProdSow, 2));
+        a.setFeedWeightKg(mapBd(sum, "sumFeedWeight"));
+        a.setOrganicFeedWeightKg(mapBd(sum, "sumOrganicFeedWeight"));
+        var medicine = productionIndicators.medicineTimes(tenantId, dtFrom, dtTo, true);
+        a.setVaccinePigTimes(mapInt(medicine, "vaccine"));
+        a.setHealthPigTimes(mapInt(medicine, "health"));
+        a.setTreatmentPigTimes(mapInt(medicine, "treatment"));
+        a.setAvgMarketingAgeDays(monthlyAverage(marketing.age().days(), marketing.age().count(), 1));
+        a.setMarketingMissingBirthCount(marketing.age().missing());
+        var farrow = productionIndicators.farrowMeasures(tenantId, dtFrom, dtTo, true);
+        a.setAvgGestationDays(monthlyAverage(mapInt(farrow, "gestationDays"), mapInt(farrow, "gestationCount"), 1));
         if (a.getId() == null) {
             a.setDelFlag("0");
             a.setDelUnique(0L);

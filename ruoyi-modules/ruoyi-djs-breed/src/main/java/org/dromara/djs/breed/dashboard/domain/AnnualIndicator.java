@@ -52,7 +52,7 @@ public class AnnualIndicator extends TenantEntity {
 
     /** PSY =（Σ日妊娠天数 / 母猪头日）×（365/115）× 窝均断奶数，单位 头/母猪·年（列 decimal(8,2)，不是百分比）。 */
     private BigDecimal psy;
-    /** 死亡率（DEATH / (DEATH + ALIVE_END_OF_YEAR)，4 位小数）。 */
+    /** 年生产母猪死亡率（百分比）。年表回刷前的历史行仍为旧比例。 */
     private BigDecimal mortalityRate;
 
     // ---- row14 高级指标（BRD-STAT-001 扩列） ----
@@ -115,6 +115,9 @@ public class AnnualIndicator extends TenantEntity {
     /** 统计区间起始日 = 当年日表实际覆盖的第一天（日表没铺满全年时，PSY/非生产天数只能按覆盖段算）。定时重算，ALWAYS 覆盖旧值。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private LocalDate psyStatFrom;
+    /** 末份有效日报日期（含）。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private LocalDate psyStatTo;
     /**
      * 统计区间天数 = 该区间已落盘日表行数。定时重算，ALWAYS 覆盖旧值。
      *
@@ -129,6 +132,20 @@ public class AnnualIndicator extends TenantEntity {
     private BigDecimal farrowLossRate;
     /** 肥猪死亡数（当年 Σ日 death_fattening_count）。 */
     private Integer totalFatteningDeath;
+
+    private BigDecimal productionSowCullRate;
+    private BigDecimal fatteningCullRate;
+    private BigDecimal fatteningDeathRate;
+    private BigDecimal farrowingsPerSow;
+    private BigDecimal feedWeightKg;
+    private BigDecimal organicFeedWeightKg;
+    private Integer vaccinePigTimes;
+    private Integer healthPigTimes;
+    private Integer treatmentPigTimes;
+    private BigDecimal avgMarketingAgeDays;
+    private Integer marketingMissingBirthCount;
+    private BigDecimal avgGestationDays;
+    private BigDecimal avgFatteningStock;
 
     @TableLogic
     private String delFlag;

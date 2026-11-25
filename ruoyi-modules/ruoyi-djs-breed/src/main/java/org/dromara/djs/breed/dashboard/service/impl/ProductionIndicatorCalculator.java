@@ -204,8 +204,8 @@ class ProductionIndicatorCalculator {
                 || FATTENING.equals(member.pigType()) && day.isBefore(weanDate));
     }
 
-    Marketing marketing(String tenantId, LocalDateTime from, LocalDateTime to) {
-        List<MarketingEvent> events = mapper.marketingEvents(tenantId, from, to);
+    Marketing marketing(String tenantId, LocalDateTime from, LocalDateTime to, boolean coveredOnly) {
+        List<MarketingEvent> events = mapper.marketingEvents(tenantId, from, to, coveredOnly);
         var histories = typeHistories(tenantId, events.stream().map(MarketingEvent::pigId).collect(Collectors.toSet()));
         int count = 0;
         BigDecimal weight = BigDecimal.ZERO;
@@ -300,12 +300,12 @@ class ProductionIndicatorCalculator {
         return mapper.countRepeatBreeding(tenantId, from, to);
     }
 
-    Map<String, Object> monthlyFarrowMeasures(String tenantId, LocalDateTime from, LocalDateTime to) {
-        return mapper.monthlyFarrowMeasures(tenantId, from, to);
+    Map<String, Object> farrowMeasures(String tenantId, LocalDateTime from, LocalDateTime to, boolean coveredOnly) {
+        return mapper.farrowMeasures(tenantId, from, to, coveredOnly);
     }
 
-    Map<String, Object> medicineTimes(String tenantId, LocalDateTime from, LocalDateTime to) {
-        return mapper.medicineTimes(tenantId, from, to);
+    Map<String, Object> medicineTimes(String tenantId, LocalDateTime from, LocalDateTime to, boolean coveredOnly) {
+        return mapper.medicineTimes(tenantId, from, to, coveredOnly);
     }
 
     Map<String, Object> weaningTransferMeasures(String tenantId, LocalDateTime from, LocalDateTime to) {
@@ -317,7 +317,7 @@ class ProductionIndicatorCalculator {
         return mapper.priorMaternalWeanDates(tenantId, from, to, windowStart, cutoff);
     }
 
-    MonthlyTerminals monthlyTerminals(String tenantId, LocalDateTime from, LocalDateTime to, Weaning weaning) {
+    TerminalMeasures monthlyTerminals(String tenantId, LocalDateTime from, LocalDateTime to, Weaning weaning) {
         Map<Long, WeanedLitter> litters = weaning.litters().stream()
             .collect(Collectors.toMap(WeanedLitter::farrowId, litter -> litter));
         LocalDateTime scanFrom = weaning.litters().stream().map(litter -> litter.farrowDate().atStartOfDay())
@@ -325,7 +325,17 @@ class ProductionIndicatorCalculator {
         LocalDateTime scanTo = weaning.lactationThrough().values().stream().map(day -> day.plusDays(1).atStartOfDay())
             .max(LocalDateTime::compareTo).filter(date -> date.isAfter(to)).orElse(to);
 
-        List<TerminalEvent> events = mapper.terminalEvents(tenantId, scanFrom, scanTo);
+        return terminalMeasures(tenantId, mapper.terminalEvents(tenantId, scanFrom, scanTo, false),
+            from, to, litters, weaning.lactationThrough());
+    }
+
+    TerminalMeasures annualTerminals(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return terminalMeasures(tenantId, mapper.terminalEvents(tenantId, from, to, true), from, to, Map.of(), Map.of());
+    }
+
+    private TerminalMeasures terminalMeasures(String tenantId, List<TerminalEvent> events, LocalDateTime from,
+                                              LocalDateTime to, Map<Long, WeanedLitter> litters,
+                                              Map<Long, LocalDate> lactationThrough) {
         var histories = typeHistories(tenantId, events.stream().map(TerminalEvent::pigId).collect(Collectors.toSet()));
         int pigletDeaths = 0;
         int sowDeaths = 0;
@@ -340,42 +350,42 @@ class ProductionIndicatorCalculator {
         for (TerminalEvent event : events) {
             var history = histories.getOrDefault(event.pigId(), List.of());
             String type = terminalType(history, event);
-            boolean inMonth = !event.eventAt().isBefore(from) && event.eventAt().isBefore(to);
+            boolean inPeriod = !event.eventAt().isBefore(from) && event.eventAt().isBefore(to);
             boolean death = "DIE".equals(event.eventType());
             if (PIGLET.equals(type)) {
                 WeanedLitter birth = event.birthFarrowId() == null ? null : litters.get(event.birthFarrowId());
                 LocalDate date = event.eventAt().toLocalDate();
                 if (birth != null && !date.isBefore(birth.farrowDate())
-                    && !date.isAfter(weaning.lactationThrough().get(birth.farrowId()))) {
+                    && !date.isAfter(lactationThrough.get(birth.farrowId()))) {
                     lossCount++;
                 }
-                if (inMonth && event.birthFarrowId() == null) {
+                if (inPeriod && event.birthFarrowId() == null) {
                     unlinked++;
                 }
-                if (inMonth && death) {
+                if (inPeriod && death) {
                     pigletDeaths++;
                     deathAge.add(event.birthDate(), date);
                 }
-            } else if (inMonth && FATTENING.equals(type)) {
+            } else if (inPeriod && FATTENING.equals(type)) {
                 if (death) {
                     fatteningDeaths++;
                 } else {
                     fatteningCulls++;
                 }
-            } else if (inMonth && SOW.equals(type) && isProductionSowStatus(event.oldStatus())) {
+            } else if (inPeriod && SOW.equals(type) && isProductionSowStatus(event.oldStatus())) {
                 if (death) {
                     sowDeaths++;
                 } else {
                     sowCulls++;
-                    if (event.parity() != null) {
+                    if (event.parity() != null && event.parity() > 0) {
                         paritySum += event.parity();
                         parityCount++;
                     }
                 }
             }
         }
-        int lossLiveBorn = weaning.litters().stream().mapToInt(WeanedLitter::liveBorn).sum();
-        return new MonthlyTerminals(pigletDeaths, sowDeaths, sowCulls, fatteningDeaths, fatteningCulls,
+        int lossLiveBorn = litters.values().stream().mapToInt(WeanedLitter::liveBorn).sum();
+        return new TerminalMeasures(pigletDeaths, sowDeaths, sowCulls, fatteningDeaths, fatteningCulls,
             lossCount, lossLiveBorn, unlinked, deathAge, paritySum, parityCount);
     }
 
@@ -417,7 +427,7 @@ class ProductionIndicatorCalculator {
         int missing() { return missing; }
     }
 
-    record MonthlyTerminals(int pigletDeaths, int sowDeaths, int sowCulls, int fatteningDeaths, int fatteningCulls,
+    record TerminalMeasures(int pigletDeaths, int sowDeaths, int sowCulls, int fatteningDeaths, int fatteningCulls,
                             int lossCount, int lossLiveBorn, int unlinked, AgeTotals deathAge,
                             int paritySum, int parityCount) {}
 

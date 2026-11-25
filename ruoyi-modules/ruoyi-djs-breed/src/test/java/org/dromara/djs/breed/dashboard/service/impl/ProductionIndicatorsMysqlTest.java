@@ -2,6 +2,7 @@ package org.dromara.djs.breed.dashboard.service.impl;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.ibatis.mapping.Environment;
 import org.apache.ibatis.session.SqlSession;
 import org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;
@@ -69,7 +70,8 @@ class ProductionIndicatorsMysqlTest {
         "countDistinctEventInDay", "countDistinctAbnormalSowInRange", "countStatusEventInRange",
         "aggregateWeanDetailForDay", "sumWeanedInRange", "sumIntroducedSowInRange", "snapshotByTypeStatusOnDate",
         "sumEventInDayDate", "sumLiveBornInRange", "countReserve230OnSnapshot",
-        "countIndicatorDays", "sumIndicatorRange", "sumMonthlyProductionRange", "findLateEntriesBeforeWindow",
+        "countIndicatorDays", "sumIndicatorRange", "selectSowDaysInRange", "sumMonthlyProductionRange",
+        "findLateEntriesBeforeWindow",
         "countDistinctBreedingSowInRange", "sumWeanedWeightInRange", "sumWeanMateIntervalRange"
     );
 
@@ -132,7 +134,8 @@ class ProductionIndicatorsMysqlTest {
         }
         for (String migration : List.of("V202609300900__BRD-STAT-V11-production-indicators.sql",
             "V202609301400__BRD-STAT-V12-daily-indicators.sql",
-            "V202609301500__BRD-STAT-V12-monthly-indicators.sql")) {
+            "V202609301500__BRD-STAT-V12-monthly-indicators.sql",
+            "V202609301600__BRD-STAT-V12-annual-indicators.sql")) {
             Path sql = Path.of("../../ruoyi-admin/src/main/resources/db/migration", migration);
             for (String statement : Files.readString(sql).split(";")) {
                 if (!statement.isBlank()) {
@@ -949,6 +952,7 @@ class ProductionIndicatorsMysqlTest {
         assertThat(feb1.getMarketingWeight()).as("养殖 32").isEqualByComparingTo("200");
         assertThat(feb1.getAvgMarketingWeight()).as("养殖 33 (110+90)/2").isEqualByComparingTo("100");
         assertThat(day(JAN31).getMarketingPigCount()).isEqualTo(1);
+        day(FEB1.plusDays(1));
         rollups(JAN, FEB);
         assertThat(month(JAN).getMarketingCount()).as("养殖 73 月底出栏，类型变更后来补录").isEqualTo(1);
         assertThat(month(FEB).getMarketingCount()).isEqualTo(3);
@@ -968,6 +972,8 @@ class ProductionIndicatorsMysqlTest {
         marketing(2, "2025-02-01", 110, "SLAUGHTER");
         marketing(3, "2025-02-01", 130, "SLAUGHTER");
         marketing(4, "2025-02-01", 600, "ELIMINATE");
+        day(JAN31);
+        day(FEB1);
         rollups(JAN, FEB);
         assertThat(year().getAvgMarketingWeight()).as("养殖 116 340/3").isEqualByComparingTo("113.333");
         execute("UPDATE t_farm_monthly_production SET marketing_count=99, marketing_weight=10000");
@@ -1467,6 +1473,44 @@ class ProductionIndicatorsMysqlTest {
     }
 
     @Test
+    void monthlyAverageCulledSowParityExcludesZeroParity() throws Exception {
+        pig(1, "sow", null, null);
+        pig(2, "sow", null, null);
+        pig(3, "sow", null, null);
+        execute("INSERT INTO t_farm_pig_farrow (id,pig_id,farrow_date,parity) VALUES (1,1,'2025-01-20',3)");
+        execute("INSERT INTO t_farm_pig_breeding (id,pig_id,breeding_date,parity) VALUES "
+            + "(1,2,'2025-01-20',2),(2,3,'2025-01-20',0)");
+        execute("INSERT INTO t_farm_pig_culling (id,pig_id,culling_date) VALUES "
+            + "(1,1,'2025-02-06'),(2,2,'2025-02-06'),(3,3,'2025-02-06')");
+        change(1, "ELIMINATE", "DN", "END", 1L, "2025-02-06 10:00:00", "sow", null);
+        change(2, "ELIMINATE", "PZ", "END", 2L, "2025-02-06 10:00:00", "sow", null);
+        change(3, "ELIMINATE", "PZ", "END", 3L, "2025-02-06 10:00:00", "sow", null);
+
+        rollups(FEB);
+        MonthlyProduction row = month(FEB);
+        assertThat(row.getAvgCulledSowParity()).as("养殖 110 D-0228，胎次 3、2、0 的平均值")
+            .isEqualByComparingTo("2.50");
+        assertThat(row.getCulledSowParitySum()).isEqualTo(5);
+        assertThat(row.getCulledSowParityValidCount()).isEqualTo(2);
+        assertThat(row.getProductionSowCullCount()).isEqualTo(3);
+    }
+
+    @Test
+    void monthlyAverageCulledSowParityIsZeroWithOnlyZeroParity() throws Exception {
+        pig(1, "sow", null, null);
+        execute("INSERT INTO t_farm_pig_breeding (id,pig_id,breeding_date,parity) VALUES (1,1,'2025-01-20',0)");
+        execute("INSERT INTO t_farm_pig_culling (id,pig_id,culling_date) VALUES (1,1,'2025-02-06')");
+        change(1, "ELIMINATE", "PZ", "END", 1L, "2025-02-06 10:00:00", "sow", null);
+
+        rollups(FEB);
+        MonthlyProduction row = month(FEB);
+        assertThat(row.getCulledSowParityValidCount()).as("养殖 110 D-0228，仅有 0 胎时无样本").isZero();
+        assertThat(row.getCulledSowParitySum()).isZero();
+        assertThat(row.getAvgCulledSowParity()).isZero();
+        assertThat(row.getProductionSowCullCount()).isEqualTo(1);
+    }
+
+    @Test
     void rebuildingMonthEndUpdatesTheNextMonthsOpeningPiglets() throws Exception {
         execute("INSERT INTO t_farm_pig_farrow (id,pig_id,farrow_date,live_born) VALUES (1,11,'2025-02-02',8)");
         execute("INSERT INTO t_farm_pig_death (id,pig_id,death_date,death_pig_type) "
@@ -1540,6 +1584,186 @@ class ProductionIndicatorsMysqlTest {
         assertThat(row.getVaccinePigTimes()).as("养殖 85 单只两次+批量三头").isEqualTo(5);
         assertThat(row.getHealthPigTimes()).as("养殖 86 单只一次+批量一头").isEqualTo(2);
         assertThat(row.getTreatmentPigTimes()).as("养殖 87 排除下月和撤销").isEqualTo(1);
+    }
+
+    @Test
+    void annualTerminalRatesUseEventGroupsAndCoveredDays() throws Exception {
+        execute("INSERT INTO t_farm_indicator_record (stat_date,end_production_sow_count,end_fattening_count,death_pig_count) VALUES "
+            + "('2025-01-31',80,40,2),('2025-02-01',0,0,0),('2025-02-03',80,20,1),('2025-02-04',40,20,1)");
+        execute("INSERT INTO t_farm_pig_death (id,pig_id,death_date,death_pig_type,create_time) VALUES "
+            + "(1,1,'2025-01-31','sow','2025-03-01'),(2,2,'2025-02-03','sow','2025-03-01'),"
+            + "(3,3,'2025-01-31','fattening','2025-03-01'),(4,4,'2025-02-04','sow','2025-03-01'),"
+            + "(5,5,'2025-02-02','sow','2025-03-01')");
+        change(1, "DIE", "DN", "END", 1L, "2025-01-31 09:00:00", "sow", null);
+        change(2, "DIE", "PZ", "END", 2L, "2025-02-03 09:00:00", "sow", null);
+        change(3, "DIE", "YF", "END", 3L, "2025-01-31 10:00:00", "fattening", null);
+        change(4, "DIE", "HB", "END", 4L, "2025-02-04 09:00:00", "sow", null);
+        change(5, "DIE", "PZ", "END", 5L, "2025-02-02 09:00:00", "sow", null);
+
+        execute("INSERT INTO t_farm_pig_culling (id,pig_id,culling_date,create_time) VALUES "
+            + "(6,6,'2025-02-01','2025-02-10'),(7,7,'2025-02-04','2025-02-10'),"
+            + "(8,8,'2025-02-04','2025-02-10'),(9,9,'2025-02-02','2025-02-10')");
+        change(6, "ELIMINATE", "PZ", "END", 6L, "2025-02-01 09:00:00", "sow", null);
+        change(7, "ELIMINATE", "YF", "END", 7L, "2025-02-04 09:00:00", null, null);
+        change(7, "INTRO", "YF", "HB", null, "2025-03-01 09:00:00", "fattening", "sow");
+        change(8, "ELIMINATE", "HB", "END", 8L, "2025-02-04 09:00:00", "sow", null);
+        change(9, "ELIMINATE", "YF", "END", 9L, "2025-02-02 09:00:00", "fattening", null);
+        pig(7, "sow", null, null);
+
+        rollups(JAN, FEB);
+
+        AnnualIndicator annual = year();
+        assertThat(annual.getAvgProdSowStock()).isEqualByComparingTo("50.000");
+        assertThat(annual.getAvgFatteningStock()).isEqualByComparingTo("20.000");
+        assertThat(annual.getProductionSowCullRate()).as("养殖 117 只算淘汰，1÷50×100")
+            .isEqualByComparingTo("2.00");
+        assertThat(annual.getMortalityRate()).as("养殖 118 2÷50×100，排除育肥、后备和缺日报的死猪")
+            .isEqualByComparingTo("4.00");
+        // 同一数据在旧实现中取全群 4 头，旧存活母猪查询用默认测试替身 0，库值为 1.00。
+        assertThat(annual.getDeathCount()).isEqualTo(4);
+        assertThat(annual.getFatteningCullRate()).as("养殖 119 事件时是育肥的1头÷20×100")
+            .isEqualByComparingTo("5.00");
+        assertThat(annual.getFatteningDeathRate()).as("养殖 120 1÷20×100").isEqualByComparingTo("5.00");
+        assertThat(service.getAnnualIndicator((int) YEAR).getMortalityRate()).as("养殖 118 后台接口仍返回比例")
+            .isEqualByComparingTo("0.0400");
+
+        execute("UPDATE t_farm_indicator_record SET end_production_sow_count=0,end_fattening_count=0");
+        rollups(JAN, FEB);
+        AnnualIndicator zeroStock = year();
+        assertThat(zeroStock.getProductionSowCullRate()).isZero();
+        assertThat(zeroStock.getMortalityRate()).isZero();
+        assertThat(zeroStock.getFatteningCullRate()).isZero();
+        assertThat(zeroStock.getFatteningDeathRate()).isZero();
+    }
+
+    @Test
+    void annualProductionUsesCoveredDaysAndWeightedSamples() throws Exception {
+        execute("""
+            INSERT INTO t_farm_pig_breeding (id,pig_id,breeding_date) VALUES
+              (1,11,DATE_SUB('2025-01-31', INTERVAL 110 DAY)),
+              (2,12,DATE_SUB('2025-02-01', INTERVAL 124 DAY)),
+              (3,13,DATE_SUB('2025-02-01', INTERVAL 118 DAY)),
+              (4,99,DATE_SUB('2025-02-03', INTERVAL 113 DAY)),
+              (5,15,DATE_SUB('2025-02-02', INTERVAL 140 DAY))
+            """);
+        execute("""
+            INSERT INTO t_farm_pig_farrow (id,pig_id,farrow_date,breeding_id,total_born,live_born) VALUES
+              (1,11,'2025-01-31',1,8,7),(2,12,'2025-02-01',2,7,6),(3,13,'2025-02-01',3,9,9),
+              (4,14,'2025-02-03',4,6,6),(5,15,'2025-02-02',5,99,99),
+              (6,16,'2025-01-10',NULL,10,10),(7,17,'2025-01-13',NULL,10,10)
+            """);
+        execute("""
+            INSERT INTO t_farm_pig_weaning (id,pig_id,farrow_id,weaning_date,weaned_count) VALUES
+              (1,16,6,'2025-01-31',30),(2,17,7,'2025-02-03',5),(3,16,6,'2025-02-02',40)
+            """);
+        execute("INSERT INTO t_farm_pig_weaning_detail (id,weaning_id) VALUES (1,1),(2,1),(3,1)");
+        change(16, "WEAN", "FM", "DN", 1L, "2025-01-31 08:00:00", null, null);
+        change(17, "WEAN", "FM", "DN", 2L, "2025-02-03 08:00:00", null, null);
+        pig(21, "sow", JAN31.minusDays(180).toString(), null);
+        change(21, "INTRO", "YF", "HB", null, "2025-03-01 09:00:00", "fattening", "sow");
+        pig(22, "fattening", null, null);
+        pig(23, "fattening", FEB1.plusDays(2).minusDays(200).toString(), null);
+        pig(24, "fattening", FEB1.plusDays(2).minusDays(100).toString(), null);
+        pig(25, "fattening", FEB1.plusDays(1).minusDays(300).toString(), null);
+        pig(26, "sow", "2024-01-01", null);
+        marketing(21, "2025-01-31", 100, "SLAUGHTER");
+        marketing(22, "2025-02-01", 80, "SLAUGHTER");
+        marketing(23, "2025-02-03", 90, "SLAUGHTER");
+        marketing(24, "2025-02-03", 150, "SLAUGHTER");
+        marketing(25, "2025-02-02", 300, "SLAUGHTER");
+        marketing(26, "2025-02-03", 160, "SLAUGHTER");
+        execute("INSERT INTO t_warehouse_product_info (id,product_unit,buy_class) VALUES (1,'kg','feed')");
+        execute("""
+            INSERT INTO t_warehouse_feed_log (id,feed_date,feed_type,feed_animal,product_id,feed_weight) VALUES
+              (1,'2025-01-31','veg_handle','pig',NULL,6.125),(2,'2025-02-01','warehouse','pig',1,5.125),
+              (3,'2025-02-03','veg_handle','pig',NULL,4.250),(4,'2025-02-02','veg_handle','pig',NULL,90)
+            """);
+        execute("""
+            INSERT INTO t_breed_medicine_record (id,pig_id,use_date,drug_type,medicine_type) VALUES
+              (1,21,'2025-01-31',1,'vaccine'),(2,21,'2025-02-01',1,'vaccine'),
+              (3,21,'2025-02-03',3,'vaccine'),(4,22,'2025-02-03',3,'vaccine'),(5,23,'2025-02-03',3,'vaccine'),
+              (6,NULL,'2025-02-03',2,'vaccine'),(7,21,'2025-02-01',1,'health'),
+              (8,22,'2025-02-03',3,'health'),(9,22,'2025-02-03',1,'treatment'),
+              (10,23,'2025-02-02',1,'treatment'),(11,23,'2025-02-03',1,'treatment'),
+              (12,23,'2025-02-03',1,'vaccine')
+            """);
+        execute("UPDATE t_breed_medicine_record SET del_flag='1' WHERE id=11");
+        execute("UPDATE t_breed_medicine_record SET tenant_id='other' WHERE id=12");
+
+        day(JAN31);
+        day(FEB1);
+        day(FEB1.plusDays(2));
+        execute("""
+            UPDATE t_farm_indicator_record SET end_production_sow_count=8, pregnant_sow_count=4,
+                   end_nonprod_sow_count=2, preg_loss_days=1 WHERE stat_date='2025-01-31'
+            """);
+        execute("""
+            UPDATE t_farm_indicator_record SET end_production_sow_count=4, pregnant_sow_count=3,
+                   end_nonprod_sow_count=3 WHERE stat_date='2025-02-03'
+            """);
+        rollups(JAN, FEB);
+
+        AnnualIndicator annual = year();
+        assertThat(annual.getTotalBornCount()).as("养殖 112 8+7+9+6").isEqualTo(30);
+        assertThat(annual.getTotalWeanedPiglet()).as("养殖 113 明细3+历史主单5").isEqualTo(8);
+        assertThat(annual.getWeanedCount()).as("养殖 113 后台同源").isEqualTo(8);
+        assertThat(annual.getMarketingCount()).as("养殖 114 同批育肥猪").isEqualTo(4);
+        assertThat(annual.getMarketingWeight()).as("养殖 115 100+80+90+150").isEqualByComparingTo("420");
+        assertThat(annual.getAvgMarketingWeight()).as("养殖 116 420÷4").isEqualByComparingTo("105.000");
+        assertThat(annual.getPsy()).as("养殖 121 (7-1)÷12×365÷115×(8÷2)").isEqualByComparingTo("6.35");
+        assertThat(annual.getPsyStatDays()).as("养殖 121 首末4天跨度内仅3份日报").isEqualTo(3);
+        assertThat(annual.getPsyStatFrom()).as("养殖 121 实际起日").isEqualTo(JAN31);
+        assertThat(annual.getPsyStatTo()).as("养殖 121 实际止日").isEqualTo(FEB1.plusDays(2));
+        assertThat(annual.getFarrowingsPerSow()).as("养殖 122 4窝÷平均4头").isEqualByComparingTo("1.00");
+        assertThat(annual.getFeedWeightKg()).as("养殖 123 6.125+5.125+4.250").isEqualByComparingTo("15.500");
+        assertThat(annual.getOrganicFeedWeightKg()).as("养殖 124 6.125+4.250").isEqualByComparingTo("10.375");
+        assertThat(annual.getVaccinePigTimes()).as("养殖 125 单只2次+批量3头").isEqualTo(5);
+        assertThat(annual.getHealthPigTimes()).as("养殖 126 单只1次+批量1头").isEqualTo(2);
+        assertThat(annual.getTreatmentPigTimes()).as("养殖 127 唯一有效覆盖日记录").isEqualTo(1);
+        assertThat(annual.getAvgMarketingAgeDays()).as("养殖 128 (180+200+100)÷3").isEqualByComparingTo("160.0");
+        assertThat(annual.getMarketingMissingBirthCount()).as("养殖 128 缺生日另记").isEqualTo(1);
+        assertThat(annual.getAvgNpdDays()).as("养殖 129 (2+3+1)÷4，不外推").isEqualByComparingTo("1.500");
+        assertThat(annual.getAvgGestationDays()).as("养殖 130 (110+124+118)÷3，错猪配种不算")
+            .isEqualByComparingTo("117.3");
+
+        var json = new ObjectMapper();
+        var annualJson = json.valueToTree(service.getAnnualIndicator((int) YEAR));
+        var breedingJson = json.valueToTree(service.getBreedingAnnual((int) YEAR));
+        for (var response : List.of(annualJson, breedingJson)) {
+            assertThat(response.path("psyStatFrom").asText()).isEqualTo(JAN31.toString());
+            assertThat(response.path("psyStatTo").asText()).isEqualTo("2025-02-03");
+            assertThat(response.path("psyStatDays").asInt()).isEqualTo(3);
+            assertThat(response.path("organicFeedWeightKg").decimalValue()).isEqualByComparingTo("10.375");
+            assertThat(response.path("marketingMissingBirthCount").asInt()).isEqualTo(1);
+        }
+        rollups(JAN, FEB);
+        assertThat(year()).usingRecursiveComparison().ignoringFields("updateTime").isEqualTo(annual);
+    }
+
+    @Test
+    void annualRebuildKeepsLegacyRatioUntilRefreshedAndClearsCoverage() throws Exception {
+        execute("INSERT INTO t_farm_year_production (stat_year,mortality_rate,psy_stat_from,psy_stat_days) "
+            + "VALUES (2025,0.12,'2025-01-31',2)");
+        var historical = service.getAnnualIndicator((int) YEAR);
+        assertThat(historical.getMortalityRate()).as("养殖 118 旧年表比例原样返回").isEqualByComparingTo("0.12");
+        assertThat(historical.getPsyStatTo()).isNull();
+        assertThat(historical.getAvgGestationDays()).isNull();
+
+        day(JAN31);
+        rollups(JAN);
+        assertThat(year().getPsyStatTo()).isEqualTo(JAN31);
+        execute("UPDATE t_farm_indicator_record SET del_flag='1' WHERE stat_date='2025-01-31'");
+        rollups(JAN);
+
+        AnnualIndicator annual = year();
+        assertThat(annual.getPsyStatFrom()).as("养殖 121 失去覆盖后清除起日").isNull();
+        assertThat(annual.getPsyStatTo()).as("养殖 121 失去覆盖后清除止日").isNull();
+        assertThat(annual.getPsyStatDays()).isZero();
+        assertThat(annual.getPsy()).isZero();
+        assertThat(annual.getMortalityRate()).isZero();
+        assertThat(annual.getFarrowingsPerSow()).isZero();
+        assertThat(annual.getAvgMarketingAgeDays()).isZero();
+        assertThat(annual.getAvgGestationDays()).isZero();
     }
 
     private FarmIndicatorRecord day(LocalDate date) {

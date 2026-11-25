@@ -915,7 +915,7 @@ public interface AggregateQueryMapper {
 
     /**
      * PSY 分子分母一次取回（D-0086：口径=甲方 2026-09-16 / 收口=Kevin 2026-09-17）：Σ日妊娠母猪头数（妊娠头日）/ Σ日期末生产母猪头数
-     * （母猪头日），外加该区间实际有几行日表、第一行是哪天（供年表落 psy_stat_from / psy_stat_days 自证口径）。
+     * （母猪头日），外加该区间日报天数和实际起止日期。
      *
      * <p>分子取 {@code pregnant_sow_count} 而不是 {@code farrow_gestation_days}：甲方 2026-09-16 澄清
      * 「妊娠天数是算法2 当天有多少头怀着」。后者在母猪分娩当天把她整个孕期一次性计入，区间短时
@@ -924,12 +924,13 @@ public interface AggregateQueryMapper {
      * <p>两项都来自同一批日表行，区间天然一致 —— PSY 是「妊娠占母猪时间的份额」，分子分母锚不同区间
      * 这个份额就没有意义。</p>
      *
-     * @return {pregDays, sowDays, dayRows, firstDay}
+     * @return {pregDays, sowDays, dayRows, firstDay, lastDay}
      */
     @Select("SELECT COALESCE(SUM(pregnant_sow_count),0)        AS pregDays, "
         + "         COALESCE(SUM(end_production_sow_count),0)  AS sowDays, "
         + "         COUNT(*)                                   AS dayRows, "
-        + "         MIN(stat_date)                             AS firstDay "
+        + "         MIN(stat_date)                             AS firstDay, "
+        + "         MAX(stat_date)                             AS lastDay "
         + "   FROM t_farm_indicator_record "
         + "  WHERE tenant_id = #{tenantId} AND del_flag = '0' "
         + "    AND stat_date >= #{from} AND stat_date < #{to}")
@@ -1006,6 +1007,8 @@ public interface AggregateQueryMapper {
         + "  COALESCE(SUM(introduce_boar_count),0)     AS sumIntroduceBoar, "
         + "  COALESCE(SUM(total_born_count),0)         AS sumTotalBorn, "
         + "  COALESCE(SUM(live_born_count),0)          AS sumLiveBorn, "
+        + "  COALESCE(SUM(weaned_piglet_count),0)      AS sumWeanedPiglet, "
+        + "  COALESCE(SUM(weaning_sow_count),0)        AS sumWeaningSow, "
         + "  COALESCE(SUM(death_pig_count),0)          AS sumDeathPig, "
         + "  COALESCE(SUM(culling_pig_count),0)        AS sumCullingPig, "
         + "  COALESCE(SUM(death_piglet_count),0)       AS sumDeathPiglet, "

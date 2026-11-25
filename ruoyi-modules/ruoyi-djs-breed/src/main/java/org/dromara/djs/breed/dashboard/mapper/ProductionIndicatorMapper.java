@@ -434,6 +434,14 @@ public interface ProductionIndicatorMapper {
         """)
     List<TypeChange> typeChanges(@Param("tenantId") String tenantId, @Param("pigIds") Collection<Long> pigIds);
 
+    String COVERED_DAY_START = """
+          AND (#{coveredOnly} = FALSE OR EXISTS (
+              SELECT 1 FROM t_farm_indicator_record day_row
+               WHERE day_row.tenant_id = #{tenantId} AND day_row.del_flag = '0'
+                 AND day_row.stat_date = DATE(
+        """;
+    String COVERED_DAY_END = ")))";
+
     /** 同一张有效出栏单只取一条 SLAUGHTER 日志，按出栏单业务日期归期。 */
     @Select("""
         SELECT pigId, eventId, changeTime, oldPigType, currentPigType, weanDate, weight, marketingDate, birthDate, weanWeight
@@ -450,10 +458,11 @@ public interface ProductionIndicatorMapper {
               LEFT JOIN t_farm_pig_info p ON p.tenant_id = m.tenant_id AND p.id = m.pig_id
              WHERE m.tenant_id = #{tenantId} AND m.del_flag = '0'
                AND m.marketing_date >= #{from} AND m.marketing_date < #{to}
+        """ + COVERED_DAY_START + "m.marketing_date" + COVERED_DAY_END + """
           ) marketing
          WHERE rn = 1
         """)
-    List<MarketingEvent> marketingEvents(String tenantId, LocalDateTime from, LocalDateTime to);
+    List<MarketingEvent> marketingEvents(String tenantId, LocalDateTime from, LocalDateTime to, boolean coveredOnly);
 
     /** 连续配种只把异常后的第一次再配算入，正常分娩/断奶会结束上一周期。 */
     @Select("""
@@ -552,6 +561,7 @@ public interface ProductionIndicatorMapper {
                 AND b.id = f.breeding_id AND b.pig_id = f.pig_id AND b.del_flag = '0'
              WHERE f.tenant_id = #{tenantId} AND f.del_flag = '0'
                AND f.farrow_date >= #{from} AND f.farrow_date < #{to}
+        """ + COVERED_DAY_START + "f.farrow_date" + COVERED_DAY_END + """
         )
         SELECT SUM(CASE WHEN parity > 0 THEN parity END) AS paritySum,
                COUNT(CASE WHEN parity > 0 THEN 1 END) AS parityCount,
@@ -568,7 +578,7 @@ public interface ProductionIndicatorMapper {
                SUM(CASE WHEN total_weight > 0 AND live_born > 0 THEN live_born END) AS weighedPiglets
           FROM farrows
         """)
-    Map<String, Object> monthlyFarrowMeasures(String tenantId, LocalDateTime from, LocalDateTime to);
+    Map<String, Object> farrowMeasures(String tenantId, LocalDateTime from, LocalDateTime to, boolean coveredOnly);
 
     /** 选最后有效死淘，按业务日归期。出生耳号关系在死亡时会被软删，历史关联保留到同一猪 ID。 */
     @Select("""
@@ -622,18 +632,18 @@ public interface ProductionIndicatorMapper {
                ORDER BY b.breeding_date DESC, b.id DESC LIMIT 1
           ) breeding ON e.event_type = 'ELIMINATE'
          WHERE e.rn = 1 AND e.event_at >= #{from} AND e.event_at < #{to}
-        """)
-    List<TerminalEvent> terminalEvents(String tenantId, LocalDateTime from, LocalDateTime to);
+        """ + COVERED_DAY_START + "e.event_at" + COVERED_DAY_END)
+    List<TerminalEvent> terminalEvents(String tenantId, LocalDateTime from, LocalDateTime to, boolean coveredOnly);
 
     @Select("""
         SELECT COUNT(CASE WHEN medicine_type = 'vaccine' THEN 1 END) AS vaccine,
                COUNT(CASE WHEN medicine_type = 'health' THEN 1 END) AS health,
                COUNT(CASE WHEN medicine_type = 'treatment' THEN 1 END) AS treatment
-          FROM t_breed_medicine_record
+          FROM t_breed_medicine_record medicine
          WHERE tenant_id = #{tenantId} AND del_flag = '0' AND drug_type IN (1, 3)
            AND use_date >= #{from} AND use_date < #{to}
-        """)
-    Map<String, Object> medicineTimes(String tenantId, LocalDateTime from, LocalDateTime to);
+        """ + COVERED_DAY_START + "medicine.use_date" + COVERED_DAY_END)
+    Map<String, Object> medicineTimes(String tenantId, LocalDateTime from, LocalDateTime to, boolean coveredOnly);
 
     /** 母猪也使用 weaning 原因码，按母猪单据/状态剔除。转移未记录重量，取个体有效断奶资料。 */
     @Select("""

@@ -1,9 +1,9 @@
 package org.dromara.djs.breed.dashboard.domain.vo;
 
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 import java.io.Serial;
-import java.io.Serializable;
 import java.math.BigDecimal;
 
 /**
@@ -33,7 +33,8 @@ import java.math.BigDecimal;
  * @since FIX-MGMT-MP-BRD-001
  */
 @Data
-public class BreedingAnnualVo implements Serializable {
+@EqualsAndHashCode(callSuper = true)
+public class BreedingAnnualVo extends AnnualProductionMetricsVo {
 
     @Serial
     private static final long serialVersionUID = 1L;
@@ -45,18 +46,6 @@ public class BreedingAnnualVo implements Serializable {
 
     /** PSY =（Σ日妊娠天数 / 母猪头日）×（365/115）× 窝均断奶数（年表 psy，头/母猪·年；R72 取代原「配种率」展示）。 */
     private BigDecimal psy;
-
-    /**
-     * PSY / 头均非生产天数的统计区间起始日（年表 psy_stat_from，yyyy-MM-dd）。
-     *
-     * <p>日表不是从年初就有的（起于统计上线那天），两个指标都只能按实际覆盖的那一段算，
-     * 头均非生产天数就是该区间里每头母猪的非生产天数（区间值，不外推成全年，D-0120）；
-     * PSY 的式子自带年化（×365/115），<b>不乘</b>区间天数。</p>
-     */
-    private String psyStatFrom;
-
-    /** 统计区间天数（年表 psy_stat_days）。 */
-    private Integer psyStatDays;
 
     /** 配种率（实时取 t_farm_farrowing_rate，百分比数值如 55.56；V1 与分娩率同口径）。 */
     private BigDecimal mateRate;
