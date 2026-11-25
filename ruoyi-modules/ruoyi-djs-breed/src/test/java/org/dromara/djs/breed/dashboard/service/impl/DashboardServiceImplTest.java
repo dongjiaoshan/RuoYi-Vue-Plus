@@ -17,6 +17,11 @@ import org.dromara.djs.breed.dashboard.mapper.AggregateQueryMapper;
 import org.dromara.djs.breed.dashboard.mapper.AnnualIndicatorMapper;
 import org.dromara.djs.breed.dashboard.mapper.FarmIndicatorRecordMapper;
 import org.dromara.djs.breed.dashboard.mapper.MonthlyProductionMapper;
+import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper;
+import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.GroupMember;
+import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.MarketingEvent;
+import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.WeanedLitter;
+import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.WeaningBatchRow;
 import org.dromara.djs.breed.dashboard.mapper.SowRecordMapper;
 import org.dromara.djs.breed.production.mapper.SowPerformanceMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -98,6 +103,9 @@ class DashboardServiceImplTest {
     @Mock
     private org.dromara.djs.breed.production.service.IFattenAgeStageService fattenAgeStageService;
 
+    @Mock
+    private ProductionIndicatorMapper productionIndicatorMapper;
+
     private DashboardServiceImpl service;
 
     @BeforeEach
@@ -105,7 +113,8 @@ class DashboardServiceImplTest {
         service = new DashboardServiceImpl(
             sowRecordMapper, monthlyProductionMapper, annualIndicatorMapper, aggregateQueryMapper,
             farmIndicatorRecordMapper, farrowingRateMapper, weaningAggregateSyncMapper,
-            sowPerformanceMapper, productionCycleConfigService, fattenAgeStageService);
+            sowPerformanceMapper, productionCycleConfigService, fattenAgeStageService,
+            new ProductionIndicatorCalculator(productionIndicatorMapper));
     }
 
     @Test
@@ -321,10 +330,6 @@ class DashboardServiceImplTest {
             .thenReturn(0);
         when(aggregateQueryMapper.sumLiveBornInRange(anyString(), any(), any())).thenReturn(0);
         when(aggregateQueryMapper.sumWeanedInRange(anyString(), any(), any())).thenReturn(0);
-        Map<String, Object> mk = new LinkedHashMap<>();
-        mk.put("cnt", 0L);
-        mk.put("weight", BigDecimal.ZERO);
-        when(aggregateQueryMapper.aggregateMarketingInRange(anyString(), any(), any())).thenReturn(mk);
         when(aggregateQueryMapper.countAliveSows(anyString())).thenReturn(20);
         // BRD-STAT-001 新增链路 stub（无母猪 → sow_performance 不写；日表 existing null → insert）
         when(aggregateQueryMapper.selectAliveSows(anyString())).thenReturn(new ArrayList<>());
@@ -358,10 +363,6 @@ class DashboardServiceImplTest {
         when(aggregateQueryMapper.countStatusEventInRange(anyString(), any(), any(), any())).thenReturn(0);
         when(aggregateQueryMapper.sumLiveBornInRange(anyString(), any(), any())).thenReturn(0);
         when(aggregateQueryMapper.sumWeanedInRange(anyString(), any(), any())).thenReturn(0);
-        Map<String, Object> mk = new LinkedHashMap<>();
-        mk.put("cnt", 0L);
-        mk.put("weight", BigDecimal.ZERO);
-        when(aggregateQueryMapper.aggregateMarketingInRange(anyString(), any(), any())).thenReturn(mk);
         when(aggregateQueryMapper.countAliveSows(anyString())).thenReturn(0);
 
         String result = service.triggerAggregate(null);
@@ -474,13 +475,14 @@ class DashboardServiceImplTest {
         ));
         when(aggregateQueryMapper.countReserve230OnSnapshot(anyString(), any())).thenReturn(1);
 
-        // 出栏聚合 stub：2 头 / 200kg / 背膘 90mm 共 2 头有背膘
-        Map<String, Object> mkt = new LinkedHashMap<>();
-        mkt.put("cnt", 2L);
-        mkt.put("weight", new BigDecimal("200"));
-        mkt.put("backfatSum", new BigDecimal("90"));
-        mkt.put("backfatCnt", 2L);
-        when(aggregateQueryMapper.aggregateMarketingForDay(anyString(), any(), any())).thenReturn(mkt);
+        // 两笔正常育肥出栏共 200 kg，独立背膘取样合计 90 mm。
+        LocalDateTime at = LocalDate.of(2026, 6, 25).atTime(12, 0);
+        when(productionIndicatorMapper.marketingEvents(anyString(), any(), any())).thenReturn(List.of(
+            new MarketingEvent(1, 1, at, null, "fattening", null, new BigDecimal("110")),
+            new MarketingEvent(2, 2, at, null, "fattening", null, new BigDecimal("90"))
+        ));
+        when(aggregateQueryMapper.aggregateBackfatForDay(anyString(), any(), any()))
+            .thenReturn(mapOfAll("backfatSum", new BigDecimal("90"), "backfatCnt", 2));
         // 断奶总重 / 饲养天数(日增重分母) / 生长天数(独立指标) stub
         Map<String, Object> wean = new LinkedHashMap<>();
         wean.put("weanWeightSum", new BigDecimal("40"));
@@ -652,11 +654,9 @@ class DashboardServiceImplTest {
     /** triggerAggregate 全链路跑通所需的最小 stub（本节只关心快照 / 期末存栏，其余给空值不让它炸）。 */
     private void stubMinimalAggregatePaths() {
         Map<String, Object> mkt = new LinkedHashMap<>();
-        mkt.put("cnt", 0L);
-        mkt.put("weight", BigDecimal.ZERO);
         mkt.put("backfatSum", BigDecimal.ZERO);
         mkt.put("backfatCnt", 0L);
-        when(aggregateQueryMapper.aggregateMarketingForDay(anyString(), any(), any())).thenReturn(mkt);
+        when(aggregateQueryMapper.aggregateBackfatForDay(anyString(), any(), any())).thenReturn(mkt);
         Map<String, Object> wean = new LinkedHashMap<>();
         wean.put("weanWeightSum", BigDecimal.ZERO);
         wean.put("marketingWeightWeaned", BigDecimal.ZERO);
@@ -773,8 +773,7 @@ class DashboardServiceImplTest {
     void testAnnualPsyFromGestationDays() {
         stubAggregateSkeleton();
         // 窝均断奶数 = 总断奶仔猪 188 / 总断奶母猪 16 = 11.750
-        when(aggregateQueryMapper.sumIndicatorRange(anyString(), any(), any()))
-            .thenReturn(mapOfAll("sumWeanedPiglet", 188, "sumWeaningSow", 16));
+        stubYearWeaning();
         when(aggregateQueryMapper.selectSowDaysInRange(anyString(), any(), any()))
             .thenReturn(mapOfAll("pregDays", 5016, "sowDays", 5430, "dayRows", 37,
                 "firstDay", LocalDate.of(2026, 8, 8)));
@@ -998,6 +997,62 @@ class DashboardServiceImplTest {
         when(monthlyProductionMapper.selectOne(any())).thenReturn(null);
         when(annualIndicatorMapper.selectOne(any())).thenReturn(null);
         when(farmIndicatorRecordMapper.selectOne(any())).thenReturn(null);
+    }
+
+    private void stubYearWeaning() {
+        var farrow = LocalDate.of(2026, 8, 1);
+        var litters = java.util.stream.LongStream.range(0, 16)
+            .mapToObj(id -> new WeanedLitter(id, farrow, farrow.plusDays(21))).toList();
+        when(productionIndicatorMapper.weanedLitters(anyString(), any(), any())).thenReturn(litters);
+        when(aggregateQueryMapper.sumWeanedInRange(anyString(), any(), any())).thenReturn(188);
+    }
+
+    @Test
+    void productionIndicatorsReachDayMonthAndYearOnAggregate() {
+        stubAggregateSkeleton();
+        LocalDate date = LocalDate.of(2025, 2, 1);
+        var marketing = new MarketingEvent(1, 2, date.atStartOfDay(), null, "fattening", null, new BigDecimal("110"));
+        when(productionIndicatorMapper.marketingEvents(anyString(), any(), any())).thenReturn(List.of(marketing));
+        when(productionIndicatorMapper.weanedPigletMeasures(anyString(), any(), any()))
+            .thenReturn(mapOfAll("ageDaysSum", 46, "ageValidCount", 2, "weightSum", new BigDecimal("18"), "weightValidCount", 3));
+        when(productionIndicatorMapper.farrowTotals(anyString(), any(), any()))
+            .thenReturn(mapOfAll("deformedBorn", 0, "firstParity", 1));
+        when(productionIndicatorMapper.abnormalTotals(anyString(), any(), any()))
+            .thenReturn(mapOfAll("returnHeat", 1, "emptySow", 2, "abortion", 3));
+        when(productionIndicatorMapper.countFirstReserveBreeding(anyString(), any(), any())).thenReturn(2);
+        when(productionIndicatorMapper.endGroupMembers(anyString(), eq(date)))
+            .thenReturn(List.of(new GroupMember(5, "sow", "sow", null)));
+        when(productionIndicatorMapper.weanedLitters(anyString(), any(), any()))
+            .thenReturn(List.of(new WeanedLitter(7, date.minusDays(21), date)));
+        when(productionIndicatorMapper.weaningBatches(anyString(), any(), any()))
+            .thenReturn(List.of(new WeaningBatchRow(7L, 7L, 8L, 1, date.atStartOfDay())));
+        when(aggregateQueryMapper.sumWeanedInRange(anyString(), any(), any())).thenReturn(1);
+
+        service.triggerAggregate(date);
+
+        var daily = ArgumentCaptor.forClass(FarmIndicatorRecord.class);
+        var monthly = ArgumentCaptor.forClass(MonthlyProduction.class);
+        var annual = ArgumentCaptor.forClass(AnnualIndicator.class);
+        verify(farmIndicatorRecordMapper).insert(daily.capture());
+        verify(monthlyProductionMapper).insert(monthly.capture());
+        verify(annualIndicatorMapper).insert(annual.capture());
+        assertThat(daily.getValue().getAvgEntryWeight()).isEqualByComparingTo("6");
+        assertThat(daily.getValue().getFarrowDeformedBornCount()).isZero();
+        assertThat(daily.getValue().getFarrowDeadBornCount()).isNull();
+        assertThat(daily.getValue().getProductionSowHeadDays()).isEqualTo(1);
+        assertThat(daily.getValue().getWeaningSowCount()).isEqualTo(1);
+        assertThat(daily.getValue().getNewProductionSowCount()).isEqualTo(2);
+        assertThat(daily.getValue().getReturnHeatCount()).isEqualTo(1);
+        assertThat(daily.getValue().getEmptySowCount()).isEqualTo(2);
+        assertThat(monthly.getValue().getAbortionCount()).isEqualTo(3);
+        assertThat(monthly.getValue().getReserveFirstBreedCount()).isEqualTo(2);
+        assertThat(monthly.getValue().getAvgWeanAgeDays()).isEqualByComparingTo("23");
+        assertThat(monthly.getValue().getFirstParityFarrowSowCount()).isEqualTo(1);
+        assertThat(monthly.getValue().getNormalWeaningSowCount()).isEqualTo(1);
+        assertThat(monthly.getValue().getLactationDaysSum()).isEqualTo(21);
+        assertThat(monthly.getValue().getAvgBirthLitterWeanedPiglets()).isEqualByComparingTo("1");
+        assertThat(annual.getValue().getAvgMarketingWeight()).isEqualByComparingTo("110");
+        assertThat(annual.getValue().getAvgWeanedPerLitter()).isEqualByComparingTo("1");
     }
 
     private MonthlyProduction newMonth(YearMonth ym) {
@@ -1416,8 +1471,9 @@ class DashboardServiceImplTest {
     @DisplayName("年度: PSY 分子扣除妊娠损失天数（D-0100 覆盖 D-0086）")
     void testAnnualPsySubtractsPregLoss() {
         stubAggregateSkeleton();
+        stubYearWeaning();
         when(aggregateQueryMapper.sumIndicatorRange(anyString(), any(), any()))
-            .thenReturn(mapOfAll("sumWeanedPiglet", 188, "sumWeaningSow", 16, "sumPregLossDays", 516));
+            .thenReturn(mapOfAll("sumPregLossDays", 516));
         when(aggregateQueryMapper.selectSowDaysInRange(anyString(), any(), any()))
             .thenReturn(mapOfAll("pregDays", 5016, "sowDays", 5430, "dayRows", 37,
                 "firstDay", LocalDate.of(2026, 8, 8)));
@@ -1436,8 +1492,9 @@ class DashboardServiceImplTest {
     @DisplayName("年度: 妊娠损失天数反超在怀头日时 PSY 分子钳零，不出负数")
     void testAnnualPsyNumeratorClampedAtZero() {
         stubAggregateSkeleton();
+        stubYearWeaning();
         when(aggregateQueryMapper.sumIndicatorRange(anyString(), any(), any()))
-            .thenReturn(mapOfAll("sumWeanedPiglet", 188, "sumWeaningSow", 16, "sumPregLossDays", 9999));
+            .thenReturn(mapOfAll("sumPregLossDays", 9999));
         when(aggregateQueryMapper.selectSowDaysInRange(anyString(), any(), any()))
             .thenReturn(mapOfAll("pregDays", 5016, "sowDays", 5430, "dayRows", 37,
                 "firstDay", LocalDate.of(2026, 8, 8)));

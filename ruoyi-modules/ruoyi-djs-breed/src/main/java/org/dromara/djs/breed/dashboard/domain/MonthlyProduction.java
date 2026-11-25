@@ -101,6 +101,58 @@ public class MonthlyProduction extends TenantEntity {
     /** 分娩舍损失率（Σ当月T-1前日死亡仔猪数/当月总活仔数 born_count）。 */
     private BigDecimal farrowLossRate;
 
+    /** 按日去重的月分娩总数。 */
+    private Integer farrowSowCount;
+
+    /** 当月后备首配头数。 */
+    private Integer reserveFirstBreedCount;
+
+    /** 当月头胎分娩母猪数。 */
+    private Integer firstParityFarrowSowCount;
+
+    /** 按母猪实际断奶日归月的断奶窝数。 */
+    private Integer weaningSowCount;
+
+    /** 正常断奶窝数（排除寄养并窝和零仔窝）。 */
+    private Integer normalWeaningSowCount;
+
+    /** 当月断奶窝哺乳天数合计。 */
+    private Integer lactationDaysSum;
+
+    /** 可配对有效分娩日的断奶窝数。 */
+    private Integer lactationValidLitterCount;
+
+    /** 按断奶月归属的断奶母猪平均哺乳天数。 */
+    private BigDecimal avgLactationDaysWeaned;
+
+    /** 按分娩月归属的已断奶窝哺乳天数合计。 */
+    private Integer lactationDaysSumByFarrow;
+
+    /** 按分娩月归属的分娩母猪平均哺乳天数。 */
+    private BigDecimal avgLactationDaysFarrowed;
+
+    /** 当月断奶仔猪中可归到当月断奶生母窝的头数。 */
+    private Integer birthLitterWeanedPigletCount;
+
+    /** 按生母窝计算的窝均断奶仔猪数。 */
+    private BigDecimal avgBirthLitterWeanedPiglets;
+
+    /** 按发生月统计流产异常记录数。 */
+    private Integer abortionCount;
+
+    /** 有效断奶仔猪日龄合计（天）。 */
+    private Integer weanAgeDaysSum;
+
+    /** 有效断奶仔猪日龄头数。 */
+    private Integer weanAgeValidCount;
+
+    /** 加权平均断奶日龄（天）。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal avgWeanAgeDays;
+
+    /** 正常育肥猪出栏均重（kg/头）。 */
+    private BigDecimal avgMarketingWeight;
+
     @TableLogic
     private String delFlag;
     private Long delUnique;

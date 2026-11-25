@@ -170,29 +170,13 @@ public interface AggregateQueryMapper {
     /**
      * 区间内断奶仔猪头数 = 断奶明细逐头行数（{@link #WEAN_DETAIL_SRC}）。
      *
-     * <p>月表日表整段无行时的兜底分支用它。与日表落盘的 {@code weaned_piglet_count}
-     * 同一个取数源，两条路径不会给出不同的头数。</p>
+     * <p>月年窝均的仔猪数按完整统计期取同一个取数源，即日表的
+     * {@code weaned_piglet_count} 明细优先、整张无明细时取主单的规则。</p>
      */
     @Select("SELECT " + WEAN_COUNT_EXPR + WEAN_DETAIL_SRC)
     int sumWeanedInRange(@Param("tenantId") String tenantId,
                          @Param("from") LocalDate from,
                          @Param("to") LocalDate to);
-
-    /**
-     * t_farm_pig_marketing 在月份内的出栏头数 + 总重（kg）。
-     * 一头猪一行 → cnt = COUNT(*) / weight = SUM(out_weight)。
-     *
-     * @return {cnt: Long, weight: BigDecimal}
-     */
-    @Select("SELECT COUNT(*) AS cnt, COALESCE(SUM(out_weight),0) AS weight "
-        + " FROM t_farm_pig_marketing "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0' "
-        + "   AND marketing_date >= #{from} "
-        + "   AND marketing_date <  #{to}")
-    Map<String, Object> aggregateMarketingInRange(@Param("tenantId") String tenantId,
-                                                  @Param("from") LocalDate from,
-                                                  @Param("to") LocalDate to);
 
     /**
      * 当年仍活的母猪平均存栏。
@@ -546,22 +530,15 @@ public interface AggregateQueryMapper {
                                  @Param("to") java.time.LocalDateTime to);
 
     /**
-     * 当日出栏聚合：头数 + 出栏总重 + 平均背膘厚（取该出栏猪最新一条背膘的平均）。
-     * 出栏总重 = SUM(out_weight)；背膘 = 每头出栏猪用相关标量子查询取其最新 backfat_thickness（非空），
-     * 再对非空值 SUM/COUNT。标量子查询每行一值，无 JOIN 行放大；兼容 MySQL 5.7（不用 LATERAL）。
-     *
-     * <p>背膘分母口径（spec row10「平均背膘厚 = 背膘之和 / 有背膘的肥猪数」）：背膘 SUM/COUNT 只算
-     * {@code pig_type='fattening'} 的出栏猪（用相关子查询取 pig_info.pig_type 判定），种猪 / 仔猪出栏
-     * 不计入背膘分母。cnt / weight 仍覆盖全部出栏（口径不变）。</p>
+     * 当日出栏背膘厚分子与有效头数，保留原取样口径。
      *
      * <p>背膘 30 天窗（row182）：相关子查询只取出栏日前 30 天内（{@code measure_date >=
      * marketing_date − 30 天}）的最近一条背膘——30 天外的陈旧背膘不代表出栏体况，不计入。
      * 分子 = 符合窗口的背膘累加；分母 = 符合窗口（有近 30 天背膘）的出栏肥猪头数。</p>
      *
-     * @return {cnt:Long, weight:BigDecimal, backfatSum:BigDecimal, backfatCnt:Long}
+     * @return {backfatSum:BigDecimal, backfatCnt:Long}
      */
-    @Select("SELECT COUNT(*) AS cnt, COALESCE(SUM(m.out_weight),0) AS weight, "
-        + "       COALESCE(SUM( CASE WHEN ( "
+    @Select("SELECT COALESCE(SUM( CASE WHEN ( "
         + "           SELECT pi.pig_type FROM t_farm_pig_info pi "
         + "            WHERE pi.id = m.pig_id AND pi.tenant_id = m.tenant_id ) = 'fattening' "
         + "         THEN ( "
@@ -584,7 +561,7 @@ public interface AggregateQueryMapper {
         + "   AND m.del_flag = '0' "
         + "   AND m.marketing_date >= #{from} "
         + "   AND m.marketing_date <  #{to}")
-    Map<String, Object> aggregateMarketingForDay(@Param("tenantId") String tenantId,
+    Map<String, Object> aggregateBackfatForDay(@Param("tenantId") String tenantId,
                                                  @Param("from") java.time.LocalDateTime from,
                                                  @Param("to") java.time.LocalDateTime to);
 
@@ -1012,27 +989,23 @@ public interface AggregateQueryMapper {
      * 区间内日表指标列 Σ 汇总（月/年高级指标的 Σ日 来源）。
      * 返回各列 SUM，缺数据补 0。service 端按 row13/row14 公式二次计算率/窝均。
      *
-     * @return 各 SUM 列：sumFarrowSow / sumBreedingSow / sumWeaningSow / sumAbnormal / sumTotalBorn /
-     *         sumLiveBorn / sumWeanedPiglet / sumDeathPig / sumCullingPig / sumDeathPiglet / sumDeathFattening /
-     *         sumMarketingCount / sumMarketingWeight / sumEndProductionSow / sumEndReserve230 / sumEndReserve /
+     * @return 各 SUM 列：sumFarrowSow / sumBreedingSow / sumAbnormal / sumTotalBorn /
+     *         sumLiveBorn / sumDeathPig / sumCullingPig / sumDeathPiglet / sumDeathFattening /
+     *         sumEndProductionSow / sumEndReserve230 / sumEndReserve /
      *         sumEndNonprodSow / sumPregLossDays / sumYearBatchFarrow / sumGrowthDays
      */
     @Select("SELECT "
         + "  COALESCE(SUM(farrow_sow_count),0)         AS sumFarrowSow, "
         + "  COALESCE(SUM(breeding_sow_count),0)       AS sumBreedingSow, "
-        + "  COALESCE(SUM(weaning_sow_count),0)        AS sumWeaningSow, "
         + "  COALESCE(SUM(abnormal_sow_count),0)       AS sumAbnormal, "
         + "  COALESCE(SUM(introduce_sow_count),0)      AS sumIntroduceSow, "
         + "  COALESCE(SUM(introduce_boar_count),0)     AS sumIntroduceBoar, "
         + "  COALESCE(SUM(total_born_count),0)         AS sumTotalBorn, "
         + "  COALESCE(SUM(live_born_count),0)          AS sumLiveBorn, "
-        + "  COALESCE(SUM(weaned_piglet_count),0)      AS sumWeanedPiglet, "
         + "  COALESCE(SUM(death_pig_count),0)          AS sumDeathPig, "
         + "  COALESCE(SUM(culling_pig_count),0)        AS sumCullingPig, "
         + "  COALESCE(SUM(death_piglet_count),0)       AS sumDeathPiglet, "
         + "  COALESCE(SUM(death_fattening_count),0)    AS sumDeathFattening, "
-        + "  COALESCE(SUM(marketing_pig_count),0)      AS sumMarketingCount, "
-        + "  COALESCE(SUM(marketing_weight),0)         AS sumMarketingWeight, "
         + "  COALESCE(SUM(end_production_sow_count),0) AS sumEndProductionSow, "
         + "  COALESCE(SUM(end_reserve_230_count),0)    AS sumEndReserve230, "
         + "  COALESCE(SUM(end_reserve_count),0)        AS sumEndReserve, "
@@ -1062,7 +1035,7 @@ public interface AggregateQueryMapper {
      * 由 upsertAnnualIndicator 的月表覆盖面告警提示补跑。</p>
      *
      * @return introduceCount / introduceBoarCount / bornCount / weanedCount / deathCount / cullingCount /
-     *         marketingCount / marketingWeight / mateLitterCount / cohortFarrowCount / rowCnt
+     *         mateLitterCount / cohortFarrowCount / rowCnt
      */
     @Select("SELECT "
         + "  COALESCE(SUM(introduce_count),0)       AS introduceCount, "
@@ -1071,8 +1044,6 @@ public interface AggregateQueryMapper {
         + "  COALESCE(SUM(weaned_count),0)     AS weanedCount, "
         + "  COALESCE(SUM(death_count),0)      AS deathCount, "
         + "  COALESCE(SUM(culling_count),0)    AS cullingCount, "
-        + "  COALESCE(SUM(marketing_count),0)  AS marketingCount, "
-        + "  COALESCE(SUM(marketing_weight),0) AS marketingWeight, "
         + "  COALESCE(SUM(mate_litter_count),0)   AS mateLitterCount, "
         + "  COALESCE(SUM(cohort_farrow_count),0) AS cohortFarrowCount, "
         + "  COUNT(*)                          AS rowCnt "

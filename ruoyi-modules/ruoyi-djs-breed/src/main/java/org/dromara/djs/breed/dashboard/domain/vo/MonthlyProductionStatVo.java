@@ -32,8 +32,38 @@ public class MonthlyProductionStatVo implements Serializable {
     /** 上月（yyyy-MM）。 */
     private String previousMonth;
 
-    /** 10 行率/窝均指标（顺序固定）。 */
+    /** 当月落库生产指标与计算基数。 */
+    private ProductionIndicators currentIndicators;
+
+    /** 上月落库生产指标与计算基数。 */
+    private ProductionIndicators previousIndicators;
+
+    /** 原率/窝均对照行（顺序固定）。 */
     private List<StatRow> rows = new ArrayList<>();
+
+    public record ProductionIndicators(
+        Integer farrowSowCount,
+        Integer reserveFirstBreedCount,
+        Integer firstParityFarrowSowCount,
+        Integer weaningSowCount,
+        Integer normalWeaningSowCount,
+        Integer lactationDaysSum,
+        Integer lactationValidLitterCount,
+        BigDecimal avgLactationDaysWeaned,
+        Integer lactationDaysSumByFarrow,
+        BigDecimal avgLactationDaysFarrowed,
+        Integer birthLitterWeanedPigletCount,
+        BigDecimal avgBirthLitterWeanedPiglets,
+        Integer abortionCount,
+        Integer weanAgeDaysSum,
+        Integer weanAgeValidCount,
+        BigDecimal avgWeanAgeDays,
+        BigDecimal avgMarketingWeight,
+        Integer marketingCount,
+        BigDecimal marketingWeight,
+        Integer weanedCount,
+        BigDecimal avgWeanedPerLitter
+    ) implements Serializable {}
 
     /**
      * 单行：中文指标名 + 当月值 + 上月值 + 单位提示。

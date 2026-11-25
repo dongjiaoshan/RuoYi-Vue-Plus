@@ -33,6 +33,9 @@ public class AnnualIndicatorVo implements Serializable {
     private Integer marketingCount;
     private BigDecimal marketingWeight;
 
+    /** 正常育肥猪出栏加权均重（kg/头）。 */
+    private BigDecimal avgMarketingWeight;
+
     /** PSY 每头母猪年产断奶仔数 =（Σ日妊娠天数/母猪头日）×（365/115）× 窝均断奶数，列 decimal(8,2)。 */
     private BigDecimal psy;
     /** 死亡率（DEATH / (DEATH + ALIVE)，4 位小数）。 */

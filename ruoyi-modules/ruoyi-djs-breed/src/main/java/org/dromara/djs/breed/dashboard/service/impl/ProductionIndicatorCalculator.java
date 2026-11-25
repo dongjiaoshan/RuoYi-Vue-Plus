@@ -1,0 +1,225 @@
+package org.dromara.djs.breed.dashboard.service.impl;
+
+import lombok.RequiredArgsConstructor;
+import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper;
+import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.GroupChange;
+import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.GroupMember;
+import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.MarketingEvent;
+import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.TypeChange;
+import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.WeanedLitter;
+import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.WeaningBatchRow;
+import org.springframework.stereotype.Component;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+/** 将 V1.1 的事件明细统一归期、配对及去重，供养殖日月年聚合使用。 */
+@Component
+@RequiredArgsConstructor
+class ProductionIndicatorCalculator {
+
+    private static final String SOW = "sow";
+    private static final String FATTENING = "fattening";
+    private static final String PIGLET = "piglet";
+
+    private final ProductionIndicatorMapper mapper;
+
+    Map<String, Object> farrowTotals(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return mapper.farrowTotals(tenantId, from, to);
+    }
+
+    Map<String, Object> abnormalTotals(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return mapper.abnormalTotals(tenantId, from, to);
+    }
+
+    int firstReserveBreeding(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return mapper.countFirstReserveBreeding(tenantId, from, to);
+    }
+
+    Map<String, Object> pigletMeasures(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return mapper.weanedPigletMeasures(tenantId, from, to);
+    }
+
+    int weaningSowCount(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return mapper.weanedLitters(tenantId, from, to).size();
+    }
+
+    int lactationDaysByFarrowMonth(String tenantId, LocalDateTime from, LocalDateTime to, LocalDateTime asOf) {
+        return mapper.sumLactationDaysByFarrow(tenantId, from, to, asOf);
+    }
+
+    Weaning weaningForMonth(String tenantId, LocalDateTime from, LocalDateTime to, LocalDateTime asOf) {
+        List<WeanedLitter> litters = mapper.weanedLitters(tenantId, from, to);
+        if (litters.isEmpty()) {
+            return new Weaning(0, 0, 0, 0, 0);
+        }
+        Set<Long> litterIds = litters.stream().map(WeanedLitter::farrowId).collect(Collectors.toSet());
+        Set<Long> fostered = new HashSet<>();
+        Set<Long> withPiglets = new HashSet<>();
+        int birthLitterPiglets = 0;
+        for (WeaningBatchRow row : mapper.weaningBatches(tenantId, litterIds, asOf)) {
+            int piglets = row.detailId() == null ? row.recordedCount() : 1;
+            if (piglets > 0) {
+                withPiglets.add(row.hostFarrowId());
+            }
+            Long birthFarrow = row.birthFarrowId() == null ? row.hostFarrowId() : row.birthFarrowId();
+            if (birthFarrow == null) {
+                continue;
+            }
+            if (!Objects.equals(birthFarrow, row.hostFarrowId())) {
+                fostered.add(birthFarrow);
+                fostered.add(row.hostFarrowId());
+            }
+            // 同期断奶仔猪，用生母窝号与同期实际断奶窝配对。
+            if (litterIds.contains(birthFarrow) && !row.weaningDate().isBefore(from) && row.weaningDate().isBefore(to)) {
+                birthLitterPiglets += piglets;
+            }
+        }
+        int normal = 0;
+        int lactationDays = 0;
+        for (WeanedLitter litter : litters) {
+            if (withPiglets.contains(litter.farrowId()) && !fostered.contains(litter.farrowId())) {
+                normal++;
+            }
+            lactationDays += (int) ChronoUnit.DAYS.between(litter.farrowDate(), litter.weanDate());
+        }
+        return new Weaning(litters.size(), normal, lactationDays, litters.size(), birthLitterPiglets);
+    }
+
+    HeadDays headDays(String tenantId, LocalDate day) {
+        LocalDateTime from = day.atStartOfDay();
+        LocalDateTime to = day.plusDays(1).atStartOfDay();
+        Set<Long> sows = new HashSet<>();
+        Set<Long> fattening = new HashSet<>();
+        List<GroupMember> members = mapper.endGroupMembers(tenantId, day);
+        List<GroupChange> changes = mapper.groupChanges(tenantId, from, to);
+        Set<Long> replayIds = changes.stream().map(GroupChange::pigId).collect(Collectors.toSet());
+        for (GroupMember member : members) {
+            if (needsIndividualType(member, day)) {
+                replayIds.add(member.pigId());
+            }
+        }
+        var histories = typeHistories(tenantId, replayIds);
+        for (GroupMember member : members) {
+            if (SOW.equals(member.pigType())) {
+                sows.add(member.pigId());
+            } else {
+                String type = needsIndividualType(member, day)
+                    ? typeBefore(histories.getOrDefault(member.pigId(), List.of()), Long.MAX_VALUE, to.minusNanos(1),
+                        null, member.currentPigType(), member.weanDate())
+                    : member.pigType();
+                if (FATTENING.equals(type)) {
+                    fattening.add(member.pigId());
+                }
+            }
+        }
+        for (GroupChange change : changes) {
+            long pigId = change.pigId();
+            String before = typeBefore(histories.getOrDefault(pigId, List.of()), change.id(), change.changeTime(),
+                change.oldPigType(), change.currentPigType(), change.weanDate());
+            addGroup(sows, fattening, pigId, before, change.oldStatus());
+            String after = change.newPigType() == null ? before : change.newPigType();
+            addGroup(sows, fattening, pigId, after, change.newStatus());
+        }
+        return new HeadDays(sows.size(), fattening.size());
+    }
+
+    private static boolean needsIndividualType(GroupMember member, LocalDate day) {
+        return member.weanDate() != null
+            && (PIGLET.equals(member.pigType())
+                || FATTENING.equals(member.pigType()) && day.isBefore(member.weanDate()));
+    }
+
+    Marketing marketing(String tenantId, LocalDateTime from, LocalDateTime to) {
+        List<MarketingEvent> events = mapper.marketingEvents(tenantId, from, to);
+        var histories = typeHistories(tenantId, events.stream().map(MarketingEvent::pigId).collect(Collectors.toSet()));
+        int count = 0;
+        BigDecimal weight = BigDecimal.ZERO;
+        for (MarketingEvent event : events) {
+            String type = typeBefore(histories.getOrDefault(event.pigId(), List.of()), event.eventId(), event.changeTime(),
+                event.oldPigType(), event.currentPigType(), event.weanDate());
+            if (FATTENING.equals(type)) {
+                count++;
+                weight = weight.add(event.weight());
+            }
+        }
+        return new Marketing(count, weight);
+    }
+
+    private Map<Long, List<TypeChange>> typeHistories(String tenantId, Set<Long> ids) {
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> pigIds = new ArrayList<>(ids);
+        Map<Long, List<TypeChange>> history = new HashMap<>();
+        // 年度可能涉及大量出栏，限定每次 IN 参数数，按猪只取其完整且有序的类型变更链。
+        for (int from = 0; from < pigIds.size(); from += 1000) {
+            List<Long> batch = pigIds.subList(from, Math.min(from + 1000, pigIds.size()));
+            for (TypeChange change : mapper.typeChanges(tenantId, batch)) {
+                history.computeIfAbsent(change.pigId(), ignored -> new ArrayList<>()).add(change);
+            }
+        }
+        return history;
+    }
+
+    private static String typeBefore(List<TypeChange> history, long eventId, LocalDateTime time,
+                                     String eventOldType, String currentType, LocalDate weanDate) {
+        if (eventOldType != null) {
+            return eventOldType;
+        }
+        TypeChange prior = null;
+        for (TypeChange change : history) {
+            int byTime = change.changeTime().compareTo(time);
+            if (byTime < 0 || byTime == 0 && change.id() < eventId) {
+                if (change.newPigType() != null) {
+                    prior = change;
+                }
+            } else if (change.oldPigType() != null) {
+                return undoLaterType(change.oldPigType(), prior, time.toLocalDate(), weanDate);
+            }
+        }
+        String type = prior != null ? prior.newPigType() : currentType;
+        return undoLaterType(type, prior, time.toLocalDate(), weanDate);
+    }
+
+    private static String undoLaterType(String type, TypeChange prior, LocalDate eventDate, LocalDate weanDate) {
+        // 逐头断奶翻育肥未经过状态机，个体断奶日补齐该段。已存在的更早育肥转群记录优先。
+        if (weanDate != null && (prior == null || prior.changeTime().toLocalDate().isBefore(weanDate))) {
+            if (FATTENING.equals(type) && eventDate.isBefore(weanDate)
+                && (prior == null || !FATTENING.equals(prior.newPigType()))) {
+                return PIGLET;
+            }
+            if (PIGLET.equals(type) && !eventDate.isBefore(weanDate)) {
+                return FATTENING;
+            }
+        }
+        return type;
+    }
+
+    private static void addGroup(Set<Long> sows, Set<Long> fattening, long pigId, String type, String status) {
+        if ("END".equals(status)) {
+            return;
+        }
+        if (FATTENING.equals(type)) {
+            fattening.add(pigId);
+        } else if (SOW.equals(type) && status != null && !status.isEmpty() && !"HB".equals(status)) {
+            sows.add(pigId);
+        }
+    }
+
+    record Weaning(int count, int normalCount, int lactationDays, int validLactationCount, int birthLitterPiglets) {}
+
+    record HeadDays(int productionSow, int fattening) {}
+
+    record Marketing(int count, BigDecimal weight) {}
+}

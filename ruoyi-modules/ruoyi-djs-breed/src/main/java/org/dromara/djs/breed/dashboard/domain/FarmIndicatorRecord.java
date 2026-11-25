@@ -172,6 +172,60 @@ public class FarmIndicatorRecord extends TenantEntity {
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Integer pregnantSowCount;
 
+    /** 生产母猪头天数。 */
+    private Integer productionSowHeadDays;
+
+    /** 育肥猪头天数。 */
+    private Integer fatteningHeadDays;
+
+    /** 后备首配转生产母猪头数。 */
+    private Integer newProductionSowCount;
+
+    /** 返情异常记录数。 */
+    private Integer returnHeatCount;
+
+    /** 空怀异常记录数。 */
+    private Integer emptySowCount;
+
+    /** 流产异常记录数。 */
+    private Integer abortionCount;
+
+    /** 分娩死胎数。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer farrowDeadBornCount;
+
+    /** 分娩木乃伊数。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer farrowMummyBornCount;
+
+    /** 分娩畸形数。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer farrowDeformedBornCount;
+
+    /** 分娩弱仔处死数。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer farrowWeakCulledCount;
+
+    /** 有效断奶仔猪日龄合计（天）。 */
+    private Integer weanAgeDaysSum;
+
+    /** 有效断奶仔猪日龄头数。 */
+    private Integer weanAgeValidCount;
+
+    /** 平均断奶及进栏日龄（天）。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal avgWeanAgeDays;
+
+    /** 逐头有效断奶称重合计（kg）。 */
+    private BigDecimal weanValidWeightSum;
+
+    /** 逐头有效断奶称重头数。 */
+    private Integer weanWeightValidCount;
+
+    /** 进栏均重（kg/头）。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal avgEntryWeight;
+
     /** 软删标志（业务表必含）。 */
     @TableLogic
     private String delFlag;
