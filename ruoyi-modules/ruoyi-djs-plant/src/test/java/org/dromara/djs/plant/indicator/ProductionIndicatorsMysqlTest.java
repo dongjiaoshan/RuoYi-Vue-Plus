@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 
+import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -62,7 +63,8 @@ class ProductionIndicatorsMysqlTest {
                 plant_id BIGINT, plot_id BIGINT, crop_id BIGINT, plant_month INT, plot_area DECIMAL(10,2),
                 begin_actualdate DATE, end_actualdate DATE, begin_harvestdate DATE, end_harvestdate DATE,
                 plant_status VARCHAR(16) DEFAULT 'completed', harvest_status VARCHAR(16) DEFAULT 'completed',
-                actual_yield DECIMAL(12,3), rotated_at DATETIME)
+                actual_yield DECIMAL(12,3), expected_yield DECIMAL(12,3), rotated_at DATETIME,
+                transplant_adjusted TINYINT DEFAULT 0)
             """);
         sql("""
             CREATE TEMPORARY TABLE t_plant_plant_plan (id BIGINT, plan_year INT,
@@ -75,12 +77,13 @@ class ProductionIndicatorsMysqlTest {
             """);
         sql("""
             CREATE TEMPORARY TABLE t_plant_farm_records (
-                id BIGINT, plot_id BIGINT, farm_type VARCHAR(32), farm_date DATE, farm_by BIGINT,
+                id BIGINT, plot_id BIGINT, crop_id BIGINT, plant_id BIGINT, farm_type VARCHAR(32), farm_date DATE, farm_by BIGINT,
+                loss_rate DECIMAL(10,2), loss_yield DECIMAL(12,3), transplant_plot BIGINT,
                 create_time DATETIME, tenant_id VARCHAR(20) DEFAULT '1001', del_flag CHAR(1) DEFAULT '0')
             """);
         sql("""
             CREATE TEMPORARY TABLE t_warehouse_stock_flow (
-                id BIGINT, plot_id BIGINT, flow_date DATETIME, flow_type VARCHAR(32),
+                id BIGINT, plot_id BIGINT, flow_no VARCHAR(32), product_id BIGINT, flow_date DATETIME, flow_type VARCHAR(32),
                 inout_type VARCHAR(3), change_quantity DECIMAL(16,3), change_num DECIMAL(16,3),
                 tenant_id VARCHAR(20) DEFAULT '1001', del_flag CHAR(1) DEFAULT '0')
             """);
@@ -95,7 +98,58 @@ class ProductionIndicatorsMysqlTest {
             """);
         sql("""
             CREATE TEMPORARY TABLE t_plant_plant_activity (
+                id BIGINT, plot_id BIGINT, crop_id BIGINT, product_id BIGINT,
                 activity_date DATE, pick_dest VARCHAR(32), daily_weight DECIMAL(12,3),
+                tenant_id VARCHAR(20) DEFAULT '1001', del_flag CHAR(1) DEFAULT '0')
+            """);
+
+        sql("""
+            CREATE TEMPORARY TABLE t_warehouse_veg_receive (
+                id BIGINT, receive_no VARCHAR(32), receive_type INT, plot_id BIGINT, crop_id BIGINT, product_id BIGINT,
+                is_finish INT, receive_time DATETIME, weight DECIMAL(12,3), loss_weight DECIMAL(12,3), tenant_id VARCHAR(20) DEFAULT '1001', del_flag CHAR(1) DEFAULT '0')
+            """);
+        sql("""
+            CREATE TEMPORARY TABLE t_warehouse_vegetable_handle (
+                id BIGINT, planting_record_id BIGINT, send_platform_weight DECIMAL(12,3), picked_weight DECIMAL(12,3),
+                is_weighed INT, tenant_id VARCHAR(20) DEFAULT '1001', del_flag CHAR(1) DEFAULT '0')
+            """);
+        sql("""
+            CREATE TEMPORARY TABLE t_warehouse_handle_record (
+                id BIGINT, handle_id BIGINT, plot_id BIGINT, crop_id BIGINT, product_id BIGINT, team_id BIGINT,
+                record_type INT, handle_target INT, record_weight DECIMAL(12,3), perf_percent INT DEFAULT 100,
+                handle_time DATETIME, remark VARCHAR(500),
+                tenant_id VARCHAR(20) DEFAULT '1001', del_flag CHAR(1) DEFAULT '0')
+            """);
+        sql("""
+            CREATE TEMPORARY TABLE t_warehouse_handle_record_team (
+                record_id BIGINT, team_id BIGINT, tenant_id VARCHAR(20) DEFAULT '1001', del_flag CHAR(1) DEFAULT '0')
+            """);
+        sql("""
+            CREATE TEMPORARY TABLE t_plant_crop_product (
+                id BIGINT, crop_id BIGINT, product_id BIGINT, perf_price DECIMAL(10,2),
+                tenant_id VARCHAR(20) DEFAULT '1001', del_flag CHAR(1) DEFAULT '0')
+            """);
+        sql("""
+            CREATE TEMPORARY TABLE t_plant_crop_info (
+                id BIGINT, tenant_id VARCHAR(20) DEFAULT '1001', del_flag CHAR(1) DEFAULT '0')
+            """);
+        sql("""
+            CREATE TEMPORARY TABLE t_warehouse_product_info (
+                id BIGINT, tenant_id VARCHAR(20) DEFAULT '1001', del_flag CHAR(1) DEFAULT '0')
+            """);
+        sql("""
+            CREATE TEMPORARY TABLE t_plant_work_people (
+                team_id BIGINT, user_id BIGINT, join_date DATE, create_time DATETIME, update_time DATETIME,
+                tenant_id VARCHAR(20) DEFAULT '1001', del_flag CHAR(1) DEFAULT '0')
+            """);
+
+        sql("""
+            CREATE TEMPORARY TABLE t_plant_activity_team (
+                activity_id BIGINT, team_id BIGINT, tenant_id VARCHAR(20) DEFAULT '1001', del_flag CHAR(1) DEFAULT '0')
+            """);
+        sql("""
+            CREATE TEMPORARY TABLE t_plant_details_team (
+                detail_id BIGINT, team_id BIGINT, role VARCHAR(16),
                 tenant_id VARCHAR(20) DEFAULT '1001', del_flag CHAR(1) DEFAULT '0')
             """);
 
@@ -107,6 +161,7 @@ class ProductionIndicatorsMysqlTest {
         Path migrations = repo.resolve("ruoyi-admin/src/main/resources/db/migration");
         applyMigration(migrations.resolve("V202609301100__PLT-STAT-V11-production-indicators.sql"));
         applyMigration(migrations.resolve("V202609301130__PLT-STAT-V11-plot-idle-interval.sql"));
+        applyMigration(migrations.resolve("V202609301700__PLT-STAT-V12-event-indicators.sql"));
 
         Configuration config = new Configuration(new Environment("local", new JdbcTransactionFactory(),
             new SingleConnectionDataSource(connection, true)));
@@ -481,6 +536,468 @@ class ProductionIndicatorsMysqlTest {
                 assertThat(plot.idleOpenIntervalId()).isNull();
                 assertThat(plot.idleLastEndedOn()).isNull();
             });
+    }
+
+    @Test
+    void firstInboundCountsActualDirectReceiptsAndNotTransfers() throws Exception {
+        flow(1, 20, "2025-11-10 07:00:00", "veg_stock_in", "10", 222L);
+        dispatch(1, 10, 111, 101, "2025-11-09 10:00:00", "8", true);
+        dispatch(2, 20, 222, 102, "2025-11-10 09:00:00", "10", false);
+        receipt(11, 10, 111, 101, "2025-11-10 11:00:00", "7", "1");
+        receipt(12, 20, 222, 102, "2025-11-10 11:00:00", "10", "0");
+        service.recalculate(DAY, DAY);
+        var report = service.query(DAY, DAY);
+        assertAll(
+            () -> assertThat(report.daily().getFirst().harvestInboundWeight()).as("种植 14").isEqualByComparingTo("17"),
+            () -> assertThat(report.daily().getFirst().harvestDockUnmatchedCount()).as("种植 14 转库已配对").isZero(),
+            () -> assertThat(report.daily().getFirst().harvestInboundCropCount()).as("种植 15").isEqualTo(2),
+            () -> assertThat(report.daily().getFirst().harvestInboundPlotCount()).as("种植 17").isEqualTo(2),
+            () -> assertThat(report.monthly().getFirst().harvestInboundWeight()).as("种植 34").isEqualByComparingTo("17"),
+            () -> assertThat(report.monthly().getFirst().harvestInboundCropCount()).as("种植 36").isEqualTo(2),
+            () -> assertThat(report.monthly().getFirst().harvestInboundPlotCount()).as("种植 37").isEqualTo(2),
+            () -> assertThat(report.annual().getFirst().harvestInboundWeight()).as("种植 57").isEqualByComparingTo("17"));
+        service.recalculate(DAY, DAY);
+        assertThat(service.query(DAY, DAY)).isEqualTo(report);
+    }
+
+    @Test
+    void zeroWeightReceiptAndTransferWithoutSameDayStockInDoNotAddCropsOrPlots() throws Exception {
+        flow(1, 20, "2025-11-09 07:00:00", "veg_stock_in", "12", 222L);
+        dispatch(1, 20, 222, 102, "2025-11-09 09:00:00", "12", false);
+        receipt(11, 20, 222, 102, "2025-11-10 10:00:00", "12", "0");
+        dispatch(2, 30, 333, 103, "2025-11-10 09:00:00", "5", true);
+        receipt(12, 30, 333, 103, "2025-11-10 11:00:00", "0", "5");
+
+        service.recalculate(DAY.minusDays(1), DAY);
+        var receiptDay = service.query(DAY, DAY).daily().getFirst();
+        assertAll(
+            () -> assertThat(receiptDay.harvestInboundWeight()).as("种植 14").isZero(),
+            () -> assertThat(receiptDay.harvestDockUnmatchedCount()).as("种植 14 转库已配对").isZero(),
+            () -> assertThat(receiptDay.harvestInboundCropCount()).as("种植 15").isZero(),
+            () -> assertThat(receiptDay.harvestInboundPlotCount()).as("种植 17").isZero());
+    }
+
+    @Test
+    void sameDayMixedReceiptsStillProveDailyTotal() throws Exception {
+        flow(1, 10, "2025-11-10 07:00:00", "veg_stock_in", "10", 111L);
+        dispatch(1, 10, 111, 101, "2025-11-10 08:00:00", "7", true);
+        dispatch(2, 10, 111, 101, "2025-11-10 09:00:00", "10", false);
+        receipt(11, 10, 111, 101, "2025-11-10 10:00:00", "7", null);
+        receipt(12, 10, 111, 101, "2025-11-10 23:59:59", "10", "0");
+        sql("UPDATE t_warehouse_stock_flow SET flow_date='2025-11-11 00:00:00' WHERE id=12");
+
+        service.recalculate(DAY, DAY.plusDays(1));
+        var report = service.query(DAY, DAY.plusDays(1));
+        assertThat(report.daily().getFirst().harvestInboundWeight()).as("种植 14").isEqualByComparingTo("17");
+        assertThat(report.daily().getLast().harvestInboundWeight()).as("种植 14 实收日优先").isZero();
+        assertThat(report.daily().getFirst().harvestDockUnmatchedCount()).isEqualTo(2);
+    }
+
+    @Test
+    void mixedAndOrphanDockReceiptsAreFlaggedWithoutGuessing() throws Exception {
+        dispatch(1, 10, 111, 101, "2024-12-31 10:00:00", "5", true);
+        dispatch(2, 10, 111, 101, "2025-01-01 09:00:00", "4", false);
+        receipt(11, 10, 111, 101, "2025-01-01 12:00:00", "6", null);
+        receipt(12, 10, 111, 101, "2025-01-02 12:00:00", "3", "0");
+        flow(13, 30, "2025-01-02 13:00:00", "veg_receive_in", "77", null);
+        LocalDate first = LocalDate.of(2025, 1, 1);
+        service.recalculate(first, first.plusDays(1));
+        var report = service.query(first, first.plusDays(1));
+        assertThat(report.daily().getFirst().harvestInboundWeight()).isEqualByComparingTo("2"); // 种植 14
+        assertThat(report.annual().getFirst().harvestInboundWeight()).isEqualByComparingTo("2"); // 种植 57：逐日仅加已证实量
+        assertThat(report.daily().getLast().harvestDockUnmatchedCount()).isEqualTo(2);
+        assertThat(report.monthly().getFirst().harvestDockUnmatchedCount()).isEqualTo(3);
+    }
+
+    @Test
+    void transplantClosingIsNotHarvestOrAnOriginalPlantingPlan() throws Exception {
+        sql("INSERT INTO t_plant_plant_plan (id,plan_year) VALUES (1,2025)");
+        detail(1, 1, 10, 111, 11, 5, "2025-11-01", "2025-11-02", "2025-11-09", DAY.toString());
+        detail(2, 1, 20, 222, 11, 5, "2025-11-01", "2025-11-02", DAY.toString(), DAY.toString());
+        detail(3, 1, 30, 222, 11, 5, "2025-11-01", null, null, null);
+        sql("UPDATE t_plant_plant_details SET transplant_adjusted=1 WHERE id=3");
+        farm(1, 20, "transplant", DAY.minusDays(2), null); // 人工结束移栽可晚于最后一笔移栽
+        sql("UPDATE t_plant_farm_records SET plant_id=1,crop_id=222 WHERE id=1");
+        farm(2, 20, "rotation", DAY.plusDays(2), 2L);
+        farm(3, 40, "rotation", DAY.plusDays(2), null);
+
+        service.recalculate(DAY, DAY.plusDays(2));
+        var report = service.query(DAY, DAY.plusDays(2));
+        var month = report.monthly().getFirst();
+        assertThat(report.daily().getFirst().harvestFinishedPlotCount()).as("种植 16").isEqualTo(1);
+        assertThat(month.harvestFinishedPlotCount()).as("种植 35").isEqualTo(1);
+        assertThat(month.getPlantPlanCompletionPercent()).as("种植 31").isEqualByComparingTo("100.00");
+        assertThat(report.annual().getFirst().getPlantPlanCompletionPercent()).as("种植 56").isEqualByComparingTo("100.00");
+        var rotation = report.daily().getLast();
+        assertThat(rotation.rotationWaitDaysSum()).as("种植 22").isEqualTo(2);
+        assertThat(rotation.getRotationWaitAverageDays()).as("种植 23").isEqualTo(new BigDecimal("1.0"));
+    }
+
+    @Test
+    void backdatedTransplantClosureDoesNotCountAsHarvestCompletion() throws Exception {
+        detail(1, 1, 10, 111, 10, 1, "2025-10-01", "2025-10-01", DAY.toString(), DAY.toString());
+        farm(1, 10, "transplant", DAY.plusDays(1), null);
+        sql("UPDATE t_plant_farm_records SET plant_id=1,crop_id=111 WHERE id=1");
+
+        service.recalculate(DAY, DAY);
+        var report = service.query(DAY, DAY);
+        assertAll(
+            () -> assertThat(report.daily().getFirst().harvestFinishedPlotCount()).as("种植 16").isZero(),
+            () -> assertThat(report.monthly().getFirst().harvestFinishedPlotCount()).as("种植 35").isZero());
+    }
+
+    @Test
+    void transplantTargetInTheSamePlanAndCropStillCountsAsHarvestCompletion() throws Exception {
+        detail(1, 1, 10, 111, 10, 1, "2025-10-01", "2025-10-01", DAY.toString(), DAY.toString());
+        detail(2, 1, 50, 111, 10, 1, "2025-10-01", null, "2025-11-01", DAY.toString());
+        sql("UPDATE t_plant_plant_details SET transplant_adjusted=1 WHERE id=2");
+        farm(1, 10, "transplant", DAY.minusDays(20), null);
+        sql("UPDATE t_plant_farm_records SET plant_id=1,crop_id=111,transplant_plot=50 WHERE id=1");
+
+        service.recalculate(DAY, DAY);
+        var report = service.query(DAY, DAY);
+        assertAll(
+            () -> assertThat(report.daily().getFirst().harvestFinishedPlotCount()).as("种植 16").isEqualTo(1),
+            () -> assertThat(report.monthly().getFirst().harvestFinishedPlotCount()).as("种植 35").isEqualTo(1));
+    }
+
+    @Test
+    void monthlyYieldDisastersRotationAndPerformanceUseTheirOwnSources() throws Exception {
+        detail(1, 1, 10, 111, 10, 5, "2025-10-15", "2025-10-16", "2025-11-01", "2025-11-08");
+        detail(2, 1, 20, 222, 11, 3, "2025-11-10", "2025-11-11", "2025-12-01", "2025-12-02");
+        detail(3, 2, 10, 111, 12, 5, "2025-12-04", "2025-12-05", "2025-12-06", "2025-12-07");
+        detail(4, 1, 30, 333, 11, 5, "2025-11-01", "2025-11-02", "2025-11-03", "2025-11-04");
+        sql("UPDATE t_plant_plant_details SET actual_yield=72, expected_yield=100 WHERE id=1");
+        sql("UPDATE t_plant_plant_details SET actual_yield=5, expected_yield=0 WHERE id=2");
+        sql("UPDATE t_plant_plant_details SET expected_yield=70 WHERE id=3");
+        sql("INSERT INTO t_plant_plot_info (id,plot_area) VALUES (10,5),(20,3)");
+        farm(1, 10, "disaster", NOV.plusDays(1), null);
+        farm(2, 10, "disaster", NOV.plusDays(2), null);
+        farm(3, 10, "disaster", NOV.plusDays(3), null);
+        farm(4, 10, "disaster", NOV.plusMonths(1).plusDays(5), null);
+        sql("UPDATE t_plant_farm_records SET crop_id=111, plant_id=1, loss_rate=20, loss_yield=20 WHERE id=1");
+        sql("UPDATE t_plant_farm_records SET crop_id=111, plant_id=1, loss_rate=0, loss_yield=0 WHERE id=2");
+        sql("UPDATE t_plant_farm_records SET crop_id=111, plant_id=1, loss_rate=90, loss_yield=90, del_flag='1' WHERE id=3");
+        sql("UPDATE t_plant_farm_records SET crop_id=111, plant_id=2, loss_rate=70, loss_yield=70 WHERE id=4");
+        farm(5, 10, "rotation", DAY, 1L); // 2 天
+        farm(6, 20, "rotation", NOV.plusMonths(1).plusDays(11), 2L); // 10 天
+        farm(7, 10, "rotation", NOV.plusMonths(1).plusDays(16), 3L); // 10 天
+        detail(5, 1, 30, 333, 12, 5, "2025-12-01", "2025-12-03", "2025-12-06", "2025-12-08");
+        farm(8, 30, "rotation", NOV.plusMonths(1).plusDays(17), 5L); // 10 天
+
+        sql("INSERT INTO t_warehouse_product_info (id) VALUES (101),(102)");
+        sql("INSERT INTO t_plant_crop_product (id,crop_id,product_id,perf_price) VALUES (1,111,101,2),(2,111,102,6)");
+        sql("""
+            INSERT INTO t_warehouse_handle_record
+                (id,crop_id,product_id,team_id,record_type,record_weight,handle_time)
+            VALUES (21,111,101,77,1,10,'2025-11-10 08:00:00'),
+                   (22,111,102,78,1,10,'2025-11-10 09:00:00'),
+                   (23,111,102,78,2,40,'2025-11-10 09:00:00')
+            """);
+        sql("INSERT INTO t_warehouse_handle_record_team (record_id,team_id) VALUES (21,77),(21,78)");
+        sql("""
+            INSERT INTO t_plant_work_people (team_id,user_id,join_date,del_flag,update_time)
+            VALUES (77,1,'2025-10-01','0',NULL),(77,2,'2025-10-01','1','2025-11-20 12:00:00'),
+                   (78,3,'2025-11-10','0',NULL),(78,4,'2025-11-11','0',NULL),
+                   (78,5,'2025-12-01','0',NULL)
+            """);
+        sql("""
+            INSERT INTO t_plant_work_performance (stat_month,performance_amount,create_time)
+            VALUES ('2025-11',120,'2025-12-07'),('2025-12',80,'2026-01-07')
+            """);
+
+        LocalDate end = NOV.plusMonths(1).plusDays(20);
+        service.recalculate(DAY, end);
+        var report = service.query(DAY, end);
+        var november = report.monthly().getFirst();
+        var december = report.monthly().getLast();
+        var year = report.annual().getFirst();
+        assertThat(report.daily().getFirst().harvestPerformancePerPersonEstimate()).isEqualTo(new BigDecimal("26.67")); // 种植 25
+        assertThat(november.yieldCompletionPercent()).isEqualTo(new BigDecimal("90.00")); // 种植 38
+        assertThat(december.yieldCompletionPercent()).isNull(); // 种植 38：无可用分母
+        assertThat(november.rotationAverageDays()).isEqualTo(new BigDecimal("2.0")); // 种植 41
+        assertThat(december.rotationAverageDays()).isEqualTo(new BigDecimal("10.0")); // 种植 41
+        assertThat(year.rotationAverageDays()).isEqualTo(new BigDecimal("8.0")); // 种植 58
+        assertThat(november.disasterPlotCount()).isEqualTo(1); // 种植 42
+        assertThat(november.harvestPerformanceAmount()).isEqualByComparingTo("120"); // 种植 43
+        assertThat(november.harvestPerformancePerPerson()).isEqualTo(new BigDecimal("40.00")); // 种植 44
+        assertThat(november.disasterLossArea()).isEqualTo(new BigDecimal("1.000")); // 种植 51
+        assertThat(november.disasterLossYield()).isEqualTo(new BigDecimal("20.000")); // 种植 52
+        assertThat(year.harvestPerformanceAmount()).isEqualByComparingTo("200"); // 种植 61
+        assertThat(year.harvestPerformancePerPerson()).isEqualTo(new BigDecimal("50.00")); // 种植 62
+        service.recalculate(DAY, end);
+        assertThat(service.query(DAY, end)).isEqualTo(report);
+    }
+
+    @Test
+    void monthlyAndAnnualRotationAveragesIncludeUnmatchedRounds() throws Exception {
+        detail(1, 1, 10, 111, 10, 1, "2025-10-01", "2025-10-01", "2025-11-01", "2025-11-07");
+        farm(1, 10, "rotation", DAY, 1L); // 3 天
+        farm(2, 20, "rotation", DAY, null); // 未配对
+        detail(2, 1, 30, 111, 11, 1, "2025-11-01", "2025-11-02", "2025-12-01", "2025-12-05");
+        LocalDate december = LocalDate.of(2025, 12, 10);
+        farm(3, 30, "rotation", december, 2L); // 5 天
+
+        service.recalculate(DAY, december);
+        var report = service.query(DAY, december);
+        assertAll(
+            () -> assertThat(report.monthly().getFirst().rotationAverageDays()).as("种植 41").isEqualTo(new BigDecimal("1.5")),
+            () -> assertThat(report.monthly().getLast().rotationAverageDays()).as("种植 41").isEqualTo(new BigDecimal("5.0")),
+            () -> assertThat(report.annual().getFirst().rotationAverageDays()).as("种植 58").isEqualTo(new BigDecimal("2.7")));
+    }
+
+    @Test
+    void monthlyYieldCompletionUsesOnlyDetailsWithActualYield() throws Exception {
+        detail(1, 1, 10, 111, 10, 1, "2025-10-01", "2025-10-01", "2025-11-01", DAY.toString());
+        detail(2, 1, 20, 222, 10, 1, "2025-10-01", "2025-10-01", "2025-11-01", DAY.toString());
+        sql("UPDATE t_plant_plant_details SET expected_yield=200, actual_yield=120 WHERE id=1");
+        sql("UPDATE t_plant_plant_details SET expected_yield=100 WHERE id=2");
+        farm(1, 10, "disaster", OCT.plusDays(19), 1L);
+        sql("UPDATE t_plant_farm_records SET crop_id=111, plant_id=1, loss_yield=50 WHERE id=1");
+
+        service.recalculate(DAY, DAY);
+        assertThat(service.query(DAY, DAY).monthly().getFirst().yieldCompletionPercent())
+            .as("种植 38").isEqualTo(new BigDecimal("80.00"));
+    }
+
+    @Test
+    void monthlyYieldMatchesDisasterByPlanEvenBeforePlantingStarts() throws Exception {
+        LocalDate august = LocalDate.of(2026, 8, 31);
+        detail(1, 826049, 68, 34, 8, 1, "2026-08-02", "2026-08-03", "2026-08-10", "2026-08-20");
+        detail(2, 826048, 68, 34, 7, 1, "2026-07-01", "2026-07-02", "2026-07-10", "2026-07-20");
+        detail(3, 826049, 69, 34, 8, 1, "2026-08-03", "2026-08-04", "2026-08-11", "2026-08-21");
+        sql("UPDATE t_plant_plant_details SET expected_yield=2472, actual_yield=1319 WHERE id=1");
+        sql("UPDATE t_plant_plant_details SET expected_yield=4359, actual_yield=1701 WHERE id=3");
+        farm(1, 68, "disaster", august.withDayOfMonth(1), null);
+        sql("UPDATE t_plant_farm_records SET crop_id=34,plant_id=826049,loss_yield=988.8 WHERE id=1");
+
+        service.recalculate(august, august);
+        assertThat(service.query(august, august).monthly().getFirst().yieldCompletionPercent())
+            .as("种植 38：3020 / (6831 - 988.8)").isEqualByComparingTo("51.69");
+    }
+
+    @Test
+    void monthlyYieldFallsBackToDatesOnlyWithoutDisasterPlan() throws Exception {
+        detail(1, 1, 10, 111, 10, 1, "2025-10-01", "2025-10-01", "2025-11-01", DAY.toString());
+        sql("UPDATE t_plant_plant_details SET expected_yield=100,actual_yield=72 WHERE id=1");
+        farm(1, 10, "disaster", NOV, null);
+        farm(2, 10, "disaster", NOV.plusDays(1), null);
+        farm(3, 10, "disaster", NOV.plusDays(2), null);
+        sql("UPDATE t_plant_farm_records SET crop_id=111,loss_yield=20 WHERE id=1");
+        sql("UPDATE t_plant_farm_records SET crop_id=111,plant_id=2,loss_yield=10 WHERE id=2");
+        sql("UPDATE t_plant_farm_records SET crop_id=222,plant_id=1,loss_yield=10 WHERE id=3");
+
+        service.recalculate(DAY, DAY);
+        assertThat(service.query(DAY, DAY).monthly().getFirst().yieldCompletionPercent())
+            .as("种植 38：只有缺计划的旧灾害按日期匹配").isEqualByComparingTo("90.00");
+    }
+
+    @Test
+    void dailyPerformanceAppliesEachWeighingPercentageWithSettlementPrices() throws Exception {
+        sql("INSERT INTO t_plant_crop_info (id) VALUES (111)");
+        sql("INSERT INTO t_warehouse_product_info (id) VALUES (101),(102),(103)");
+        sql("INSERT INTO t_plant_crop_product (id,crop_id,product_id,perf_price) VALUES (1,111,101,3),(2,111,102,6)");
+        sql("""
+            INSERT INTO t_warehouse_handle_record
+                (id,crop_id,product_id,team_id,record_type,record_weight,perf_percent,handle_time)
+            VALUES (21,111,102,77,1,10,50,'2025-11-10 08:00:00'),
+                   (22,111,102,77,1,10,0,'2025-11-10 08:30:00'),
+                   (23,111,103,77,1,10,20,'2025-11-10 09:00:00'),
+                   (24,111,101,77,1,10,NULL,'2025-11-10 09:30:00')
+            """);
+        sql("INSERT INTO t_plant_work_people (team_id,user_id,join_date) VALUES (77,1,?),(77,2,?)",
+            DAY.minusDays(1), DAY.minusDays(1));
+
+        service.recalculate(DAY, DAY);
+        assertThat(service.query(DAY, DAY).daily().getFirst().harvestPerformancePerPersonEstimate())
+            .as("种植 25：(30 + 0 + 6 + 30) / 2").isEqualTo(new BigDecimal("33.00"));
+    }
+
+    @Test
+    void disasterYieldUsesRegisteredLossAndMissingActualStaysNull() throws Exception {
+        detail(1, 1, 10, 111, 10, 5, "2025-10-01", "2025-10-02", "2025-10-03", "2025-10-30");
+        detail(2, 1, 20, 222, 11, 5, "2025-11-01", "2025-11-02", "2025-11-03", "2025-11-04");
+        sql("UPDATE t_plant_plant_details SET expected_yield=100");
+        sql("UPDATE t_plant_plant_details SET actual_yield=40 WHERE id=1");
+        farm(1, 10, "disaster", OCT.plusDays(14), null);
+        sql("UPDATE t_plant_farm_records SET crop_id=111, plant_id=1, loss_rate=20, loss_yield=20");
+        service.recalculate(OCT, DAY);
+        var report = service.query(OCT, DAY);
+        assertThat(report.monthly().getFirst().disasterLossYield()).as("种植 52").isEqualByComparingTo("20");
+        assertThat(report.monthly().getFirst().yieldCompletionPercent()).as("种植 38").isEqualByComparingTo("50.00");
+        assertThat(report.monthly().getLast().yieldCompletionPercent()).as("种植 38 无实际产量").isNull();
+    }
+
+    @Test
+    void activityWeighingContributesOnlyOnItsBusinessDate() throws Exception {
+        sql("INSERT INTO t_warehouse_product_info (id) VALUES (101)");
+        sql("INSERT INTO t_plant_crop_product (id,crop_id,product_id,perf_price) VALUES (1,111,101,3)");
+        sql("""
+            INSERT INTO t_plant_plant_activity (id,crop_id,product_id,activity_date,pick_dest,daily_weight)
+            VALUES (1,111,101,?,'platform',5),(2,111,101,?,NULL,100)
+            """, DAY, DAY);
+        sql("INSERT INTO t_plant_activity_team (activity_id,team_id) VALUES (1,77),(2,77)");
+        sql("""
+            INSERT INTO t_plant_work_people (team_id,user_id,join_date)
+            VALUES (77,1,?),(78,2,?)
+            """, DAY.minusDays(1), DAY.minusDays(1));
+        service.recalculate(DAY.minusDays(1), DAY);
+        var report = service.query(DAY.minusDays(1), DAY);
+        assertThat(report.daily().getFirst().harvestPerformancePerPersonEstimate()).as("种植 25").isEqualByComparingTo("0");
+        assertThat(report.daily().getLast().harvestPerformancePerPersonEstimate()).as("种植 25").isEqualByComparingTo("15");
+    }
+
+    @Test
+    void activityWithoutDirectTeamsSharesWeightAcrossPlotCropHarvestTeams() throws Exception {
+        sql("INSERT INTO t_warehouse_product_info (id) VALUES (101)");
+        sql("INSERT INTO t_plant_crop_product (id,crop_id,product_id,perf_price) VALUES (1,111,101,3)");
+        detail(1, 1, 10, 111, 11, 1, DAY.toString(), null, null, null);
+        detail(2, 2, 10, 111, 11, 1, DAY.toString(), null, null, null);
+        detail(3, 3, 10, 222, 11, 1, DAY.toString(), null, null, null);
+        sql("""
+            INSERT INTO t_plant_details_team (detail_id,team_id,role)
+            VALUES (1,77,'harvest'),(2,77,'harvest'),(2,78,'harvest'),(2,80,'plant'),(3,81,'harvest')
+            """);
+        sql("""
+            INSERT INTO t_plant_plant_activity (id,plot_id,crop_id,product_id,activity_date,pick_dest,daily_weight)
+            VALUES (1,10,111,101,?,'raw',10),(2,10,111,101,?,'raw',10)
+            """, DAY, DAY.plusDays(1));
+        sql("INSERT INTO t_plant_activity_team (activity_id,team_id) VALUES (2,79)");
+        sql("""
+            INSERT INTO t_plant_work_people (team_id,user_id,join_date)
+            VALUES (77,1,?),(78,2,?),(79,3,?),(80,4,?),(81,5,?)
+            """, DAY, DAY, DAY, DAY, DAY);
+
+        service.recalculate(DAY, DAY.plusDays(1));
+        var daily = service.query(DAY, DAY.plusDays(1)).daily();
+        assertAll(
+            () -> assertThat(daily.getFirst().harvestPerformancePerPersonEstimate())
+                .as("种植 25：10 kg 由 2 个采收班组平摊").isEqualByComparingTo("15.00"),
+            () -> assertThat(daily.getLast().harvestPerformancePerPersonEstimate())
+                .as("种植 25：有直接班组时全部计入直接班组").isEqualByComparingTo("30.00"));
+        var shares = session.getMapper(ProductionIndicatorSourceMapper.class).selectDailyPerformance(TENANT, DAY, DAY.plusDays(1));
+        assertThat(shares).extracting(ProductionIndicatorSourceMapper.DailyPerformance::teamId)
+            .containsExactlyInAnyOrder(77L, 78L);
+        assertThat(shares).allSatisfy(share -> assertThat(share.amount()).isEqualByComparingTo("15.00"));
+    }
+
+    @Test
+    void annualIdleRestoresKnownPreAugustStartAndClosedHistory() throws Exception {
+        LocalDate july = LocalDate.of(2026, 7, 10);
+        LocalDate august = LocalDate.of(2026, 8, 20);
+        farm(1, 10, "rotation", july, null);
+        farm(3, 10, "rotation", july.plusDays(1), null); // 同一空闲段，重复退茬单不会再加一天
+        detail(1, 1, 10, 111, 8, 5, "2026-08-16", august.toString(), null, null);
+        farm(2, 20, "rotation", july, null);
+        sql("""
+            INSERT INTO t_plant_plot_idle_interval (id,plot_id,idle_started_on,idle_ended_on,start_source)
+            VALUES (20,20,'2026-08-01','2026-08-20','history_init')
+            """);
+        service.recalculate(august, august);
+        var year = service.query(august, august).annual().getFirst();
+        assertThat(year.idleDaysSum()).as("种植 55：回补至开工 37 天，已记录 41 天").isEqualTo(78);
+        assertThat(year.idleIntervalCount()).as("种植 55 两段").isEqualTo(2);
+        sql("DELETE FROM t_plant_plot_idle_interval");
+        sql("DELETE FROM t_plant_farm_records");
+        sql("""
+            INSERT INTO t_plant_plot_idle_interval (id,plot_id,idle_started_on,idle_ended_on,start_source)
+            VALUES (1,10,'2026-06-01','2026-06-02','rotation'),
+                   (2,10,'2026-06-04','2026-06-05','rotation'),
+                   (3,20,'2026-06-01','2026-06-03','rotation')
+            """);
+        service.recalculate(august, august);
+        assertThat(service.query(august, august).annual().getFirst().getIdleAverageDays())
+            .as("种植 55").isEqualTo(new BigDecimal("1.3"));
+    }
+
+    @Test
+    void sameDayRotationAndPlantStartWithRecordedZeroLengthAddsNoIdle() throws Exception {
+        LocalDate rotation = LocalDate.of(2026, 9, 1);
+        farm(1, 10, "rotation", rotation, null);
+        detail(1, 1, 10, 111, 9, 1, "2026-09-01", "2026-09-05", null, null);
+        sql("""
+            INSERT INTO t_plant_plot_idle_interval (id,plot_id,idle_started_on,idle_ended_on,start_source,end_source)
+            VALUES (1,10,'2026-09-01','2026-09-01','rotation','plant_start')
+            """);
+        LocalDate reportDay = rotation.plusDays(9);
+        service.recalculate(reportDay, reportDay);
+        var year = service.query(reportDay, reportDay).annual().getFirst();
+        assertAll(
+            () -> assertThat(year.idleDaysSum()).as("种植 55").isZero(),
+            () -> assertThat(year.idleIntervalCount()).as("种植 55").isZero());
+    }
+
+    @Test
+    void idleBackfillRespectsExistingIntervalsAndFallsBackToCompletion() throws Exception {
+        LocalDate rotation = LocalDate.of(2026, 9, 1);
+        farm(1, 10, "rotation", rotation, null);
+        farm(2, 20, "rotation", rotation, null);
+        farm(3, 30, "rotation", rotation, null);
+        farm(4, 40, "rotation", rotation, null);
+        detail(1, 1, 10, 111, 9, 1, "2026-09-05", "2026-09-07", null, null);
+        detail(2, 1, 20, 111, 9, 1, "2026-09-05", "2026-09-07", null, null);
+        detail(3, 1, 30, 111, 9, 1, null, "2026-09-04", null, null); // 3 天
+        detail(4, 1, 40, 111, 9, 1, "2026-09-03", null, null, null); // 开工未完工，2 天
+        sql("UPDATE t_plant_plant_details SET plant_status='ongoing' WHERE id=4");
+        sql("""
+            INSERT INTO t_plant_plot_idle_interval (id,plot_id,idle_started_on,idle_ended_on,start_source,end_source)
+            VALUES (1,10,'2026-09-01','2026-09-01','rotation','plant_start'),
+                   (2,20,'2026-09-02','2026-09-02','rotation','plant_start')
+            """);
+        LocalDate reportDay = rotation.plusDays(9);
+        service.recalculate(reportDay, reportDay);
+        var year = service.query(reportDay, reportDay).annual().getFirst();
+        assertAll(
+            () -> assertThat(year.idleDaysSum()).as("种植 55").isEqualTo(5),
+            () -> assertThat(year.idleIntervalCount()).as("种植 55").isEqualTo(2));
+    }
+
+    @Test
+    void historicalIdleEndsWhenTheTargetPlotReceivesATransplant() throws Exception {
+        LocalDate september = LocalDate.of(2026, 9, 1);
+        farm(1, 50, "rotation", september, null);
+        detail(1, 1, 50, 111, 8, 1, "2026-08-01", "2026-08-05", "2026-09-20", "2026-10-10");
+        sql("UPDATE t_plant_plant_details SET transplant_adjusted=1 WHERE id=1");
+        farm(2, 10, "transplant", september.plusDays(9), null);
+        sql("UPDATE t_plant_farm_records SET plant_id=1,crop_id=111,transplant_plot=50 WHERE id=2");
+        farm(3, 50, "rotation", LocalDate.of(2026, 10, 15), null);
+        detail(2, 2, 50, 222, 10, 1, "2026-10-20", "2026-10-22", null, null);
+
+        LocalDate reportDay = LocalDate.of(2026, 11, 1);
+        service.recalculate(reportDay, reportDay);
+        var year = service.query(reportDay, reportDay).annual().getFirst();
+        assertAll(
+            () -> assertThat(year.idleDaysSum()).as("种植 55：移入前 9 天，再种前 5 天").isEqualTo(14),
+            () -> assertThat(year.idleIntervalCount()).as("种植 55").isEqualTo(2),
+            () -> assertThat(year.getIdleAverageDays()).as("种植 55").isEqualByComparingTo("7.0"));
+
+        sql("UPDATE t_plant_plant_details SET begin_actualdate='2026-09-02' WHERE id=1");
+        service.recalculate(reportDay, reportDay);
+        assertThat(service.query(reportDay, reportDay).annual().getFirst().idleDaysSum())
+            .as("种植 55：目标明细沿用的育苗开工日也可能晚于退茬").isEqualTo(14);
+    }
+
+    private void dispatch(int id, int plot, int crop, int product, String stamp, String weight, boolean direct)
+        throws Exception {
+        sql("""
+            INSERT INTO t_warehouse_vegetable_handle (id, planting_record_id, send_platform_weight, picked_weight, is_weighed)
+            VALUES (?,?,?,?,?)
+            """, id, direct ? null : id, weight, direct ? 0 : weight, direct ? 2 : 1);
+        sql("""
+            INSERT INTO t_warehouse_handle_record
+                (id,handle_id,plot_id,crop_id,product_id,record_type,handle_target,record_weight,handle_time)
+            VALUES (?,?,?,?,?,2,2,?,?)
+            """, id, id, plot, crop, product, weight, stamp);
+    }
+
+    private void receipt(int id, int plot, int crop, int product, String stamp, String weight, String loss) throws Exception {
+        flow(id, plot, stamp, "veg_receive_in", weight, null);
+        sql("UPDATE t_warehouse_stock_flow SET flow_no=?,product_id=? WHERE id=?", "dock-" + id, product, id);
+        sql("""
+            INSERT INTO t_warehouse_veg_receive
+                (id,receive_no,receive_type,plot_id,crop_id,product_id,is_finish,receive_time,weight,loss_weight)
+            VALUES (?,?,1,?,?,?,?,?,?,?)
+            """, id, "dock-" + id, plot, crop, product, loss == null ? 2 : 1, stamp, weight, loss);
     }
 
     private List<String> idleIntervalsInDatabase() throws Exception {

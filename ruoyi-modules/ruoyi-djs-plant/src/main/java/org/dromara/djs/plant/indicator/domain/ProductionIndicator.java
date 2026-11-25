@@ -5,7 +5,7 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.List;
 
-/** V1.1 种植生产指标持久化行及查询返回。 */
+/** 种植生产指标持久化行及查询返回。 */
 public final class ProductionIndicator {
 
     private ProductionIndicator() {
@@ -18,11 +18,11 @@ public final class ProductionIndicator {
         int harvestInboundCropCount, int harvestInboundPlotCount,
         int harvestCropUnmatchedCount, int rotationPlotCount, BigDecimal rotationArea,
         int rotationWaitDaysSum, int rotationWaitValidCount, int rotationUnmatchedCount,
-        int disasterPlotCount
+        int disasterPlotCount, BigDecimal harvestPerformancePerPersonEstimate, int harvestDockUnmatchedCount
     ) {
 
         public BigDecimal getRotationWaitAverageDays() {
-            return divide(rotationWaitDaysSum, rotationWaitValidCount);
+            return divide(BigDecimal.valueOf(rotationWaitDaysSum), rotationPlotCount, 1);
         }
     }
 
@@ -33,7 +33,9 @@ public final class ProductionIndicator {
         BigDecimal harvestInboundWeight, int harvestInboundCropCount,
         int harvestInboundPlotCount, int harvestCropUnmatchedCount, int rotationPlotCount,
         BigDecimal rotationArea, int rotationUnmatchedCount,
-        BigDecimal harvestPerformanceAmount
+        BigDecimal harvestPerformanceAmount, BigDecimal yieldCompletionPercent, BigDecimal rotationAverageDays,
+        int disasterPlotCount, BigDecimal harvestPerformancePerPerson, BigDecimal disasterLossArea,
+        BigDecimal disasterLossYield, int harvestDockUnmatchedCount
     ) {
 
         public BigDecimal getPlantPlanCompletionPercent() {
@@ -45,20 +47,22 @@ public final class ProductionIndicator {
         int statYear, BigDecimal plantedArea, int plantPlanCount, int plantPlanCompletedCount,
         BigDecimal harvestInboundWeight, int disasterRecordCount, int rotationPlotCount,
         BigDecimal harvestPerformanceAmount, String performanceThroughMonth,
-        long idleDaysSum, int idleIntervalCount
+        long idleDaysSum, int idleIntervalCount, BigDecimal rotationAverageDays,
+        BigDecimal harvestPerformancePerPerson, int harvestDockUnmatchedCount
     ) {
 
         public BigDecimal getPlantPlanCompletionPercent() {
             return divide(100L * plantPlanCompletedCount, plantPlanCount);
         }
         public BigDecimal getIdleAverageDays() {
-            return divide(idleDaysSum, idleIntervalCount);
+            return divide(BigDecimal.valueOf(idleDaysSum), idleIntervalCount, 1);
         }
 
         public Annual withIdleTotals(IdleTotals totals) {
             return new Annual(statYear, plantedArea, plantPlanCount, plantPlanCompletedCount, harvestInboundWeight,
                 disasterRecordCount, rotationPlotCount, harvestPerformanceAmount, performanceThroughMonth,
-                totals.days(), totals.intervals());
+                totals.days(), totals.intervals(), rotationAverageDays, harvestPerformancePerPerson,
+                harvestDockUnmatchedCount);
         }
     }
 
@@ -69,7 +73,11 @@ public final class ProductionIndicator {
     }
 
     private static BigDecimal divide(long numerator, int denominator) {
-        return denominator == 0 ? BigDecimal.ZERO
-            : BigDecimal.valueOf(numerator).divide(BigDecimal.valueOf(denominator), 2, RoundingMode.HALF_UP);
+        return divide(BigDecimal.valueOf(numerator), denominator, 2);
+    }
+
+    public static BigDecimal divide(BigDecimal numerator, int denominator, int scale) {
+        return denominator == 0 ? BigDecimal.ZERO.setScale(scale)
+            : numerator.divide(BigDecimal.valueOf(denominator), scale, RoundingMode.HALF_UP);
     }
 }

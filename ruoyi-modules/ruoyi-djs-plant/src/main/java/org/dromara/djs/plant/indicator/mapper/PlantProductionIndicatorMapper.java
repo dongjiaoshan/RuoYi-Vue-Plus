@@ -29,7 +29,8 @@ public interface PlantProductionIndicatorMapper {
             farm_work_area, harvest_finished_plot_count, harvest_inbound_weight,
             harvest_inbound_crop_count, harvest_inbound_plot_count, harvest_crop_unmatched_count,
             rotation_plot_count, rotation_area, rotation_wait_days_sum, rotation_wait_valid_count,
-            rotation_unmatched_count, disaster_plot_count, create_time, update_time
+            rotation_unmatched_count, disaster_plot_count, harvest_performance_per_person_estimate,
+            harvest_dock_unmatched_count, create_time, update_time
         ) VALUES (
             #{id}, #{row.statDate}, #{row.plantedArea}, #{row.plantedCropCount},
             #{row.plantedPlotCount}, #{row.farmWorkCount}, #{row.farmWorkArea},
@@ -37,7 +38,8 @@ public interface PlantProductionIndicatorMapper {
             #{row.harvestInboundCropCount}, #{row.harvestInboundPlotCount},
             #{row.harvestCropUnmatchedCount}, #{row.rotationPlotCount}, #{row.rotationArea},
             #{row.rotationWaitDaysSum}, #{row.rotationWaitValidCount}, #{row.rotationUnmatchedCount},
-            #{row.disasterPlotCount}, NOW(), NOW()
+            #{row.disasterPlotCount}, #{row.harvestPerformancePerPersonEstimate},
+            #{row.harvestDockUnmatchedCount}, NOW(), NOW()
         )
         ON DUPLICATE KEY UPDATE
             planted_area = #{row.plantedArea},
@@ -56,6 +58,8 @@ public interface PlantProductionIndicatorMapper {
             rotation_wait_valid_count = #{row.rotationWaitValidCount},
             rotation_unmatched_count = #{row.rotationUnmatchedCount},
             disaster_plot_count = #{row.disasterPlotCount},
+            harvest_performance_per_person_estimate = #{row.harvestPerformancePerPersonEstimate},
+            harvest_dock_unmatched_count = #{row.harvestDockUnmatchedCount},
             update_time = NOW()
         """)
     void upsertDaily(@Param("id") long id, @Param("row") Daily row);
@@ -66,7 +70,8 @@ public interface PlantProductionIndicatorMapper {
             farm_work_area, harvest_finished_plot_count, harvest_inbound_weight,
             harvest_inbound_crop_count, harvest_inbound_plot_count, harvest_crop_unmatched_count,
             rotation_plot_count, rotation_area, rotation_wait_days_sum, rotation_wait_valid_count,
-            rotation_unmatched_count, disaster_plot_count
+            rotation_unmatched_count, disaster_plot_count, harvest_performance_per_person_estimate,
+            harvest_dock_unmatched_count
           FROM t_plant_production_indicator_daily
          WHERE tenant_id = #{tenantId} AND del_flag = '0' AND del_unique = 0
            AND stat_date BETWEEN #{from} AND #{to}
@@ -81,7 +86,9 @@ public interface PlantProductionIndicatorMapper {
             plant_plan_completed_count, farm_work_count, farm_work_area, harvest_finished_plot_count,
             harvest_inbound_weight, harvest_inbound_crop_count, harvest_inbound_plot_count,
             harvest_crop_unmatched_count, rotation_plot_count, rotation_area,
-            rotation_unmatched_count, harvest_performance_amount, create_time, update_time
+            rotation_unmatched_count, harvest_performance_amount, yield_completion_percent, rotation_average_days,
+            disaster_plot_count, harvest_performance_per_person, disaster_loss_area, disaster_loss_yield,
+            harvest_dock_unmatched_count, create_time, update_time
         ) VALUES (
             #{id}, #{row.statMonth}, #{row.plantedArea}, #{row.plantedCropCount},
             #{row.plantedPlotCount}, #{row.plantPlanCount}, #{row.plantPlanCompletedCount},
@@ -89,7 +96,9 @@ public interface PlantProductionIndicatorMapper {
             #{row.harvestInboundWeight}, #{row.harvestInboundCropCount},
             #{row.harvestInboundPlotCount}, #{row.harvestCropUnmatchedCount},
             #{row.rotationPlotCount}, #{row.rotationArea}, #{row.rotationUnmatchedCount},
-            #{row.harvestPerformanceAmount}, NOW(), NOW()
+            #{row.harvestPerformanceAmount}, #{row.yieldCompletionPercent,jdbcType=DECIMAL}, #{row.rotationAverageDays},
+            #{row.disasterPlotCount}, #{row.harvestPerformancePerPerson}, #{row.disasterLossArea}, #{row.disasterLossYield},
+            #{row.harvestDockUnmatchedCount}, NOW(), NOW()
         )
         ON DUPLICATE KEY UPDATE
             planted_area = #{row.plantedArea},
@@ -108,6 +117,13 @@ public interface PlantProductionIndicatorMapper {
             rotation_area = #{row.rotationArea},
             rotation_unmatched_count = #{row.rotationUnmatchedCount},
             harvest_performance_amount = #{row.harvestPerformanceAmount},
+            yield_completion_percent = #{row.yieldCompletionPercent,jdbcType=DECIMAL},
+            rotation_average_days = #{row.rotationAverageDays},
+            disaster_plot_count = #{row.disasterPlotCount},
+            harvest_performance_per_person = #{row.harvestPerformancePerPerson},
+            disaster_loss_area = #{row.disasterLossArea},
+            disaster_loss_yield = #{row.disasterLossYield},
+            harvest_dock_unmatched_count = #{row.harvestDockUnmatchedCount},
             update_time = NOW()
         """)
     void upsertMonthly(@Param("id") long id, @Param("row") Monthly row);
@@ -118,7 +134,9 @@ public interface PlantProductionIndicatorMapper {
             plant_plan_completed_count, farm_work_count, farm_work_area, harvest_finished_plot_count,
             harvest_inbound_weight, harvest_inbound_crop_count, harvest_inbound_plot_count,
             harvest_crop_unmatched_count, rotation_plot_count, rotation_area,
-            rotation_unmatched_count, harvest_performance_amount
+            rotation_unmatched_count, harvest_performance_amount, yield_completion_percent, rotation_average_days,
+            disaster_plot_count, harvest_performance_per_person, disaster_loss_area, disaster_loss_yield,
+            harvest_dock_unmatched_count
           FROM t_plant_production_indicator_monthly
          WHERE tenant_id = #{tenantId} AND del_flag = '0' AND del_unique = 0
            AND stat_month BETWEEN #{from} AND #{to}
@@ -131,12 +149,14 @@ public interface PlantProductionIndicatorMapper {
         INSERT INTO t_plant_production_indicator_annual (
             id, stat_year, planted_area, plant_plan_count, plant_plan_completed_count,
             harvest_inbound_weight, disaster_record_count, rotation_plot_count,
-            harvest_performance_amount, performance_through_month, idle_days_sum, idle_interval_count, create_time, update_time
+            harvest_performance_amount, performance_through_month, idle_days_sum, idle_interval_count,
+            rotation_average_days, harvest_performance_per_person, harvest_dock_unmatched_count, create_time, update_time
         ) VALUES (
             #{id}, #{row.statYear}, #{row.plantedArea}, #{row.plantPlanCount},
             #{row.plantPlanCompletedCount}, #{row.harvestInboundWeight}, #{row.disasterRecordCount},
             #{row.rotationPlotCount}, #{row.harvestPerformanceAmount},
-            #{row.performanceThroughMonth}, #{row.idleDaysSum}, #{row.idleIntervalCount}, NOW(), NOW()
+            #{row.performanceThroughMonth}, #{row.idleDaysSum}, #{row.idleIntervalCount},
+            #{row.rotationAverageDays}, #{row.harvestPerformancePerPerson}, #{row.harvestDockUnmatchedCount}, NOW(), NOW()
         )
         ON DUPLICATE KEY UPDATE
             planted_area = #{row.plantedArea},
@@ -149,6 +169,9 @@ public interface PlantProductionIndicatorMapper {
             performance_through_month = #{row.performanceThroughMonth},
             idle_days_sum = #{row.idleDaysSum},
             idle_interval_count = #{row.idleIntervalCount},
+            rotation_average_days = #{row.rotationAverageDays},
+            harvest_performance_per_person = #{row.harvestPerformancePerPerson},
+            harvest_dock_unmatched_count = #{row.harvestDockUnmatchedCount},
             update_time = NOW()
         """)
     void upsertAnnual(@Param("id") long id, @Param("row") Annual row);
@@ -157,7 +180,8 @@ public interface PlantProductionIndicatorMapper {
         SELECT
             stat_year, planted_area, plant_plan_count, plant_plan_completed_count,
             harvest_inbound_weight, disaster_record_count, rotation_plot_count,
-            harvest_performance_amount, performance_through_month, idle_days_sum, idle_interval_count
+            harvest_performance_amount, performance_through_month, idle_days_sum, idle_interval_count,
+            rotation_average_days, harvest_performance_per_person, harvest_dock_unmatched_count
           FROM t_plant_production_indicator_annual
          WHERE tenant_id = #{tenantId} AND del_flag = '0' AND del_unique = 0
            AND stat_year BETWEEN #{from} AND #{to}

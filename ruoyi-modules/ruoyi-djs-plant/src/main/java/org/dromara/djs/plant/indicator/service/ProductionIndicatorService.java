@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.common.job.DjsJobRunner;
+import org.dromara.djs.plant.indicator.domain.ProductionIndicator.IdleTotals;
 import org.dromara.djs.plant.indicator.domain.ProductionIndicator.Report;
 import org.dromara.djs.plant.indicator.mapper.PlantProductionIndicatorMapper;
 import org.dromara.djs.plant.indicator.mapper.ProductionIndicatorSourceMapper;
@@ -57,6 +58,10 @@ public class ProductionIndicatorService {
             source.selectInbound(tenantId, yearStart, until),
             source.selectPerformance(tenantId, YearMonth.from(yearStart).toString(),
                 YearMonth.from(until.minusDays(1)).toString()));
+        calculator.addDockReceipts(DockFirstInbound.match(source.selectDockDispatches(tenantId, until),
+            source.selectDockReceipts(tenantId, until), yearStart));
+        calculator.addDailyPerformance(source.selectDailyPerformance(tenantId, first, last.plusDays(1)),
+            source.selectTeamMembers(tenantId, yearStart, until));
         for (LocalDate date = first; !date.isAfter(last); date = date.plusDays(1)) {
             indicators.upsertDaily(IdWorker.getId(), calculator.daily(date));
         }
@@ -64,7 +69,7 @@ public class ProductionIndicatorService {
         for (YearMonth month = YearMonth.from(first); !month.isAfter(lastMonth); month = month.plusMonths(1)) {
             indicators.upsertMonthly(IdWorker.getId(), calculator.monthly(month));
         }
-        var idle = source.selectIdleTotals(tenantId, yearStart, until);
+        var idle = idleTotals(tenantId, yearStart, until);
         indicators.upsertAnnual(IdWorker.getId(), calculator.annual(idle));
     }
 
@@ -78,11 +83,16 @@ public class ProductionIndicatorService {
         // 本年空闲天数可查询到所选报表日，其余指标读取已回刷快照。
         var annual = indicators.selectAnnual(tenantId, from.getYear(), to.getYear()).stream()
             .map(row -> row.statYear() == today.getYear()
-                ? row.withIdleTotals(source.selectIdleTotals(tenantId, today.withDayOfYear(1), reportDay.plusDays(1)))
+                ? row.withIdleTotals(idleTotals(tenantId, today.withDayOfYear(1), reportDay.plusDays(1)))
                 : row)
             .toList();
         return new Report(indicators.selectDaily(tenantId, from, to),
             indicators.selectMonthly(tenantId, from.withDayOfMonth(1), to.withDayOfMonth(1)), annual);
+    }
+
+    private IdleTotals idleTotals(String tenantId, LocalDate from, LocalDate until) {
+        return PlantIdleHistory.calculate(from, until, source.selectIdleIntervals(tenantId),
+            source.selectIdleTransitions(tenantId));
     }
 
     private static String currentTenant() {
