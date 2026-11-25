@@ -18,7 +18,7 @@ import java.util.List;
  * 本接口只负责门店域专属的「创建即提交」语义——门店发起的需求跳过 DRAFT，由 warehouse
  * {@code insertByBo} 直接落 {@code SUBMITTED}（doc/10 §4.F-STR-01 业务规则）。</p>
  *
- * <p>列表 / 详情 / 取消 / 指定猪只直接由 controller delegate warehouse service，不在本接口重复声明。</p>
+ * <p>门店查询在仓库派生状态后回填确认收货份数。</p>
  *
  * @author djs
  * @since STR-DEMAND-001
@@ -40,6 +40,9 @@ public interface IStoreDemandService {
      * @return 门店端需求分页（含 {@code damagedCount}）
      */
     TableDataInfo<DemandManageVo> queryStoreList(DemandManageQuery query, PageQuery pageQuery);
+
+    /** 门店需求详情，状态由仓库派生，果蔬到店量按确认收货份数。 */
+    DemandManageVo queryStoreDetail(Long id);
 
     /**
      * 门店发起需求：新增即提交。

@@ -9,6 +9,8 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.djs.common.job.DjsJobRunner;
+import org.dromara.djs.common.store.context.StoreContext;
 import org.dromara.djs.store.ledger.domain.StoreDailyLedger;
 import org.dromara.djs.store.ledger.mapper.StoreDailyLedgerMapper;
 import org.dromara.djs.store.loss.domain.StoreLossRecord;
@@ -17,11 +19,14 @@ import org.dromara.djs.store.loss.domain.vo.StoreLossRecordVo;
 import org.dromara.djs.store.loss.domain.vo.WhiteBarSplitLossVo;
 import org.dromara.djs.store.loss.mapper.StoreLossRecordMapper;
 import org.dromara.djs.store.loss.service.IStoreLossService;
+import org.dromara.djs.store.stat.domain.StoreProductionIndicatorDaily;
+import org.dromara.djs.store.stat.mapper.StoreProductionIndicatorMapper;
+import org.dromara.djs.store.stat.mapper.StoreProductionIndicatorMapper.ReturnTotals;
+import org.dromara.djs.store.stat.mapper.StoreProductionIndicatorMapper.StoreQuantity;
+import org.dromara.djs.store.stat.mapper.StoreProductionIndicatorMapper.VegetableReceiptTotals;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
-import org.dromara.djs.warehouse.shipment.domain.Shipment;
-import org.dromara.djs.warehouse.shipment.mapper.ShipmentMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,9 +42,9 @@ import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 /**
- * 门店损耗记录聚合 Service 实现（DENGBO-R15）。
+ * 门店损耗和生产指标的逐日聚合（DENGBO-R15、STR-STAT-V11）。
  *
- * <p>每天凌晨定时任务把 T-1（昨日，已完结）两类损耗落盘到 {@code t_store_loss_record}
+ * <p>定时任务回刷最近 31 个已完结日，两类损耗落盘到 {@code t_store_loss_record}
  * （幂等：先物理删该日旧行再重插；admin 手动重跑传显式日期）：</p>
  * <ol>
  *   <li><b>门店日损耗</b>（{@code store_daily_loss}）：读 {@code t_store_daily_ledger} 当日各行 {@code loss_qty}
@@ -47,7 +52,7 @@ import java.util.stream.Collectors;
  *       <b>原样搬负值</b>（盘盈也搬，不钳 0）。</li>
  *   <li><b>白条分割损耗</b>（{@code white_bar_split_loss}）：按门店汇总一行（{@code product_id}=哨兵 0），
  *       {@code loss_qty} = max(0, 白条到店重 − 白条分割产品总重)；当天无白条到店（到店重=0）则不记录。
- *       另存 {@code white_bar_arrive_weight}（当日该店 {@code white_bar} 发货 {@code ship_quantity} 之和）
+ *       另存 {@code white_bar_arrive_weight}（按 D-0210 / D-0214 归日的白条重量）
  *       与 {@code white_bar_split_weight}（白条在门店分割下来的产品总重 = max(0, 当日该店盘点台账中
  *       {@code djs_white_bar_return_product} 字典各白条部位的 {@code inbound_qty} 入库量之和
  *       − 材料外售同原材料成品当日到店重)）。</li>
@@ -92,7 +97,7 @@ public class StoreLossServiceImpl implements IStoreLossService {
 
     private final StoreLossRecordMapper baseMapper;
     private final StoreDailyLedgerMapper storeDailyLedgerMapper;
-    private final ShipmentMapper shipmentMapper;
+    private final StoreProductionIndicatorMapper indicatorMapper;
     private final ProductInfoMapper productInfoMapper;
     private final IProductProductionService productProductionService;
     private final DictService dictService;
@@ -100,18 +105,77 @@ public class StoreLossServiceImpl implements IStoreLossService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void aggregate(LocalDate targetDate) {
-        // 默认 T-1：定时任务凌晨 1:30 触发，聚合的是已完结的昨日（当日凌晨两数据源必然为空）。
-        // admin 手动重跑走 DjsJobRegistry 传显式日期，不受此默认影响。
         LocalDate date = targetDate == null ? LocalDate.now(ZONE_SHANGHAI).minusDays(1) : targetDate;
+        StoreContext.ignore(() -> rebuildDay(date));
+    }
 
-        // 幂等：先物理删该日旧行再重插。唯一键 (tenant_id, store_id, product_id, loss_date, loss_type)
-        // 不含 del_flag，走 @TableLogic 软删会残留旧行占键、重跑重插 Duplicate entry，故物理删该日彻底清空。
-        String tenantId = TenantHelper.getTenantId();
+    private void rebuildDay(LocalDate date) {
+        String tenantId = currentTenant();
+        Set<Long> stores = new TreeSet<>();
+        indicatorMapper.lockStores(tenantId).stream()
+            .filter(store -> "0".equals(store.delFlag()))
+            .forEach(store -> stores.add(store.id()));
+
+        List<StoreDailyLedger> ledgers = storeDailyLedgerMapper.selectList(
+            new LambdaQueryWrapper<StoreDailyLedger>().eq(StoreDailyLedger::getLedgerDate, date));
+        Map<Long, BigDecimal> arrivals = quantities(indicatorMapper.selectWhiteBarReceipts(tenantId, date, null));
+        Map<Long, VegetableReceiptTotals> vegetableReceipts = indicatorMapper.selectVegetableReceipts(tenantId, date)
+            .stream().collect(Collectors.toMap(VegetableReceiptTotals::storeId, row -> row));
+        Map<Long, ReturnTotals> returns = indicatorMapper.selectReturns(tenantId, date).stream()
+            .collect(Collectors.toMap(ReturnTotals::storeId, row -> row));
+        Set<Long> cutProductIds = resolveWhiteBarReturnProductIds();
+
+        // 有历史流水的门店也参与重算。只有到店或存在白条部位台账时才读取分割及外售数据。
+        Set<Long> splitStores = new TreeSet<>(arrivals.keySet());
+        for (StoreDailyLedger ledger : ledgers) {
+            if (ledger.getStoreId() != null && cutProductIds.contains(ledger.getProductId())) {
+                splitStores.add(ledger.getStoreId());
+            }
+        }
+        stores.addAll(splitStores);
+        stores.addAll(vegetableReceipts.keySet());
+        stores.addAll(returns.keySet());
+
+        // 同一事务清理陈旧标记和归属日，逐店日快照与两类损耗同时提交。
+        indicatorMapper.deleteDay(tenantId, date);
         baseMapper.physicalDeleteByDate(tenantId, date);
+        int dailyRows = aggregateStoreDailyLoss(date, ledgers);
+        for (Long storeId : stores) {
+            BigDecimal arrive = nz(arrivals.get(storeId));
+            BigDecimal split = splitStores.contains(storeId)
+                ? sumWhiteBarSplitWeight(storeId, date, cutProductIds) : BigDecimal.ZERO;
+            BigDecimal loss = splitLoss(arrive, split);
+            writeIndicator(date, storeId, arrive, split, loss, vegetableReceipts.get(storeId), returns.get(storeId));
+            if (arrive.signum() > 0) {
+                writeWhiteBarSplitLoss(date, storeId, arrive, split, loss);
+            }
+        }
+        log.info("[STORE-LOSS] aggregate date={} 门店日损耗={}行 指标={}店", date, dailyRows, stores.size());
+    }
 
-        int dailyRows = aggregateStoreDailyLoss(date);
-        int whiteBarRows = aggregateWhiteBarSplitLoss(date);
-        log.info("[STORE-LOSS] aggregate date={} 门店日损耗={}行 白条分割损耗={}行", date, dailyRows, whiteBarRows);
+    private void writeIndicator(LocalDate date, Long storeId, BigDecimal arrive, BigDecimal split, BigDecimal loss,
+                                VegetableReceiptTotals vegetables, ReturnTotals returns) {
+        StoreProductionIndicatorDaily row = new StoreProductionIndicatorDaily();
+        row.setStoreId(storeId);
+        row.setStatDate(date);
+        row.setWhiteBarReceivedWeight(arrive);
+        row.setSplitProductWeight(split);
+        row.setSplitLossWeight(loss);
+        row.setVegReceivedPortionCount(vegetables == null ? BigDecimal.ZERO : nz(vegetables.portions()));
+        row.setVegReceiveKgWeight(vegetables == null ? BigDecimal.ZERO : nz(vegetables.kgWeight()));
+        row.setPorkReturnWeightKg(returns == null ? BigDecimal.ZERO : nz(returns.porkWeight()));
+        row.setVegReturnPortionCount(returns == null ? BigDecimal.ZERO : nz(returns.vegPortions()));
+        row.setVegReturnKgWeight(returns == null ? BigDecimal.ZERO : nz(returns.vegKgWeight()));
+        indicatorMapper.insert(row);
+    }
+
+    private static Map<Long, BigDecimal> quantities(List<StoreQuantity> rows) {
+        return rows.stream().collect(Collectors.toMap(StoreQuantity::storeId, row -> nz(row.quantity())));
+    }
+
+    private static String currentTenant() {
+        String tenantId = TenantHelper.getTenantId();
+        return tenantId == null ? DjsJobRunner.DEFAULT_TENANT : tenantId;
     }
 
     @Override
@@ -176,8 +240,8 @@ public class StoreLossServiceImpl implements IStoreLossService {
             return vo;
         }
         LocalDate d = date == null ? LocalDate.now(ZONE_SHANGHAI) : date;
-        // 到店重：当日该店 white_bar 发货 ship_quantity 之和。
-        BigDecimal arrive = nz(sumWhiteBarArriveWeightByStore(d).get(storeId));
+        BigDecimal arrive = nz(quantities(indicatorMapper.selectWhiteBarReceipts(currentTenant(), d, storeId))
+            .get(storeId));
         vo.setArriveWeight(arrive);
         if (arrive.signum() <= 0) {
             return vo;   // 无白条到店：分割/损耗均 0，前端据 arriveWeight=0 隐藏
@@ -187,8 +251,7 @@ public class StoreLossServiceImpl implements IStoreLossService {
         BigDecimal splitTotal = sumWhiteBarSplitWeight(storeId, d, cutProductIds);
         vo.setSplitTotalWeight(splitTotal);
         // 白条分割损耗 = max(0, 白条到店重 − 白条分割产品总重)。
-        BigDecimal loss = arrive.subtract(splitTotal);
-        vo.setSplitLoss(loss.signum() < 0 ? BigDecimal.ZERO : loss);
+        vo.setSplitLoss(splitLoss(arrive, splitTotal));
         return vo;
     }
 
@@ -246,10 +309,7 @@ public class StoreLossServiceImpl implements IStoreLossService {
      *
      * @return 落盘行数
      */
-    private int aggregateStoreDailyLoss(LocalDate date) {
-        List<StoreDailyLedger> ledgers = storeDailyLedgerMapper.selectList(
-            new LambdaQueryWrapper<StoreDailyLedger>()
-                .eq(StoreDailyLedger::getLedgerDate, date));
+    private int aggregateStoreDailyLoss(LocalDate date, List<StoreDailyLedger> ledgers) {
         if (ledgers.isEmpty()) {
             return 0;
         }
@@ -274,73 +334,26 @@ public class StoreLossServiceImpl implements IStoreLossService {
         return rows;
     }
 
-    /**
-     * 白条分割损耗：按门店汇总一行。门店集 = 当日有白条发货（到店）的门店；
-     * {@code 白条分割产品总重 = max(0, 当日该店盘点各白条部位入库量之和 − 材料外售同原材料成品当日到店重)}
-     * （白条在门店分割下来的产品总重，与实时口径 {@link #getWhiteBarSplitLoss} 同源）；
-     * {@code loss = max(0, 到店重 − 白条分割产品总重)}；到店重=0 的门店不记录。
-     *
-     * @return 落盘行数
-     */
-    private int aggregateWhiteBarSplitLoss(LocalDate date) {
-        // 当日各店白条到店重量（white_bar 发货 ship_quantity 之和），门店集由此派生。
-        Map<Long, BigDecimal> arriveByStore = sumWhiteBarArriveWeightByStore(date);
-        if (arriveByStore.isEmpty()) {
-            return 0;
-        }
-        // 白条部位产品集（白条退回字典 product_id 雪花）= 白条在门店分割下来的部位品；空则分割产品总重记 0。
-        Set<Long> cutProductIds = resolveWhiteBarReturnProductIds();
+    private void writeWhiteBarSplitLoss(LocalDate date, Long storeId, BigDecimal arrive,
+                                        BigDecimal split, BigDecimal loss) {
+        StoreLossRecord record = new StoreLossRecord();
+        record.setStoreId(storeId);
+        record.setProductId(SENTINEL_PRODUCT_ID);
+        record.setProductUnit(UNIT_KG);
+        record.setLossQty(loss);
+        record.setLossDate(date);
+        record.setLossType(LOSS_TYPE_WHITE_BAR_SPLIT);
+        record.setWhiteBarArriveWeight(arrive);
+        record.setWhiteBarSplitWeight(split);
+        baseMapper.insert(record);
+    }
 
-        int rows = 0;
-        for (Map.Entry<Long, BigDecimal> e : arriveByStore.entrySet()) {
-            Long storeId = e.getKey();
-            BigDecimal arrive = nz(e.getValue());
-            if (arrive.signum() <= 0) {
-                continue;   // 到店重 ≤ 0 视为无白条到店，不记录
-            }
-            // 白条分割产品总重 = 各白条部位入库量之和 − 材料外售同原材料成品到店重；损耗 = max(0, 到店 − 分割产品总重)。
-            BigDecimal splitTotal = sumWhiteBarSplitWeight(storeId, date, cutProductIds);
-            BigDecimal loss = arrive.subtract(splitTotal);
-            if (loss.signum() < 0) {
-                loss = BigDecimal.ZERO;   // 钳 0
-            }
-            StoreLossRecord record = new StoreLossRecord();
-            record.setStoreId(storeId);
-            record.setProductId(SENTINEL_PRODUCT_ID);
-            record.setProductUnit(UNIT_KG);   // 哨兵行无真实产品可回填，单位固定 kg（重量口径）
-            record.setLossQty(loss);
-            record.setLossDate(date);
-            record.setLossType(LOSS_TYPE_WHITE_BAR_SPLIT);
-            record.setWhiteBarArriveWeight(arrive);
-            record.setWhiteBarSplitWeight(splitTotal);
-            baseMapper.insert(record);
-            rows++;
-        }
-        return rows;
+    private static BigDecimal splitLoss(BigDecimal arrive, BigDecimal splitWeight) {
+        return arrive.subtract(splitWeight).max(BigDecimal.ZERO);
     }
 
     /**
-     * 当日各门店白条到店重量：{@code t_warehouse_shipment} shipDate=date + productType=white_bar，
-     * 按 storeId 聚合 {@code ship_quantity}（storeId 为空的发货跳过，无门店归属）。
-     */
-    private Map<Long, BigDecimal> sumWhiteBarArriveWeightByStore(LocalDate date) {
-        List<Shipment> shipments = shipmentMapper.selectList(
-            new LambdaQueryWrapper<Shipment>()
-                .eq(Shipment::getShipDate, date)
-                .eq(Shipment::getProductType, PRODUCT_TYPE_WHITE_BAR)
-                .select(Shipment::getStoreId, Shipment::getShipQuantity));
-        Map<Long, BigDecimal> result = new LinkedHashMap<>();
-        for (Shipment s : shipments) {
-            if (s.getStoreId() == null) {
-                continue;
-            }
-            result.merge(s.getStoreId(), nz(s.getShipQuantity()), BigDecimal::add);
-        }
-        return result;
-    }
-
-    /**
-     * 当日该店「白条分割产品总重」kg = max(0, 各白条部位当日入库量之和 − 材料外售同原材料成品当日到店重)。
+     * 指标 7：当日该店「白条分割产品总重」kg = max(0, 各白条部位当日入库量之和 − 材料外售同原材料成品当日到店重)。
      *
      * <p>材料外售成品由白条分割成原材料后再外售，其到店重已随成品记在盘点入库里，属于原材料的外卖去向、
      * 不是白条在门店分割留下的产品，故从入库项中剔除（客户口径：白条到店重 + 外卖产品重 − Σ原材料产品重 = 损耗）。

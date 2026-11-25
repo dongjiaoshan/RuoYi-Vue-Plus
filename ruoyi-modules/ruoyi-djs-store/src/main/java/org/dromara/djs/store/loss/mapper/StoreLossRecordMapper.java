@@ -15,16 +15,19 @@ import org.dromara.djs.store.loss.domain.vo.StoreLossRecordVo;
 public interface StoreLossRecordMapper extends BaseMapperPlus<StoreLossRecord, StoreLossRecordVo> {
 
     /**
-     * 物理删除指定租户指定日的全部损耗记录（含已软删行）。
+     * 物理删除指定租户指定日由跑批生成的两类损耗记录（含已软删行）。
      *
      * <p>定时任务重跑幂等专用：唯一键 {@code (tenant_id, store_id, product_id, loss_date, loss_type)}
      * 不含 {@code del_flag}，若走 {@code @TableLogic} 软删，旧行仍占唯一键 → 重插同组合 Duplicate entry。
-     * 故重跑前对该日旧行做物理删（彻底清空该日、不残留），再重插当日最新值。</p>
+     * 故重跑前对该日这两类旧行做物理删，再重插当日最新值。</p>
      *
      * @param tenantId 租户 id
      * @param lossDate 损耗日期
      * @return 删除行数
      */
-    @Delete("DELETE FROM t_store_loss_record WHERE tenant_id = #{tenantId} AND loss_date = #{lossDate}")
+    @Delete("""
+        DELETE FROM t_store_loss_record WHERE tenant_id = #{tenantId} AND loss_date = #{lossDate}
+          AND loss_type IN ('store_daily_loss', 'white_bar_split_loss')
+        """)
     int physicalDeleteByDate(@Param("tenantId") String tenantId, @Param("lossDate") java.time.LocalDate lossDate);
 }

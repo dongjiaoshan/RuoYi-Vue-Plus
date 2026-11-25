@@ -46,6 +46,9 @@ public class StoreManageDetailRowVo implements Serializable {
     /** 销售量（盘点 sale_qty + gift_qty）。 */
     private BigDecimal saleQty;
 
+    /** 退回量的单位，猪肉为 kg、果蔬为份。与需求/销售并存时可与 unit 不同。 */
+    private String returnUnit;
+
     /** 退回量（门店退回仓库）。 */
     private BigDecimal returnQty;
 

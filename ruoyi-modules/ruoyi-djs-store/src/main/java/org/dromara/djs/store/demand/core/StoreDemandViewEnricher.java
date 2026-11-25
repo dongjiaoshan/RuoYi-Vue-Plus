@@ -2,6 +2,10 @@ package org.dromara.djs.store.demand.core;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
+import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.djs.common.job.DjsJobRunner;
+import org.dromara.djs.store.stat.mapper.StoreProductionIndicatorMapper;
+import org.dromara.djs.store.stat.mapper.StoreProductionIndicatorMapper.DemandQuantity;
 import org.dromara.djs.warehouse.demand.core.DemandArrivedQuantityFiller;
 import org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
@@ -16,6 +20,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * 门店视角派生指标的<b>唯一口径</b>：预计到店量 {@code expectedWeight} + 计损量 {@code damagedCount}
@@ -54,8 +59,9 @@ public class StoreDemandViewEnricher {
 
     private final IProductProductionService productProductionService;
 
-    /** 到店量回填的唯一实现（warehouse 侧，与 admin 需求确认抽屉共用）。 */
+    /** 已发车量供状态派生和非果蔬展示复用。 */
     private final DemandArrivedQuantityFiller arrivedQuantityFiller;
+    private final StoreProductionIndicatorMapper indicatorMapper;
 
     /**
      * 一次回填三列。
@@ -67,9 +73,13 @@ public class StoreDemandViewEnricher {
      * @param rows 已派生 {@code storeDemandStatus} 的门店视角行；null / 空直接返回
      */
     public void enrich(List<DemandManageVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
         fillArrivedQuantity(rows);
         fillDamagedCount(rows);
         fillExpectedWeight(rows);
+        applyConfirmedVegetableReceipts(rows);
     }
 
     /**
@@ -81,6 +91,30 @@ public class StoreDemandViewEnricher {
      */
     private void fillArrivedQuantity(List<DemandManageVo> rows) {
         arrivedQuantityFiller.fill(rows);
+    }
+
+    /** 门店果蔬到店量按产品单位显示已确认数量。调用时门店状态已由发车量派生。 */
+    public void applyConfirmedVegetableReceipts(List<DemandManageVo> rows) {
+        List<DemandManageVo> vegetables = rows.stream()
+            .filter(row -> BELONG_VEGETABLE.equals(row.getProductType()))
+            .toList();
+        List<Long> confirmedIds = vegetables.stream()
+            .filter(row -> row.getReceivedTime() != null)
+            .map(DemandManageVo::getId)
+            .filter(Objects::nonNull)
+            .distinct().toList();
+        Map<Long, BigDecimal> received = Map.of();
+        if (!confirmedIds.isEmpty()) {
+            String tenantId = TenantHelper.getTenantId();
+            received = indicatorMapper.selectVegetableReceiptsByDemand(
+                tenantId == null ? DjsJobRunner.DEFAULT_TENANT : tenantId, confirmedIds).stream()
+                .collect(Collectors.toMap(DemandQuantity::demandId, DemandQuantity::quantity));
+        }
+        for (DemandManageVo row : vegetables) {
+            BigDecimal qty = row.getReceivedTime() == null || row.getId() == null
+                ? BigDecimal.ZERO : received.getOrDefault(row.getId(), BigDecimal.ZERO);
+            row.setArrivedQuantity(qty);
+        }
     }
 
     /**

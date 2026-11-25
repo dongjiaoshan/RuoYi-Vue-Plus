@@ -1,0 +1,23 @@
+CREATE TABLE t_store_production_indicator_daily (
+    id BIGINT NOT NULL COMMENT '主键（雪花）',
+    tenant_id VARCHAR(20) NOT NULL DEFAULT '1001' COMMENT '租户号',
+    store_id BIGINT NOT NULL COMMENT '门店 ID',
+    stat_date DATE NOT NULL COMMENT '统计归属日',
+    veg_received_portion_count DECIMAL(18,3) NOT NULL DEFAULT 0 COMMENT '果蔬接收份数',
+    veg_receive_kg_weight DECIMAL(18,3) NOT NULL DEFAULT 0 COMMENT '按公斤计量的果蔬接收重 kg',
+    white_bar_received_weight DECIMAL(18,3) NOT NULL DEFAULT 0 COMMENT '到店白条重 kg，出品率和损耗率分母',
+    split_product_weight DECIMAL(18,3) NOT NULL DEFAULT 0 COMMENT '分割品总重 kg，出品率分子',
+    split_loss_weight DECIMAL(18,3) NOT NULL DEFAULT 0 COMMENT '分割损耗 kg，损耗率分子',
+    pork_return_weight_kg DECIMAL(18,3) NOT NULL DEFAULT 0 COMMENT '猪肉退回重 kg',
+    veg_return_portion_count DECIMAL(18,3) NOT NULL DEFAULT 0 COMMENT '果蔬退回份数',
+    veg_return_kg_weight DECIMAL(18,3) NOT NULL DEFAULT 0 COMMENT '按公斤登记的果蔬退回重 kg',
+    create_dept BIGINT NULL COMMENT '创建部门',
+    create_by BIGINT NULL COMMENT '创建者',
+    create_time DATETIME NULL COMMENT '创建时间',
+    update_by BIGINT NULL COMMENT '更新者',
+    update_time DATETIME NULL COMMENT '更新时间',
+    del_flag CHAR(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_store_indicator_day (tenant_id, store_id, stat_date),
+    KEY idx_store_indicator_date (tenant_id, stat_date, store_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门店生产指标日基数';

@@ -34,6 +34,12 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- 仅本机 MySQL 临时表验收使用，复用项目管理的 JDBC 驱动。 -->
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
 </project>

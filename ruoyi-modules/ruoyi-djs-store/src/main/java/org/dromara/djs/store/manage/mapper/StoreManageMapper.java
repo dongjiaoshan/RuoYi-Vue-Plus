@@ -8,6 +8,7 @@ import org.dromara.djs.store.manage.domain.vo.StoreManageDetailRowVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageProductCountRowVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageProductQtyRowVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageQtyRowVo;
+import org.dromara.djs.store.stat.mapper.StoreReturnStatSql;
 import org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping;
 
 import java.time.LocalDate;
@@ -99,17 +100,10 @@ public interface StoreManageMapper {
             + "   <foreach collection='belongTypes' item='bt' open='(' separator=',' close=')'>#{bt}</foreach>";
 
     /** 退回量口径的表与联表（卡片聚合与明细分页共用）。 */
-    String RETURN_FROM =
-        "  FROM t_store_return r "
-            + "  JOIN t_warehouse_product_info p ON r.product_id = p.id ";
+    String RETURN_FROM = StoreReturnStatSql.FROM;
 
-    /** 退回量口径的筛选条件（卡片聚合与明细分页共用，改这里两边同时生效）。 */
-    String RETURN_WHERE =
-        " WHERE r.tenant_id = #{tenantId} "
-            + "   AND r.del_flag = '0' "
-            + "   AND p.del_flag = '0' "
-            + "   AND r.return_direction = 'store_to_warehouse' "
-            + "   AND r.store_id IS NOT NULL "
+    /** 卡片、下钻和环比共用有效退回规则与登记日期。 */
+    String RETURN_WHERE = StoreReturnStatSql.WHERE
             + "   AND r.return_date &gt;= #{monthStart} "
             + "   AND r.return_date &lt; #{nextStart} "
             + "   AND (#{storeId} IS NULL OR r.store_id = #{storeId}) "
@@ -225,7 +219,7 @@ public interface StoreManageMapper {
                                          @Param("belongTypes") List<String> belongTypes);
 
     /**
-     * 当月退回量（门店退回记录，方向 store_to_warehouse）：按 belong_type × product_unit 汇总。
+     * 当月退回量按登记日归月，猪肉统一 kg、果蔬分计件与公斤。
      *
      * <p>筛选条件取自 {@link #RETURN_FROM} + {@link #RETURN_WHERE}，与明细分页共用。</p>
      *
@@ -237,11 +231,11 @@ public interface StoreManageMapper {
      * @return (业态, 单位) : 退回量合计，无数据返空列表
      */
     @Select("<script>"
-        + "SELECT p.belong_type AS belongType, p.product_unit AS unit, "
+        + "SELECT p.belong_type AS belongType, " + StoreReturnStatSql.UNIT + " AS unit, "
         + "       COALESCE(SUM(r.return_quantity), 0) AS qty "
         + RETURN_FROM
         + RETURN_WHERE
-        + " GROUP BY p.belong_type, p.product_unit"
+        + " GROUP BY p.belong_type, unit"
         + "</script>")
     List<StoreManageQtyRowVo> sumReturnQty(@Param("tenantId") String tenantId,
                                            @Param("storeId") Long storeId,
@@ -284,20 +278,22 @@ public interface StoreManageMapper {
      * @return 按产品拆的明细行（需求量降序 → 产品名 → productId）
      */
     @Select("<script>"
-        + "SELECT t.productId, t.productName, t.productSpec, t.unit, "
+        + "SELECT t.productId, t.productName, t.productSpec, t.unit, t.returnUnit, "
         + "       t.demandQty, t.saleQty, t.returnQty "
         + "  FROM ( "
         + "        SELECT g.productId AS productId, "
         + "               MAX(g.productName) AS productName, "
         + "               MAX(g.productSpec) AS productSpec, "
-        + "               MAX(g.unit) AS unit, "
+        + "               CASE WHEN SUM(g.demandQty) = 0 AND SUM(g.saleQty) = 0 "
+        + "                    THEN COALESCE(MAX(g.returnUnit), MAX(g.unit)) ELSE MAX(g.unit) END AS unit, "
+        + "               MAX(g.returnUnit) AS returnUnit, "
         + "               SUM(g.demandQty) AS demandQty, "
         + "               SUM(g.saleQty)   AS saleQty, "
         + "               SUM(g.returnQty) AS returnQty "
         + "          FROM ( "
         + "                SELECT " + DETAIL_PRODUCT_KEYS + ", "
         + "                       COALESCE(SUM(d.demand_quantity), 0) AS demandQty, "
-        + "                       0 AS saleQty, 0 AS returnQty "
+        + "                       0 AS saleQty, 0 AS returnQty, NULL AS returnUnit "
         + DEMAND_FROM
         + DEMAND_WHERE
         + DETAIL_PRODUCT_GROUP_BY
@@ -305,17 +301,18 @@ public interface StoreManageMapper {
         + "                SELECT " + DETAIL_PRODUCT_KEYS + ", "
         + "                       0 AS demandQty, "
         + "                       COALESCE(SUM(l.sale_qty + l.gift_qty), 0) AS saleQty, "
-        + "                       0 AS returnQty "
+        + "                       0 AS returnQty, NULL AS returnUnit "
         + SALE_FROM
         + SALE_WHERE
         + DETAIL_PRODUCT_GROUP_BY
         + "                UNION ALL "
         + "                SELECT " + DETAIL_PRODUCT_KEYS + ", "
         + "                       0 AS demandQty, 0 AS saleQty, "
-        + "                       COALESCE(SUM(r.return_quantity), 0) AS returnQty "
+        + "                       COALESCE(SUM(r.return_quantity), 0) AS returnQty, "
+        + "                       " + StoreReturnStatSql.UNIT + " AS returnUnit "
         + RETURN_FROM
         + RETURN_WHERE
-        + DETAIL_PRODUCT_GROUP_BY
+        + DETAIL_PRODUCT_GROUP_BY + ", returnUnit "
         + "               ) g "
         + "         GROUP BY g.productId "
         + "       ) t "

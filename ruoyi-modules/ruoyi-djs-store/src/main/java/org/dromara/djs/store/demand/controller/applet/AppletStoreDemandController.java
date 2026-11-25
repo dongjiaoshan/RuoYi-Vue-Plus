@@ -76,14 +76,14 @@ public class AppletStoreDemandController {
     @SaCheckLogin
     @GetMapping("/list")
     public TableDataInfo<DemandManageVo> list(DemandManageQuery query, PageQuery pageQuery) {
-        return demandManageService.queryPageList(query, pageQuery);
+        return storeDemandService.queryStoreList(query, pageQuery);
     }
 
     /** 需求详情。 */
     @SaCheckLogin
     @GetMapping("/getInfo/{id}")
     public R<DemandManageVo> getInfo(@PathVariable Long id) {
-        return R.ok(demandManageService.queryById(id));
+        return R.ok(storeDemandService.queryStoreDetail(id));
     }
 
     /**

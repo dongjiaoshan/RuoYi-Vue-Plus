@@ -87,7 +87,7 @@ public class StoreDemandController extends BaseController {
     @SaCheckPermission("djs:store:demand:query")
     @GetMapping("/getInfo/{id}")
     public R<DemandManageVo> getInfo(@PathVariable Long id) {
-        return R.ok(demandManageService.queryById(id));
+        return R.ok(storeDemandService.queryStoreDetail(id));
     }
 
     /** 门店发起需求（创建即 SUBMITTED，跳过 DRAFT）。 */

@@ -1,6 +1,9 @@
 package org.dromara.djs.store.demand.core;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.djs.store.stat.mapper.StoreProductionIndicatorMapper;
+import org.dromara.djs.store.stat.mapper.StoreProductionIndicatorMapper.DemandQuantity;
 import org.dromara.djs.warehouse.demand.core.DemandArrivedQuantityFiller;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
@@ -22,6 +25,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -29,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -64,13 +69,16 @@ class StoreDemandViewEnricherTest {
      */
     private DemandArrivedQuantityFiller arrivedQuantityFiller;
 
+    @Mock
+    private StoreProductionIndicatorMapper indicatorMapper;
+
     private StoreDemandViewEnricher enricher;
 
     @BeforeEach
     void wire() {
         arrivedQuantityFiller = new DemandArrivedQuantityFiller(productProductionMapper);
         enricher = new StoreDemandViewEnricher(productInfoMapper, productProductionMapper,
-            productProductionService, arrivedQuantityFiller);
+            productProductionService, arrivedQuantityFiller, indicatorMapper);
     }
 
     private static DemandManageVo row(long id, long productId, String storeStatus) {
@@ -227,6 +235,36 @@ class StoreDemandViewEnricherTest {
         assertThat(shipped.getArrivedQuantity()).isEqualByComparingTo("3");
         // 「还没发车」在业务上就是到店 0，不能显 '—' —— 与本页损坏数量显 0 同处置
         assertThat(notShipped.getArrivedQuantity()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void unconfirmedVegetableShowsZeroWhileKeepingShippedStatus() {
+        DemandManageVo vegetable = row(53L, 1L, "SHIPPED");
+        vegetable.setProductType("vegetable");
+        vegetable.setArrivedQuantity(new BigDecimal("3"));
+
+        enricher.enrich(List.of(vegetable));
+
+        assertThat(vegetable.getArrivedQuantity()).isEqualByComparingTo("0");
+        assertThat(vegetable.getStoreDemandStatus()).isEqualTo("SHIPPED");
+    }
+
+    @Test
+    void confirmedVegetableShowsReceivedPortions() {
+        DemandManageVo vegetable = row(54L, 1L, "ARRIVED");
+        vegetable.setProductType("vegetable");
+        vegetable.setReceivedTime(LocalDateTime.of(2026, 1, 1, 8, 0));
+        vegetable.setArrivedQuantity(new BigDecimal("9"));
+        when(indicatorMapper.selectVegetableReceiptsByDemand("1001", List.of(54L)))
+            .thenReturn(List.of(new DemandQuantity(54L, new BigDecimal("3"))));
+
+        try (var tenant = mockStatic(TenantHelper.class)) {
+            tenant.when(TenantHelper::getTenantId).thenReturn("1001");
+            enricher.enrich(List.of(vegetable));
+        }
+
+        assertThat(vegetable.getArrivedQuantity()).isEqualByComparingTo("3");
+        assertThat(vegetable.getStoreDemandStatus()).isEqualTo("ARRIVED");
     }
 
     @Test

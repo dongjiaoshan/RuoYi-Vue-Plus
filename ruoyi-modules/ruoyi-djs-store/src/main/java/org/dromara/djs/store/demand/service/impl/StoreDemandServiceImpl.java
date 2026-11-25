@@ -92,6 +92,15 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
     }
 
     @Override
+    public DemandManageVo queryStoreDetail(Long id) {
+        DemandManageVo row = demandManageService.queryById(id);
+        if (row != null) {
+            viewEnricher.applyConfirmedVegetableReceipts(List.of(row));
+        }
+        return row;
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public Long createStoreDemand(DemandManageBo bo) {
         // 已终止合作门店禁止下单（覆盖单条 + batchCreate 逐条路径）

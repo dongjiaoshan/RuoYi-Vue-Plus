@@ -103,12 +103,15 @@ class StoreManageMapperSqlContractTest {
     }
 
     @Test
-    @DisplayName("三个指标一律按产品主数据 product_unit 分组（同一把单位尺子）+ 月份区间左闭右开")
+    @DisplayName("需求销售按档案单位，退回按统计单位；区间左闭右开")
     void allMetricsGroupByProductUnitAndHalfOpenMonth() throws Exception {
         for (String m : List.of("sumDemandQty", "sumSaleQty", "sumReturnQty")) {
             String sql = normalizedSql(m);
-            assertThat(sql).as(m + " 单位取产品主数据").contains("p.product_unit as unit");
-            assertThat(sql).as(m + " 按业态+单位分组").contains("group by p.belong_type, p.product_unit");
+            if ("sumReturnQty".equals(m)) {
+                assertThat(sql).contains("then 'kg'", "then '份'", "group by p.belong_type, unit");
+            } else {
+                assertThat(sql).contains("p.product_unit as unit", "group by p.belong_type, p.product_unit");
+            }
             assertThat(sql).as(m + " 区间左闭").contains("&gt;= #{monthstart}");
             assertThat(sql).as(m + " 区间右开").contains("&lt; #{nextstart}");
         }
