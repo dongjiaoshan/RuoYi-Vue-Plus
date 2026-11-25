@@ -1,5 +1,6 @@
 package org.dromara.djs.warehouse.stat.service;
 
+import org.dromara.djs.warehouse.stat.domain.vo.WarehouseAnnualRecordVo;
 import org.dromara.djs.warehouse.stat.domain.vo.WarehouseCroppRecordVo;
 import org.dromara.djs.warehouse.stat.domain.vo.WarehouseIndicatorRecordVo;
 import org.dromara.djs.warehouse.stat.domain.vo.WarehouseMonthlyRecordVo;
@@ -27,7 +28,7 @@ public interface IWarehouseStatService {
     String aggregate(LocalDate targetDate);
 
     /**
-     * 回补区间内每天日表的猪肉段（按接收 cohort 重算那几列），并刷新涉及的月表。
+     * 回补区间内每天的仓库生产指标并刷新涉及的月表。
      *
      * <p>同一头猪的第二个半扇可能隔几天才处理，它的数据要算回接收那天；定时任务每天回补最近一个月，
      * 历史区间可经手动端点一次性补算。</p>
@@ -36,7 +37,7 @@ public interface IWarehouseStatService {
      * @param to   截止日（含）
      * @return 回补摘要
      */
-    String refreshPorkSegment(LocalDate from, LocalDate to);
+    String refreshProductionIndicators(LocalDate from, LocalDate to);
 
     /**
      * 仓库日报表列表（row16）：按日期范围倒序返回全量（行数=天数，前端客户端分页）。
@@ -61,4 +62,7 @@ public interface IWarehouseStatService {
      * @param monthTo   截止月份 yyyy-MM（含，可空）
      */
     List<WarehouseMonthlyRecordVo> listMonthly(String monthFrom, String monthTo);
+
+    /** 从月表基数汇总所选年份的指标。 */
+    WarehouseAnnualRecordVo getAnnual(int year);
 }

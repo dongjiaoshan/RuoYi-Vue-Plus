@@ -557,6 +557,10 @@ class VegetableHandleServiceImplTest {
         bo.setRecorderId(9001L);
         service.recordPickDestination(bo);
 
+        ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper).insert(flowCap.capture());
+        assertThat(flowCap.getValue().getCropId()).isEqualTo(12001L);
+        assertThat(flowCap.getValue().getHarvestBatchId()).isNull();
         ArgumentCaptor<org.dromara.djs.warehouse.stock.domain.LocationStock> basketCap =
             ArgumentCaptor.forClass(org.dromara.djs.warehouse.stock.domain.LocationStock.class);
         verify(locationStockMapper, times(1)).insert(basketCap.capture());
@@ -917,6 +921,8 @@ class VegetableHandleServiceImplTest {
         assertThat(flow.getWarehouseId()).isEqualTo(FRESH_LOC_ID);
         assertThat(flow.getProductId()).isEqualTo(PRODUCT_ID);
         assertThat(flow.getPlotId()).isEqualTo(11001L);
+        assertThat(flow.getCropId()).isEqualTo(12001L);
+        assertThat(flow.getHarvestBatchId()).isEqualTo(60001L);
         assertThat(flow.getChangeNum()).isEqualByComparingTo("30.000");
 
         // 一个地块篮（后续处理录入就是从它里面 FIFO 出）

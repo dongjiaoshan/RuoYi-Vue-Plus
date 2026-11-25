@@ -3,6 +3,7 @@ package org.dromara.djs.warehouse.dashboard.mapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.dromara.djs.warehouse.stat.mapper.WarehouseProductionStatSql;
 import org.dromara.djs.warehouse.dashboard.domain.vo.ChartSeriesItemVo;
 import org.dromara.djs.warehouse.dashboard.domain.vo.ChartTrendPointVo;
 import org.dromara.djs.warehouse.dashboard.domain.vo.LocationOverviewItemVo;
@@ -286,11 +287,9 @@ public interface WarehouseDashboardMapper {
             ON p.id = f.product_id AND p.tenant_id = f.tenant_id AND p.del_flag = '0'
          WHERE f.tenant_id = #{tenantId}
            AND f.del_flag = '0'
-           AND f.inout_type = 'IN'
-           AND f.flow_type = 'veg_stock_in'
-           AND f.change_quantity > 0
            AND DATE(f.flow_date) = CURDATE()
-        """;
+           AND
+        """ + WarehouseProductionStatSql.RAW_VEG_INBOUND;
 
     /** 今日毛菜间果蔬接收品种数，同产品不同地块或多次入库只算一种。 */
     @Select("SELECT COUNT(DISTINCT f.product_id) " + TODAY_FRESH_VEG_RECEIPTS)
@@ -300,13 +299,8 @@ public interface WarehouseDashboardMapper {
     @Select("SELECT COALESCE(SUM(f.change_quantity), 0) " + TODAY_FRESH_VEG_RECEIPTS)
     BigDecimal sumTodayVegHandleWeight(@Param("tenantId") String tenantId);
 
-    /**
-     * 今日分割白条数（当日转入分割车间白条数；半只计 0.5、整只计 1，row195 客户口径，按 pickup_time 当天计）。
-     *
-     * @param tenantId 租户
-     * @return Σ CASE is_half(1→0.5 / 2→1) WHERE DATE(pickup_time)=CURDATE() AND white_bar_id 非空，无记录返 0
-     */
-    @Select("SELECT COALESCE(SUM(CASE WHEN is_half = 1 THEN 0.5 WHEN is_half = 2 THEN 1 ELSE 1 END), 0) "
+    /** 今日领用分割扇数，半扇 1、整只 2。 */
+    @Select("SELECT COALESCE(SUM(" + WarehouseProductionStatSql.CUT_SIDES + "), 0) "
         + "  FROM t_warehouse_pig_cut_record "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND DATE(pickup_time) = CURDATE() "
@@ -359,32 +353,15 @@ public interface WarehouseDashboardMapper {
         + "   AND del_flag = '0'")
     BigDecimal sumTodayVegReceiveWeight(@Param("tenantId") String tenantId);
 
-    /**
-     * 今日果蔬产品种类数（来源地块非空的生产记录涉及的不重复产品种类 = 果蔬产品产出）。
-     *
-     * @param tenantId 租户
-     * @return COUNT(DISTINCT product_id) WHERE plot_id IS NOT NULL，无记录返 0
-     */
-    @Select("SELECT COUNT(DISTINCT product_id) "
-        + "  FROM t_warehouse_product_production "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND plot_id IS NOT NULL "
-        + "   AND produce_date = CURDATE() "
-        + "   AND del_flag = '0'")
+    String TODAY_VEG_PRODUCTION = WarehouseProductionStatSql.PRODUCE_FROM
+        + WarehouseProductionStatSql.VEG_PRODUCE_WHERE + " AND pp.produce_date = CURDATE()";
+
+    /** 今日有效果蔬成品种类数。 */
+    @Select("SELECT COUNT(DISTINCT pp.product_id) " + TODAY_VEG_PRODUCTION)
     Integer countTodayVegProductKinds(@Param("tenantId") String tenantId);
 
-    /**
-     * 今日果蔬产品总重（来源地块非空的生产记录重量合计 kg）。
-     *
-     * @param tenantId 租户
-     * @return SUM(product_weight) WHERE plot_id IS NOT NULL，无记录返 0
-     */
-    @Select("SELECT COALESCE(SUM(product_weight), 0) "
-        + "  FROM t_warehouse_product_production "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND plot_id IS NOT NULL "
-        + "   AND produce_date = CURDATE() "
-        + "   AND del_flag = '0'")
+    /** 今日有效果蔬生产份数，沿用既有接口字段 todayVegProductWeight。 */
+    @Select("SELECT " + WarehouseProductionStatSql.VEG_PORTIONS + TODAY_VEG_PRODUCTION)
     BigDecimal sumTodayVegProductWeight(@Param("tenantId") String tenantId);
 
     // ============================== 盘点 KPI（summary 兼容） ==============================

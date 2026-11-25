@@ -5,10 +5,12 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.djs.warehouse.dashboard.mapper.WarehouseProductionDashboardMapper;
 import org.dromara.djs.warehouse.loss.service.IProductionLossService;
 import org.dromara.djs.warehouse.stat.domain.WarehouseCroppRecord;
 import org.dromara.djs.warehouse.stat.domain.WarehouseIndicatorRecord;
 import org.dromara.djs.warehouse.stat.domain.WarehouseMonthlyRecord;
+import org.dromara.djs.warehouse.stat.domain.vo.WarehouseAnnualRecordVo;
 import org.dromara.djs.warehouse.stat.domain.vo.WarehouseCroppRecordVo;
 import org.dromara.djs.warehouse.stat.domain.vo.WarehouseIndicatorRecordVo;
 import org.dromara.djs.warehouse.stat.domain.vo.WarehouseMonthlyRecordVo;
@@ -18,6 +20,7 @@ import org.dromara.djs.warehouse.stat.mapper.WarehouseMonthlyRecordMapper;
 import org.dromara.djs.warehouse.stat.mapper.WarehouseStatAggregateMapper;
 import org.dromara.djs.warehouse.stat.service.IWarehouseStatService;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -25,10 +28,9 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.TreeSet;
 
 /**
  * 仓库统计指标聚合 + 只读查询实现（WMS-STAT-001，邓博 admin row16/17/18）。
@@ -41,7 +43,7 @@ import java.util.TreeSet;
  *   <li>猪肉段全部按<b>接收 cohort</b>取数（D-0140，甲方 V6 行284）：一头猪只属于它在燎毛间的接收日
  *     {@code DATE(COALESCE(bar.arrive_time, bar.in_time))}，后续哪天再处理都算回这一天。屠宰头数 / 送宰均重 /
  *     接收均重 / 白条均重以接收头数为分母；屠宰出品率、白条出品率只取有出栏重量的猪，分子分母同一批。
- *     定时任务每天整行重算 T-1，再只回补最近 {@value #PORK_REFRESH_DAYS} 天的猪肉段，把隔天才处理完的猪补进接收那天。
+ *     定时任务每天整行重算 T-1，再回补最近 {@value #INDICATOR_REFRESH_DAYS} 天的接收批及 V1.1 生产指标。
  *     处理完成 cohort（bar.finish_time）→ 处理完成头数 / 该批猪接收重量之和，两个诊断列，不参与任何比率或均值。
  *     日表落 4 个率的基数列，月率按 Σ基数 重算</li>
  *   <li>路损率 = (发往月台−月台接收)/发往月台×100（A2 日表，分母用发往=损耗占发出量）；作物表按 row17 (发往−接收)/接收×100</li>
@@ -64,27 +66,30 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
     private static final String DEFAULT_TENANT = "1001";
     private static final DateTimeFormatter MONTH_FMT = DateTimeFormatter.ofPattern("yyyy-MM");
 
-    /** 猪肉段每日回补窗口（天）：甲方「定时任务每日跑前一个月的数据对屠宰数据进行完善」。 */
-    public static final int PORK_REFRESH_DAYS = 31;
+    /** 历史日指标每日回补窗口（天），不含单独全量重算的 T-1。 */
+    public static final int INDICATOR_REFRESH_DAYS = 31;
 
     private final WarehouseStatAggregateMapper aggregateMapper;
     private final WarehouseIndicatorRecordMapper indicatorMapper;
     private final WarehouseCroppRecordMapper croppMapper;
     private final WarehouseMonthlyRecordMapper monthlyMapper;
     private final IProductionLossService productionLossService;
+    private final WarehouseProductionDashboardMapper productionMapper;
 
     // ============================================================
     //  Write end — aggregate
     // ============================================================
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
     public String aggregate(LocalDate targetDate) {
         if (targetDate == null) {
             targetDate = LocalDate.now().minusDays(1); // T-1
         }
         String tenantId = currentTenant();
         String statDate = targetDate.toString();
+        String month = YearMonth.from(targetDate).format(MONTH_FMT);
+        lockMonth(tenantId, month);
         log.info("[WarehouseStat] start tenant={} date={}", tenantId, statDate);
 
         // 果蔬生产损耗（per-product 残差）并入本任务：先写 loss_flow production_loss，再算 cropp
@@ -94,7 +99,6 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
 
         upsertDaily(tenantId, statDate);
         int croppRows = upsertCropp(tenantId, statDate);
-        String month = YearMonth.from(targetDate).format(MONTH_FMT);
         upsertMonthly(tenantId, month);
 
         log.info("[WarehouseStat] done tenant={} date={} croppRows={}", tenantId, statDate, croppRows);
@@ -108,27 +112,9 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
     private void upsertDaily(String tenantId, String statDate) {
         WarehouseIndicatorRecord r = new WarehouseIndicatorRecord();
         r.setStatDate(LocalDate.parse(statDate));
-
-        fillPorkSegment(tenantId, statDate, r);
-
-        // 处理完成 cohort（bar.finish_time）：两个诊断列，不参与任何比率/均值。
-        // 记的是「这一天有几头猪走完燎毛间」，与上面按接收日归集的猪肉段是两件事
-        // （同一头猪可以 A 日接收、B 日才点处理完成）。
-        Map<String, Object> finished = aggregateMapper.selectFinishedAgg(tenantId, statDate);
-        r.setFinishedCount(mapInt(finished, "finishedCount"));
-        r.setFinishedArriveWeight(scale3(mapBd(finished, "finishedArriveWeight")));
-
-        // 分割段
-        BigDecimal cutProduct = scale3(aggregateMapper.sumCutProductWeight(tenantId, statDate));
-        BigDecimal cutBar = scale3(aggregateMapper.sumCutBarWeight(tenantId, statDate));
-        r.setCutBarCount(aggregateMapper.countCutBar(tenantId, statDate));
+        r.setTenantId(tenantId);
+        fillProductionIndicators(tenantId, statDate, r);
         r.setPrecoolLoss(scale3(aggregateMapper.sumLossByType(tenantId, statDate, "precool_loss")));
-        r.setCutProductWeight(cutProduct);
-        r.setCutBarWeight(cutBar);
-        // 口径#6（B1）：分割率 = 分割产品总重 ÷ 分割白条总重 × 100。
-        // 分母用 cutBarWeight(分割白条总重 = Σ cut_record.pickup_weight) = Kevin 确认口径（非分割产品总重自身），固化不改。
-        r.setCutRate(pctOrNull(cutProduct, cutBar));
-        r.setCutLoss(scale3(aggregateMapper.sumLossByType(tenantId, statDate, "cut_loss")));
 
         // 毛菜段
         BigDecimal vegWeigh = scale3(aggregateMapper.sumVegWeighWeight(tenantId, statDate));
@@ -146,6 +132,46 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         // spec row16 文字写「接收/发往」漏了减法（那是接收占比不是损耗率）；按损耗率口径取 (发往−接收)/发往。
         // 注：作物表 row17 分母用「接收」（见 upsertCropp），与本日表 row16 各自跟对应 spec 行，刻意不一致。
         r.setTransportLossRate(pctOrNull(sendPlatform.subtract(receivePlatform), sendPlatform));
+
+        upsertIndicatorRow(tenantId, statDate, r);
+    }
+
+    /** T-1 全量和滚动回刷共用的日报计算。 */
+    private void fillProductionIndicators(String tenantId, String statDate, WarehouseIndicatorRecord r) {
+        fillPorkSegment(tenantId, statDate, r);
+
+        // 处理完成 cohort（bar.finish_time）：两个诊断列，不参与任何比率/均值。
+        // 记的是「这一天有几头猪走完燎毛间」，与上面按接收日归集的猪肉段是两件事
+        // （同一头猪可以 A 日接收、B 日才点处理完成）。
+        Map<String, Object> finished = aggregateMapper.selectFinishedAgg(tenantId, statDate);
+        r.setFinishedCount(mapInt(finished, "finishedCount"));
+        r.setFinishedArriveWeight(scale3(mapBd(finished, "finishedArriveWeight")));
+
+        // 分割段
+        BigDecimal cutProduct = scale3(aggregateMapper.sumCutProductWeight(tenantId, statDate));
+        BigDecimal cutBar = scale3(aggregateMapper.sumCutBarWeight(tenantId, statDate));
+        r.setCutBarCount(aggregateMapper.countCutBar(tenantId, statDate));
+        r.setCutProductWeight(cutProduct);
+        r.setCutBarWeight(cutBar);
+        // 口径#6（B1）：分割率 = 分割产品总重 ÷ 分割白条总重 × 100。
+        // 分母用 cutBarWeight(分割白条总重 = Σ cut_record.pickup_weight) = Kevin 确认口径（非分割产品总重自身），固化不改。
+        r.setCutRate(pctOrNull(cutProduct, cutBar));
+        BigDecimal cutLoss = scale3(aggregateMapper.sumCutLossByPickup(tenantId, statDate));
+        r.setCutLoss(cutLoss);
+        r.setCutLossRate(percent2OrNull(cutLoss, cutBar));
+        r.setCutPendingHalfCount(aggregateMapper.countPendingCutSides(tenantId, statDate));
+
+        Map<String, Object> ytd = aggregateMapper.selectSlaughterYtdCompletion(tenantId, statDate);
+        int received = mapInt(ytd, "receivedCount");
+        int completed = mapInt(ytd, "completedCount");
+        r.setSlaughterYtdReceivedCount(received);
+        r.setSlaughterYtdCompletedCount(completed);
+        r.setSlaughterCompletionRate(received == 0 ? BigDecimal.ZERO.setScale(2)
+            : percent2OrNull(BigDecimal.valueOf(completed), BigDecimal.valueOf(received)));
+
+        r.setVegRawInboundWeight(scale3(aggregateMapper.sumVegRawInboundWeight(tenantId, statDate)));
+        r.setVegDeliveryOutWeight(scale3(aggregateMapper.sumVegDeliveryOutWeight(tenantId, statDate)));
+        r.setVegProducedPortionCount(aggregateMapper.countVegProducedPortions(tenantId, statDate));
 
         // 净菜生产段（果蔬口径，row206 邓博最终口径）——仓库聚合日表只统计「果蔬生产损耗」。
         // 果蔬生产损耗 = max(0, 果蔬领用 − 退回 − 录入损耗 − 饲喂 − 果蔬打包生产使用量)，全部 belong_type='vegetable'。
@@ -167,14 +193,13 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         // 净菜损耗率 = (生产损耗 + 录入损耗)/(生产领用 − 生产退回)×100（果蔬口径，分母≤0 → null）
         BigDecimal netDenom = vegPick.subtract(vegReturn);
         r.setNetVegLossRate(pctOrNull(prodLoss.add(vegManualLoss), netDenom));
-
-        upsertIndicatorRow(tenantId, statDate, r);
     }
 
     /** UPSERT 单条日表行（按 stat_date 查存在 → updateById / insert）。 */
     private void upsertIndicatorRow(String tenantId, String statDate, WarehouseIndicatorRecord r) {
         WarehouseIndicatorRecord existing = indicatorMapper.selectOne(
             new LambdaQueryWrapper<WarehouseIndicatorRecord>()
+                .eq(WarehouseIndicatorRecord::getTenantId, tenantId)
                 .eq(WarehouseIndicatorRecord::getStatDate, LocalDate.parse(statDate)));
         if (existing == null) {
             r.setDelFlag("0");
@@ -190,7 +215,7 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
      * 猪肉段当日指标：全部取<b>当日接收</b>的那批猪（接收 cohort，D-0140，甲方 V6 行284）。
      *
      * <p>一头猪只属于它在燎毛间的接收日，之后哪天再处理第二个半扇、哪天点处理完成，数据都算回接收那天。
-     * 当天接收的猪还没处理完时这几列偏小，由 {@link #refreshPorkSegment} 每天回补最近一个月补齐。</p>
+     * 当天接收的猪还没处理完时这几列偏小，由 {@link #refreshProductionIndicators} 每天回补最近一个月补齐。</p>
      * <ul>
      *   <li>屠宰头数 = 当日接收的猪只头数</li>
      *   <li>送宰均重 = 这批猪的出栏重量之和 ÷ 接收头数</li>
@@ -233,35 +258,40 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
     /**
      * {@inheritDoc}
      *
-     * <p>只重算猪肉段那几列（{@link #fillPorkSegment}），日表其它段（分割 / 毛菜 / 月台 / 净菜）和作物日表、
-     * 生产损耗都不碰 —— 它们各有自己的统计日，回补一个月不该把它们也按当前源数据整体重写。
-     * 某天还没有日表行（夜跑漏过）则整行补算一次。最后刷新涉及到的月表。</p>
+     * <p>回补接收批、完成、分割和 V1.1 果蔬指标。缺失日行时补完整仓库日报，最后刷新涉及的月表。</p>
      */
     @Override
-    @Transactional(rollbackFor = Exception.class)
-    public String refreshPorkSegment(LocalDate from, LocalDate to) {
+    @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
+    public String refreshProductionIndicators(LocalDate from, LocalDate to) {
         if (from == null || to == null || from.isAfter(to)) {
             throw new IllegalArgumentException("回补区间不合法：from=" + from + " to=" + to);
         }
         String tenantId = currentTenant();
-        Set<String> months = new TreeSet<>();
+        List<String> months = new ArrayList<>();
+        YearMonth lastMonth = YearMonth.from(to);
+        for (YearMonth month = YearMonth.from(from); !month.isAfter(lastMonth); month = month.plusMonths(1)) {
+            String key = month.format(MONTH_FMT);
+            lockMonth(tenantId, key);
+            months.add(key);
+        }
         int updated = 0;
         int created = 0;
         for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) {
             String statDate = d.toString();
             WarehouseIndicatorRecord existing = indicatorMapper.selectOne(
                 new LambdaQueryWrapper<WarehouseIndicatorRecord>()
+                    .eq(WarehouseIndicatorRecord::getTenantId, tenantId)
                     .eq(WarehouseIndicatorRecord::getStatDate, d));
             if (existing == null) {
                 upsertDaily(tenantId, statDate);
                 created++;
             } else {
-                // 只 set 猪肉段这几列：日表实体里分割段等列标了 updateStrategy=ALWAYS，
-                // 拿只填了猪肉段的实体去 updateById 会把那些列清成 NULL。
+                // 显式 SET 已计算列，避免 updateById 的 ALWAYS 清空未参与回刷的列。
                 WarehouseIndicatorRecord p = new WarehouseIndicatorRecord();
-                fillPorkSegment(tenantId, statDate, p);
+                fillProductionIndicators(tenantId, statDate, p);
                 indicatorMapper.update(null, new LambdaUpdateWrapper<WarehouseIndicatorRecord>()
                     .eq(WarehouseIndicatorRecord::getId, existing.getId())
+                    .eq(WarehouseIndicatorRecord::getTenantId, tenantId)
                     .set(WarehouseIndicatorRecord::getSlaughterCount, p.getSlaughterCount())
                     .set(WarehouseIndicatorRecord::getSlaughterWeight, p.getSlaughterWeight())
                     .set(WarehouseIndicatorRecord::getAvgSlaughterWeight, p.getAvgSlaughterWeight())
@@ -276,18 +306,47 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
                     .set(WarehouseIndicatorRecord::getAvgBarWeight, p.getAvgBarWeight())
                     .set(WarehouseIndicatorRecord::getBarYieldNumerWeight, p.getBarYieldNumerWeight())
                     .set(WarehouseIndicatorRecord::getBarYieldBaseWeight, p.getBarYieldBaseWeight())
-                    .set(WarehouseIndicatorRecord::getBarYieldRate, p.getBarYieldRate()));
+                    .set(WarehouseIndicatorRecord::getBarYieldRate, p.getBarYieldRate())
+                    .set(WarehouseIndicatorRecord::getFinishedCount, p.getFinishedCount())
+                    .set(WarehouseIndicatorRecord::getFinishedArriveWeight, p.getFinishedArriveWeight())
+                    .set(WarehouseIndicatorRecord::getSlaughterYtdReceivedCount, p.getSlaughterYtdReceivedCount())
+                    .set(WarehouseIndicatorRecord::getSlaughterYtdCompletedCount, p.getSlaughterYtdCompletedCount())
+                    .set(WarehouseIndicatorRecord::getSlaughterCompletionRate, p.getSlaughterCompletionRate())
+                    .set(WarehouseIndicatorRecord::getCutBarCount, p.getCutBarCount())
+                    .set(WarehouseIndicatorRecord::getCutBarWeight, p.getCutBarWeight())
+                    .set(WarehouseIndicatorRecord::getCutProductWeight, p.getCutProductWeight())
+                    .set(WarehouseIndicatorRecord::getCutRate, p.getCutRate())
+                    .set(WarehouseIndicatorRecord::getCutLoss, p.getCutLoss())
+                    .set(WarehouseIndicatorRecord::getCutLossRate, p.getCutLossRate())
+                    .set(WarehouseIndicatorRecord::getCutPendingHalfCount, p.getCutPendingHalfCount())
+                    .set(WarehouseIndicatorRecord::getVegRawInboundWeight, p.getVegRawInboundWeight())
+                    .set(WarehouseIndicatorRecord::getVegDeliveryOutWeight, p.getVegDeliveryOutWeight())
+                    .set(WarehouseIndicatorRecord::getVegProducedPortionCount, p.getVegProducedPortionCount())
+                    .set(WarehouseIndicatorRecord::getProdPickWeight, p.getProdPickWeight())
+                    .set(WarehouseIndicatorRecord::getProdLossWeight, p.getProdLossWeight())
+                    .set(WarehouseIndicatorRecord::getNetVegLossRate, p.getNetVegLossRate()));
                 updated++;
             }
-            months.add(YearMonth.from(d).format(MONTH_FMT));
         }
         for (String month : months) {
             upsertMonthly(tenantId, month);
         }
-        log.info("[WarehouseStat] pork refresh tenant={} {}~{} updated={} created={} months={}",
+        log.info("[WarehouseStat] production indicator refresh tenant={} {}~{} updated={} created={} months={}",
             tenantId, from, to, updated, created, months);
-        return String.format("ok | tenant=%s | pork %s~%s | updated=%d | created=%d | months=%s",
+        return String.format("ok | tenant=%s | indicators %s~%s | updated=%d | created=%d | months=%s",
             tenantId, from, to, updated, created, months);
+    }
+
+    /**
+     * 先锁月表的唯一键，再读写日表。同月定时和手工回算串行，月合计读到已提交的前一次结果。
+     * 月行尚未建立时，由 InnoDB 间隙锁保护插入；冲突的事务可在回滚后重跑。
+     */
+    private void lockMonth(String tenantId, String month) {
+        monthlyMapper.selectOne(new LambdaQueryWrapper<WarehouseMonthlyRecord>()
+            .eq(WarehouseMonthlyRecord::getTenantId, tenantId)
+            .eq(WarehouseMonthlyRecord::getStatMonth, month)
+            .eq(WarehouseMonthlyRecord::getDelUnique, 0L)
+            .last("FOR UPDATE"));
     }
 
     /**
@@ -379,6 +438,7 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
 
         WarehouseMonthlyRecord r = new WarehouseMonthlyRecord();
         r.setStatMonth(month);
+        r.setTenantId(tenantId);
         r.setSlaughterCount(mapInt(m, "slaughterCount"));
         // 屠宰出品率 = Σ日分子 / Σ日分母 ×100
         r.setSlaughterRate(pctOrNull(mapBd(m, "sumRateArrive"), mapBd(m, "sumRateBase")));
@@ -387,8 +447,34 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         // 分割出品率 = Σ分割产品/Σ分割白条×100
         r.setCutYieldRate(pctOrNull(mapBd(m, "sumCutProduct"), mapBd(m, "sumCutBar")));
 
+        LocalDate firstDay = YearMonth.parse(month).atDay(1);
+        var source = productionMapper.selectSlaughterInRange(tenantId, firstDay, firstDay.plusMonths(1));
+        r.setSourceMarketingCount(source.getSlaughterCount());
+        r.setSourceMarketingWeight(scale3(source.getSlaughterWeight()));
+        r.setSourceMarketingAvgWeight(divideOrNull(r.getSourceMarketingWeight(),
+            BigDecimal.valueOf(r.getSourceMarketingCount())));
+
+        r.setReceivedBarWeight(scale3(mapBd(m, "sumBarWeight")));
+        r.setReceivedBarPigCount(mapInt(m, "sumBarPigCount"));
+        r.setReceivedBarAvgWeight(divideOrNull(r.getReceivedBarWeight(), BigDecimal.valueOf(r.getReceivedBarPigCount())));
+        r.setSumDailyBarYieldRate(scale3(mapBd(m, "sumDailyBarRate")));
+        r.setPositiveBarYieldDays(mapInt(m, "positiveBarRateDays"));
+        // 与小程序月矩阵一致：使用日率合计和正值日数。
+        r.setMatrixBarYieldRate(r.getPositiveBarYieldDays() == 0 ? BigDecimal.ZERO.setScale(2)
+            : r.getSumDailyBarYieldRate().divide(BigDecimal.valueOf(r.getPositiveBarYieldDays()), 2, RoundingMode.HALF_UP));
+
+        r.setCutBarCount(mapBd(m, "cutBarCount"));
+        r.setCutLoss(scale3(mapBd(m, "cutLoss")));
+        r.setCutLossPickupWeight(scale3(mapBd(m, "cutLossPickupWeight")));
+        r.setCutLossRate(percent2OrNull(r.getCutLoss(), r.getCutLossPickupWeight()));
+        r.setVegProductionPickWeight(scale3(mapBd(m, "vegProductionPickWeight")));
+        r.setVegRawInboundWeight(scale3(mapBd(m, "vegRawInboundWeight")));
+        r.setVegDeliveryOutWeight(scale3(mapBd(m, "vegDeliveryOutWeight")));
+        r.setVegProducedPortionCount(mapInt(m, "vegProducedPortionCount"));
+
         WarehouseMonthlyRecord existing = monthlyMapper.selectOne(
             new LambdaQueryWrapper<WarehouseMonthlyRecord>()
+                .eq(WarehouseMonthlyRecord::getTenantId, tenantId)
                 .eq(WarehouseMonthlyRecord::getStatMonth, month));
         if (existing == null) {
             r.setDelFlag("0");
@@ -428,6 +514,17 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
             .le(monthTo != null && !monthTo.isBlank(), WarehouseMonthlyRecord::getStatMonth, monthTo)
             .orderByDesc(WarehouseMonthlyRecord::getStatMonth);
         return monthlyMapper.selectVoList(q);
+    }
+
+    @Override
+    public WarehouseAnnualRecordVo getAnnual(int year) {
+        YearMonth firstMonth = YearMonth.of(year, 1);
+        Map<String, Object> totals = aggregateMapper.sumAnnualFromMonthly(currentTenant(),
+            firstMonth.format(MONTH_FMT), firstMonth.plusMonths(11).format(MONTH_FMT));
+        BigDecimal loss = scale3(mapBd(totals, "cutLoss"));
+        BigDecimal pickup = scale3(mapBd(totals, "cutLossPickupWeight"));
+        return new WarehouseAnnualRecordVo(year, loss, pickup, percent2OrNull(loss, pickup),
+            scale3(mapBd(totals, "vegRawInboundWeight")), scale3(mapBd(totals, "vegDeliveryOutWeight")));
     }
 
     // ============================================================
@@ -501,5 +598,10 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
             return null;
         }
         return num.multiply(new BigDecimal("100")).divide(denom, 3, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal percent2OrNull(BigDecimal numerator, BigDecimal denominator) {
+        return denominator.signum() <= 0 ? null
+            : numerator.movePointRight(2).divide(denominator, 2, RoundingMode.HALF_UP);
     }
 }

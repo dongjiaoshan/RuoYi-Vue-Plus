@@ -86,7 +86,7 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     private BigDecimal barYieldRate;
 
     // ---- 分割段 ----
-    /** 分割白条数（当日转入分割车间的白条数量；半只计 0.5、整只计 1，故为小数）。 */
+    /** 分割扇数（按领用日，半扇 1、整只 2）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal cutBarCount;
     /** 预冷损耗（当日 loss_flow precool_loss 之和）。 */
@@ -98,7 +98,7 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     /** 分割率%（分割产品总重/分割白条总重×100；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal cutRate;
-    /** 分割间损耗重（当日 loss_flow cut_loss 之和）。 */
+    /** 分割间损耗重（按对应分割单的领用日归集）。 */
     private BigDecimal cutLoss;
 
     // ---- 毛菜段 ----
@@ -127,6 +127,24 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     /** 净菜损耗率%（(生产损耗+录入损耗)/(生产领用−生产退回)×100；分母≤0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal netVegLossRate;
+
+    /** 年初至报表日首次接收头数。 */
+    private Integer slaughterYtdReceivedCount;
+    /** 同批猪截至报表日完成头数。 */
+    private Integer slaughterYtdCompletedCount;
+    /** 屠宰数据完成率（%，无接收时为 0）。 */
+    private BigDecimal slaughterCompletionRate;
+    /** 日末已领用未完成分割扇数。 */
+    private Integer cutPendingHalfCount;
+    /** 同批分割损耗重除以领用重（%，分母 0 时为空）。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal cutLossRate;
+    /** 果蔬毛菜实际入库重量（kg）。 */
+    private BigDecimal vegRawInboundWeight;
+    /** 果蔬实际配送离库重量（kg）。 */
+    private BigDecimal vegDeliveryOutWeight;
+    /** 有效果蔬生产份数。 */
+    private Integer vegProducedPortionCount;
 
     /** 软删标志（业务表必含）。 */
     @TableLogic

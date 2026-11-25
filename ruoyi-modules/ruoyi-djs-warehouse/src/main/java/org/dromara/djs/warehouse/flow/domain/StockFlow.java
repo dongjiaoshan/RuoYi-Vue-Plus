@@ -160,6 +160,12 @@ public class StockFlow extends TenantEntity {
      */
     private Long plotId;
 
+    /** 自产采摘入库的作物。 */
+    private Long cropId;
+
+    /** 已知时关联仓库采摘批次 t_warehouse_planting_record.id。 */
+    private Long harvestBatchId;
+
     /**
      * 【三期】标识（0=否 / 1=是；V6 row92）。
      *

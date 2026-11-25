@@ -136,7 +136,7 @@ public class WarehouseDashboardChartsVo implements Serializable {
     /** 横条 2「今日生产」：毛菜处理间果蔬接收总重量（kg，今日毛菜间入库 veg_stock_in 合计）。 */
     private BigDecimal todayVegHandleWeight;
 
-    /** 横条 2「今日生产」3：分割白条数（今日转入分割车间白条数；半只计 0.5、整只计 1，故为小数）。 */
+    /** 横条 2「今日生产」3：分割扇数（今日领用；半扇 1、整只 2）。 */
     private BigDecimal todayCutBarCount;
 
     /** 横条 2「今日生产」4：分割猪只产品总重（kg，今日 ear_no 来源生产记录重量）。 */
@@ -148,10 +148,10 @@ public class WarehouseDashboardChartsVo implements Serializable {
     /** 横条 2「今日生产」6：果蔬接收总重（kg，今日收货重量合计）。 */
     private BigDecimal todayVegReceiveWeight;
 
-    /** 横条 2「今日生产」7：果蔬产品种类（种，今日 plot_id 来源生产记录去重产品数）。 */
+    /** 横条 2「今日生产」7：果蔬产品种类（种，今日有效生产涉及的果蔬产品数）。 */
     private Integer todayVegProductKinds;
 
-    /** 横条 2「今日生产」8：果蔬产品总重（kg，今日 plot_id 来源生产记录重量）。 */
+    /** 横条 2「今日生产」8：有效果蔬生产份数（字段名沿用）。 */
     private BigDecimal todayVegProductWeight;
 
     /** 横条 2（兼容旧口径）：今日生产笔数（COUNT product_production）。 */

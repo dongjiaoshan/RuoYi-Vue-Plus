@@ -361,8 +361,8 @@ public class VegetableHandleServiceImpl
      * @return {@code true} = 库存篮已建（这批货真的进了毛菜间）；
      *         {@code false} = 产品主数据缺失，只写了流水、余额跳过（调用方不应把它计进 stock_in_weight）
      */
-    private boolean writeFreshVegStockIn(Long locationId, Long productId, Long plotId, Long sourceBizId,
-                                         BigDecimal weight, Long userId, Date now, String remark,
+    private boolean writeFreshVegStockIn(Long locationId, Long productId, Long plotId, Long cropId,
+                                         Long sourceBizId, BigDecimal weight, Long userId, Date now, String remark,
                                          ScaleReading reading) {
         StockFlow flow = new StockFlow();
         Map<String, Object> ctx = new HashMap<>(2);
@@ -380,6 +380,8 @@ public class VegetableHandleServiceImpl
             flow.setTareWeight(reading.tareWeight());
         }
         flow.setPlotId(plotId);
+        flow.setCropId(cropId);
+        flow.setHarvestBatchId(sourceBizId);
         flow.setThirdPhase(0);
         flow.setOperatorId(userId);
         flow.setRemark(remark);
@@ -1040,7 +1042,7 @@ public class VegetableHandleServiceImpl
             return BigDecimal.ZERO;
         }
         boolean stocked = writeFreshVegStockIn(requireFreshVegLocationId(), productId, planting.getPlotId(),
-            planting.getId(), weight, userId, now,
+            planting.getCropId(), planting.getId(), weight, userId, now,
             "采摘录入入毛菜保鲜库 plantingRecordId=" + planting.getId() + " crop=" + planting.getCropName(), reading);
         return stocked ? weight : BigDecimal.ZERO;
     }
@@ -1353,7 +1355,7 @@ public class VegetableHandleServiceImpl
             throw new ServiceException("作物「" + bo.getCropName() + "」未关联果蔬成品，无法入库："
                 + "请先在 admin 作物管理 → 编辑作物 →「产品配置」页签为该作物添加产出产品后再提交");
         }
-        writeFreshVegStockIn(requireFreshVegLocationId(), productId, bo.getPlotId(), null,
+        writeFreshVegStockIn(requireFreshVegLocationId(), productId, bo.getPlotId(), bo.getCropId(), null,
             weight, userId, now, "采摘去向[毛菜保鲜室]入库 crop=" + bo.getCropName(), null);
     }
 

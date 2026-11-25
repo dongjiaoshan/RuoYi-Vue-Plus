@@ -64,7 +64,7 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     /** 白条出品率%。 */
     private BigDecimal barYieldRate;
 
-    /** 分割白条数（半只计 0.5、整只计 1）。 */
+    /** 分割扇数（半扇 1、整只 2）。 */
     private BigDecimal cutBarCount;
     /** 预冷损耗。 */
     private BigDecimal precoolLoss;
@@ -74,7 +74,7 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     private BigDecimal cutBarWeight;
     /** 分割率%。 */
     private BigDecimal cutRate;
-    /** 分割间损耗重。 */
+    /** 分割间损耗重（按对应分割单的领用日归集）。 */
     private BigDecimal cutLoss;
 
     /** 毛菜称量总重。 */
@@ -97,4 +97,21 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     private BigDecimal prodLossWeight;
     /** 净菜损耗率%。 */
     private BigDecimal netVegLossRate;
+
+    /** 年初至报表日首次接收头数。 */
+    private Integer slaughterYtdReceivedCount;
+    /** 同批猪截至报表日完成头数。 */
+    private Integer slaughterYtdCompletedCount;
+    /** 屠宰数据完成率（%，无接收时为 0）。 */
+    private BigDecimal slaughterCompletionRate;
+    /** 日末已领用未完成分割扇数。 */
+    private Integer cutPendingHalfCount;
+    /** 同批分割损耗重除以领用重（%，分母 0 时为空）。 */
+    private BigDecimal cutLossRate;
+    /** 果蔬毛菜实际入库重量（kg）。 */
+    private BigDecimal vegRawInboundWeight;
+    /** 果蔬实际配送离库重量（kg）。 */
+    private BigDecimal vegDeliveryOutWeight;
+    /** 有效果蔬生产份数。 */
+    private Integer vegProducedPortionCount;
 }

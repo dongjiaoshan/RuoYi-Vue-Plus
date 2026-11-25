@@ -157,11 +157,15 @@ class WarehouseDashboardServiceImplTest {
     void getCharts_mapsSlaughterAndCutProductMetrics() {
         when(dashboardMapper.countTodaySlaughterPigs(eq("1001"))).thenReturn(1);
         when(dashboardMapper.sumTodayCutProductWeight(eq("1001"))).thenReturn(new BigDecimal("16.500"));
+        when(dashboardMapper.countTodayCutBars(eq("1001"))).thenReturn(new BigDecimal("3"));
+        when(dashboardMapper.sumTodayVegProductWeight(eq("1001"))).thenReturn(new BigDecimal("20"));
 
         WarehouseDashboardChartsVo vo = service.getCharts();
 
         assertThat(vo.getTodaySlaughterPigCount()).isEqualTo(1);
         assertThat(vo.getTodayCutProductWeight()).isEqualByComparingTo("16.500");
+        assertThat(vo.getTodayCutBarCount()).isEqualByComparingTo("3");
+        assertThat(vo.getTodayVegProductWeight()).isEqualByComparingTo("20");
     }
 
     /** D-0139：年度送宰均重按全年总重 ÷ 总头数；两项出品率按各字段非 NULL 的日值平均，有效日独立计数。 */
@@ -330,18 +334,18 @@ class WarehouseDashboardServiceImplTest {
     }
 
     @Test
-    @DisplayName("屠宰头数累计无小数，半扇分割数保留小数，日均重标签为屠宰均重")
+    @DisplayName("屠宰头数累计无小数，矩阵标签为分割扇数和屠宰均重")
     void getPorkEfficiency_headTotalIsIntegerAndDailyWeightLabelIsUpdated() {
         WarehouseIndicatorRecord d1 = new WarehouseIndicatorRecord();
         d1.setStatDate(LocalDate.of(2026, 3, 1));
         d1.setSlaughterCount(2);
         d1.setAvgSlaughterWeight(new BigDecimal("100"));
-        d1.setCutBarCount(new BigDecimal("0.5"));
+        d1.setCutBarCount(BigDecimal.ONE);
         WarehouseIndicatorRecord d2 = new WarehouseIndicatorRecord();
         d2.setStatDate(LocalDate.of(2026, 3, 2));
         d2.setSlaughterCount(9);
         d2.setAvgSlaughterWeight(new BigDecimal("200"));
-        d2.setCutBarCount(new BigDecimal("2.5"));
+        d2.setCutBarCount(new BigDecimal("2"));
         when(productionDashboardMapper.selectIndicatorRecordsInRange(
             "1001", LocalDate.of(2026, 3, 1), LocalDate.of(2026, 3, 31)))
             .thenReturn(List.of(d1, d2));
@@ -349,7 +353,7 @@ class WarehouseDashboardServiceImplTest {
         WarehousePorkEfficiencyVo vo = service.getPorkEfficiency(2026, "2026-03");
 
         assertThat(totalOf(vo, "屠宰头数")).isEqualTo("11");
-        assertThat(totalOf(vo, "分割白条数")).isEqualTo("3.00");
+        assertThat(totalOf(vo, "分割扇数")).isEqualTo("3.00");
         assertThat(totalOf(vo, "屠宰均重")).isEqualTo("150.00");
         assertThat(vo.getMatrixRows()).extracting(WarehousePorkEfficiencyVo.MatrixRow::getMetric)
             .doesNotContain("送宰均重");

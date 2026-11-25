@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class WarehouseBoardStatMapperSqlContractTest {
 
     @Test
-    @DisplayName("入库量只算原材料产品（product_attr = 2）且套用入库展示排除清单")
+    @DisplayName("果蔬只算有效毛菜入库，其他品类沿用原材料和排除清单")
     void inboundCountsRawMaterialOnly() throws Exception {
         String sql = selectSql("selectInboundByCategoryUnit",
             String.class, List.class, List.class, LocalDate.class, LocalDate.class);
@@ -43,20 +43,20 @@ class WarehouseBoardStatMapperSqlContractTest {
             .contains("from t_warehouse_stock_flow")
             .contains("f.inout_type = 'in'")
             .contains("pi.product_attr = 2")
-            .contains("f.flow_type not in")
+            .contains("f.flow_type not in", "f.flow_type = 'veg_stock_in'", "f.change_quantity > 0")
             .contains("sum(f.change_quantity)")
             .doesNotContain("f.change_num");
     }
 
     @Test
-    @DisplayName("生产量按产品单位取值：kg/公斤 取重量合计，其余单位取记录条数")
+    @DisplayName("果蔬生产量按有效份数，其他品类 kg/公斤按重量合计")
     void produceQtyFollowsProductUnit() throws Exception {
         String sql = selectSql("selectProduceByCategoryUnit",
             String.class, List.class, LocalDate.class, LocalDate.class);
 
         assertThat(sql)
             .contains("from t_warehouse_product_production")
-            .contains("in ('kg', '公斤')")
+            .contains("in ('kg', '公斤')", "count(distinct", "pp.produce_no", "pp.pack_status")
             .contains("sum(pp.product_weight)")
             .contains("else count(*) end")
             // 甲方 row193：「生产的数据仅生产产品」→ product_attr = 1，与入库侧的 = 2 严格对仗。
@@ -143,7 +143,7 @@ class WarehouseBoardStatMapperSqlContractTest {
         // 明细的聚合表达式与卡片是同一个 SUM，只是分组细到「产品 × 单位」→ 按单位 Σ 必然等于卡片数字
         assertThat(detail)
             .contains("coalesce(sum(f.change_quantity), 0) as qty")
-            .contains("group by pi.id, coalesce(pi.product_unit, '')")
+            .contains("group by pi.id, pi.belong_type, " + WarehouseBoardStatMapper.INBOUND_UNIT_EXPR.toLowerCase(Locale.ROOT))
             .doesNotContain("f.change_num");
         // 产品名 / 规格走 MAX 而不进 GROUP BY，否则规格改过的历史数据会把一个产品劈成两行
         assertThat(detail).contains("max(pi.product_name)").contains("cast(pi.id as char) as productid");
@@ -168,12 +168,12 @@ class WarehouseBoardStatMapperSqlContractTest {
         }
         // 两边同一条 CASE：kg/公斤 取 SUM(product_weight)，其余单位取 COUNT(*)
         for (String sql : List.of(card, detail)) {
-            assertThat(sql).contains("in ('kg', '公斤')")
+            assertThat(sql).contains("in ('kg', '公斤')", "count(distinct", "pp.produce_no")
                 .contains("coalesce(sum(pp.product_weight), 0)")
                 .contains("else count(*) end");
         }
         assertThat(detail)
-            .contains("group by pi.id, coalesce(pi.product_unit, pp.product_unit, '')")
+            .contains("group by pi.id, pi.belong_type, " + WarehouseBoardStatMapper.PRODUCE_UNIT_EXPR.toLowerCase(Locale.ROOT))
             .contains("order by qty desc")
             // 弹窗只有四列，明细不再联原材料档案
             .doesNotContain("pp.material_id");

@@ -270,7 +270,7 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         new PorkMetric("白条均重", WarehouseIndicatorRecord::getAvgBarWeight, true,
             WarehouseIndicatorRecord::getBarTotalWeight, WarehouseIndicatorRecord::getBarPigCount),
         PORK_BAR_YIELD_RATE,
-        new PorkMetric("分割白条数", WarehouseIndicatorRecord::getCutBarCount, false),
+        new PorkMetric("分割扇数", WarehouseIndicatorRecord::getCutBarCount, false),
         new PorkMetric("预冷损耗", WarehouseIndicatorRecord::getPrecoolLoss, false),
         new PorkMetric("分割总重", WarehouseIndicatorRecord::getCutBarWeight, false),
         new PorkMetric("分割产品重", WarehouseIndicatorRecord::getCutProductWeight, false),
@@ -294,7 +294,7 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
             row.setMetric(m.label());
             PorkMetricValues values = aggregatePorkMetric(m, dates, byDate);
             row.setDailyValues(values.dailyValues());
-            // 头数是整数；半扇分割数和重量继续保留各自的小数精度。
+            // 屠宰头数累计直接输出整数，其他行沿用矩阵单元格格式。
             row.setTotal(m == PORK_HEADS && values.total() != null
                 ? values.total().toBigIntegerExact().toString() : fmtCell(values.total()));
             rows.add(row);

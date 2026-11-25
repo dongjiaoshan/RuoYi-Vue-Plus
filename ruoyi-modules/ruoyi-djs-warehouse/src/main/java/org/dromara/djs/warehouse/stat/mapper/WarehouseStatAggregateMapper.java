@@ -21,9 +21,9 @@ import java.util.Map;
  *       全部按<b>接收 cohort</b>（燎毛间接收日 {@code DATE(COALESCE(arrive_time, in_time))}）取，一头猪只属于一天
  *       —— 屠宰头数 / 送宰总重·均重 / 接收重量·均重 / 白条总重·均重 / 屠宰出品率 / 白条出品率（D-0140）；
  *       另有处理完成 cohort（{@code finish_time}）→ 处理完成头数 / 其接收重量之和（两个诊断列）</li>
- *   <li>{@code t_warehouse_pig_cut_record}：分割白条数 / 分割白条总重（pickup_time + pickup_weight）</li>
+ *   <li>{@code t_warehouse_pig_cut_record}：分割扇数 / 分割领用重（pickup_time + pickup_weight）</li>
  *   <li>{@code t_warehouse_stock_flow} {@code flow_type='cut_out_in'}：分割产品总重（flow_date）</li>
- *   <li>{@code t_warehouse_loss_flow}：所有损耗按 loss_type 取（防重复计，loss_date）</li>
+ *   <li>{@code t_warehouse_loss_flow}：损耗按 loss_type 取，分割损耗通过来源单归领用日</li>
  *   <li>{@code t_warehouse_vegetable_handle}：毛菜称量 / 发往月台（picked / send_platform，pick_start_time）</li>
  *   <li>{@code t_warehouse_handle_record}：作物维度采摘 / 发往月台（按 crop_id GROUP，handle_time）</li>
  *   <li>{@code t_warehouse_feed_log}：作物维度饲喂量（权威台账，毛菜间 + 仓库领用两路径，按 crop_id GROUP，feed_date）</li>
@@ -129,21 +129,74 @@ public interface WarehouseStatAggregateMapper {
 
 
 
-    /**
-     * 分割白条数：当日转入分割车间的白条数量，半只计 0.5、整只计 1（row195 客户最新口径）。
-     *
-     * <p>cut_record 一行 = 一次领用；{@code is_half}=1 半扇（0.5）/ =2 整只（1）。按领用行逐行加权求和
-     * （整猪拆 2 半只分次领用 → 2 行各 0.5 = 1，与整只一致；只领 1 个半扇 → 0.5）。
-     * white_bar_id 为 NULL 的行不计入（非整白条）。</p>
-     */
+    /** 从本年首次接收的猪中，统计截至报表日已完成的头数。 */
     @Select("""
-        SELECT COALESCE(SUM(CASE WHEN is_half = 1 THEN 0.5 WHEN is_half = 2 THEN 1 ELSE 1 END), 0)
+        SELECT COUNT(*) AS receivedCount,
+               COUNT(CASE WHEN b.finish_time < DATE_ADD(#{statDate}, INTERVAL 1 DAY) THEN 1 END) AS completedCount
+        FROM t_warehouse_bar_info b
+        WHERE b.del_flag = '0' AND b.tenant_id = #{tenantId}
+          AND b.in_method = 1 AND b.arrive_weight IS NOT NULL
+          AND COALESCE(b.arrive_time, b.in_time) >= MAKEDATE(YEAR(#{statDate}), 1)
+          AND COALESCE(b.arrive_time, b.in_time) < DATE_ADD(#{statDate}, INTERVAL 1 DAY)
+        """)
+    Map<String, Object> selectSlaughterYtdCompletion(@Param("tenantId") String tenantId,
+                                                     @Param("statDate") String statDate);
+
+    /** 按领用日统计分割扇数，半扇 1、整只 2。 */
+    @Select("SELECT COALESCE(SUM(" + WarehouseProductionStatSql.CUT_SIDES + "), 0) " + """
         FROM t_warehouse_pig_cut_record
         WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(pickup_time) = #{statDate}
-          AND white_bar_id IS NOT NULL
-          AND out_type = 'cut'
+          AND white_bar_id IS NOT NULL AND out_type = 'cut'
         """)
-    java.math.BigDecimal countCutBar(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+    BigDecimal countCutBar(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+    /** 报表日结束时，已领用但尚未完成的白条扇数。 */
+    @Select("SELECT COALESCE(SUM(" + WarehouseProductionStatSql.CUT_SIDES + "), 0) " + """
+        FROM t_warehouse_pig_cut_record
+        WHERE del_flag = '0' AND tenant_id = #{tenantId}
+          AND white_bar_id IS NOT NULL AND out_type = 'cut'
+          AND pickup_time < DATE_ADD(#{statDate}, INTERVAL 1 DAY)
+          AND (cut_done_time IS NULL OR cut_done_time >= DATE_ADD(#{statDate}, INTERVAL 1 DAY))
+        """)
+    Integer countPendingCutSides(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+    /** 分割损耗流水保留记账日，报表通过分割单归到领用日。 */
+    @Select("""
+        SELECT COALESCE(SUM(l.loss_weight), 0)
+        FROM t_warehouse_pig_cut_record c
+        JOIN t_warehouse_loss_flow l ON l.source_biz_id = c.id AND l.tenant_id = c.tenant_id
+        WHERE c.tenant_id = #{tenantId} AND c.del_flag = '0' AND c.out_type = 'cut'
+          AND c.pickup_time >= #{statDate} AND c.pickup_time < DATE_ADD(#{statDate}, INTERVAL 1 DAY)
+          AND l.del_flag = '0' AND l.source_biz_type = 'cut' AND l.loss_type = 'cut_loss'
+        """)
+    BigDecimal sumCutLossByPickup(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+    @Select("""
+        SELECT COALESCE(SUM(f.change_quantity), 0)
+        FROM t_warehouse_stock_flow f
+        JOIN t_warehouse_product_info pi
+          ON pi.id = f.product_id AND pi.tenant_id = f.tenant_id AND pi.del_flag = '0'
+        WHERE f.tenant_id = #{tenantId} AND f.del_flag = '0'
+          AND f.flow_date >= #{statDate} AND f.flow_date < DATE_ADD(#{statDate}, INTERVAL 1 DAY)
+          AND
+        """ + WarehouseProductionStatSql.RAW_VEG_INBOUND)
+    BigDecimal sumVegRawInboundWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+    @Select("""
+        SELECT COALESCE(SUM(f.change_quantity), 0)
+        FROM t_warehouse_stock_flow f
+        JOIN t_warehouse_product_info pi
+          ON pi.id = f.product_id AND pi.tenant_id = f.tenant_id AND pi.del_flag = '0'
+        WHERE f.tenant_id = #{tenantId} AND f.del_flag = '0'
+          AND f.flow_date >= #{statDate} AND f.flow_date < DATE_ADD(#{statDate}, INTERVAL 1 DAY)
+          AND f.inout_type = 'OT' AND f.flow_type = 'ship_out' AND pi.belong_type = 'vegetable'
+        """)
+    BigDecimal sumVegDeliveryOutWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+    @Select("SELECT " + WarehouseProductionStatSql.VEG_PORTIONS
+        + WarehouseProductionStatSql.PRODUCE_FROM + WarehouseProductionStatSql.VEG_PRODUCE_WHERE
+        + " AND pp.produce_date = #{statDate}")
+    Integer countVegProducedPortions(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
     /** 分割白条总重：当日白条出库总重 = Σ cut_record.pickup_weight（pickup_time）。仅计分割领用（out_type='cut'）。 */
     @Select("""
@@ -459,6 +512,8 @@ public interface WarehouseStatAggregateMapper {
      * 凑——那几列含没有出栏重量的猪，跟比率不是同一批。也不能拿日比率求平均，不能用
      * {@code finished_arrive_weight}（诊断列）。</p>
      *
+     * <p>矩阵累计只纳入截至昨日的日率。</p>
+     *
      * @param month yyyy-MM
      */
     @Select("""
@@ -468,10 +523,35 @@ public interface WarehouseStatAggregateMapper {
                COALESCE(SUM(bar_yield_numer_weight), 0)       AS sumBarYieldNumer,
                COALESCE(SUM(bar_yield_base_weight), 0)        AS sumBarYieldBase,
                COALESCE(SUM(cut_product_weight), 0)           AS sumCutProduct,
-               COALESCE(SUM(cut_bar_weight), 0)               AS sumCutBar
+               COALESCE(SUM(cut_bar_weight), 0)              AS sumCutBar,
+               COALESCE(SUM(bar_total_weight), 0)            AS sumBarWeight,
+               COALESCE(SUM(bar_pig_count), 0)               AS sumBarPigCount,
+               COALESCE(SUM(CASE WHEN stat_date < CURDATE() THEN bar_yield_rate END), 0) AS sumDailyBarRate,
+               COUNT(CASE WHEN stat_date < CURDATE() AND bar_yield_rate > 0 THEN 1 END) AS positiveBarRateDays,
+               COALESCE(SUM(cut_bar_count), 0)               AS cutBarCount,
+               COALESCE(SUM(cut_loss), 0)                    AS cutLoss,
+               COALESCE(SUM(cut_bar_weight), 0)              AS cutLossPickupWeight,
+               COALESCE(SUM(prod_pick_weight), 0)            AS vegProductionPickWeight,
+               COALESCE(SUM(veg_raw_inbound_weight), 0)      AS vegRawInboundWeight,
+               COALESCE(SUM(veg_delivery_out_weight), 0)     AS vegDeliveryOutWeight,
+               COALESCE(SUM(veg_produced_portion_count), 0)   AS vegProducedPortionCount
         FROM t_warehouse_indicator_record
         WHERE del_flag = '0' AND tenant_id = #{tenantId}
           AND DATE_FORMAT(stat_date, '%Y-%m') = #{month}
         """)
     Map<String, Object> sumMonthlyFromDaily(@Param("tenantId") String tenantId, @Param("month") String month);
+
+    /** 汇总指定月份范围内的年度指标基数。 */
+    @Select("""
+        SELECT COALESCE(SUM(cut_loss), 0) AS cutLoss,
+               COALESCE(SUM(cut_loss_pickup_weight), 0) AS cutLossPickupWeight,
+               COALESCE(SUM(veg_raw_inbound_weight), 0) AS vegRawInboundWeight,
+               COALESCE(SUM(veg_delivery_out_weight), 0) AS vegDeliveryOutWeight
+        FROM t_warehouse_monthly_record
+        WHERE tenant_id = #{tenantId} AND del_flag = '0'
+          AND stat_month >= #{firstMonth} AND stat_month <= #{lastMonth}
+        """)
+    Map<String, Object> sumAnnualFromMonthly(@Param("tenantId") String tenantId,
+                                            @Param("firstMonth") String firstMonth,
+                                            @Param("lastMonth") String lastMonth);
 }

@@ -4,6 +4,7 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.warehouse.stat.domain.vo.WarehouseAnnualRecordVo;
 import org.dromara.djs.warehouse.stat.domain.vo.WarehouseCroppRecordVo;
 import org.dromara.djs.warehouse.stat.domain.vo.WarehouseIndicatorRecordVo;
 import org.dromara.djs.warehouse.stat.domain.vo.WarehouseMonthlyRecordVo;
@@ -21,7 +22,7 @@ import java.util.List;
 /**
  * 仓库统计指标 Controller（WMS-STAT-001，邓博 admin row16/17/18）。
  *
- * <p>3 个只读列表（仓库日报表 / 作物日报表 / 仓库月报表）+ 1 个手动补算端点。
+ * <p>仓库日、作物日、月、年查询和手动补算。
  * 全部走只读权限串 {@code djs:warehouse:stat:list}。落盘数据由 WarehouseStatJob 每晚跑批。</p>
  *
  * @author djs
@@ -76,6 +77,13 @@ public class WarehouseStatController extends BaseController {
         return R.ok(warehouseStatService.listMonthly(monthFrom, monthTo));
     }
 
+    /** 年指标由指定年度月表基数汇总。 */
+    @SaCheckPermission("djs:warehouse:stat:list")
+    @GetMapping("/annual")
+    public R<WarehouseAnnualRecordVo> annual(@RequestParam int year) {
+        return R.ok(warehouseStatService.getAnnual(year));
+    }
+
     /**
      * 手动触发聚合落盘（补算 / 验证用）。不传 date = T-1 昨天。
      *
@@ -91,8 +99,7 @@ public class WarehouseStatController extends BaseController {
     }
 
     /**
-     * 手动回补猪肉段（按接收 cohort 重算区间内每天日表的屠宰指标并刷新月表），用于口径调整后的历史补算。
-     * 只动猪肉段那几列，日表其它段与作物日表不变。
+     * 手动回补区间内仓库生产指标并重算涉及月表，保留原 /refresh-pork 路径。
      *
      * @param from 起始日（含，yyyy-MM-dd）
      * @param to   截止日（含，yyyy-MM-dd）
@@ -102,6 +109,6 @@ public class WarehouseStatController extends BaseController {
     public R<String> refreshPork(
         @RequestParam @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate from,
         @RequestParam @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate to) {
-        return R.ok(warehouseStatService.refreshPorkSegment(from, to));
+        return R.ok(warehouseStatService.refreshProductionIndicators(from, to));
     }
 }

@@ -17,7 +17,7 @@ import java.time.LocalDate;
  *
  * <p>每日凌晨重算 T-1 的 日({@code t_warehouse_indicator_record}) + 作物日
  * ({@code t_warehouse_cropp_record}) → 当月月表({@code t_warehouse_monthly_record}) 聚合（UPSERT 幂等），
- * 再回补最近 {@value WarehouseStatServiceImpl#PORK_REFRESH_DAYS} 天日表的猪肉段（接收 cohort，D-0140）。
+ * 再回补最近 {@value WarehouseStatServiceImpl#INDICATOR_REFRESH_DAYS} 天日表的仓库生产指标。
  * 聚合逻辑复用 {@link IWarehouseStatService#aggregate}（与手动端点
  * {@code POST /djs/warehouse/stat/trigger-aggregate} 同源），本类只负责「定时触发 + 租户上下文」。</p>
  *
@@ -51,15 +51,15 @@ public class WarehouseStatJob {
 
     /**
      * 每日 0:00 触发：重算昨天 T-1（邓博 row9：每晚 12 点；养殖/仓库独立域，并发安全），
-     * 再回补此前一个月的猪肉段 —— 隔天才处理完的猪要补进它的接收日（甲方 V6 行284）。
+     * 再按业务日期回补 T-32 至 T-2 的仓库生产指标。
      */
     @Scheduled(cron = "${djs.schedule.warehouse-stat-cron:0 0 0 * * ?}")
     public void aggregate() {
         DjsJobRunner.run(JOB_NAME, () -> {
-            warehouseStatService.aggregate(null);
             LocalDate yesterday = LocalDate.now().minusDays(1);
-            warehouseStatService.refreshPorkSegment(
-                yesterday.minusDays(WarehouseStatServiceImpl.PORK_REFRESH_DAYS), yesterday.minusDays(1));
+            warehouseStatService.aggregate(yesterday);
+            warehouseStatService.refreshProductionIndicators(
+                yesterday.minusDays(WarehouseStatServiceImpl.INDICATOR_REFRESH_DAYS), yesterday.minusDays(1));
         });
     }
 }

@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.djs.warehouse.dashboard.mapper.WarehouseProductionDashboardMapper;
+import org.dromara.djs.warehouse.dashboard.mapper.WarehouseProductionDashboardMapper.SlaughterSummaryRow;
 import org.dromara.djs.warehouse.loss.service.IProductionLossService;
 import org.dromara.djs.warehouse.stat.domain.WarehouseIndicatorRecord;
 import org.dromara.djs.warehouse.stat.domain.WarehouseMonthlyRecord;
@@ -49,7 +51,7 @@ import static org.mockito.Mockito.when;
  *   <li>屠宰出品率、白条出品率取完整接收批次的重量之和</li>
  *   <li>处理完成头数 / 其接收重量之和只落盘，不参与任何比率或均值</li>
  *   <li>cohort 为空 / 分母 0 → 比率与均值落 null（不造假）</li>
- *   <li>回补只改猪肉段那几列（不把日表其它段清空），并刷新涉及的月表</li>
+ *   <li>回补生产指标（保留未参与回刷的列），并刷新涉及的月表</li>
  *   <li>月表比率从日表落下的基数列 Σ 后重算</li>
  * </ol>
  *
@@ -77,6 +79,8 @@ class WarehouseStatServiceImplTest {
     private WarehouseMonthlyRecordMapper monthlyMapper;
     @Mock
     private IProductionLossService productionLossService;
+    @Mock
+    private WarehouseProductionDashboardMapper productionMapper;
 
     @InjectMocks
     private WarehouseStatServiceImpl service;
@@ -112,6 +116,10 @@ class WarehouseStatServiceImplTest {
         when(aggregateMapper.sumMonthlyFromDaily(anyString(), anyString())).thenReturn(Map.of());
         when(indicatorMapper.selectOne(any())).thenReturn(null);
         when(monthlyMapper.selectOne(any())).thenReturn(null);
+        SlaughterSummaryRow source = new SlaughterSummaryRow();
+        source.setSlaughterCount(2);
+        source.setSlaughterWeight(bd("260"));
+        when(productionMapper.selectSlaughterInRange(anyString(), any(), any())).thenReturn(source);
     }
 
     @AfterEach
@@ -189,6 +197,8 @@ class WarehouseStatServiceImplTest {
         assertThat(saved.getSlaughterRate()).isNull();
         assertThat(saved.getBarYieldRate()).isNull();
         assertThat(saved.getBarTotalWeight()).isEqualByComparingTo("0.000");
+        assertThat(saved.getSlaughterCompletionRate()).isEqualByComparingTo("0.00");
+        assertThat(saved.getCutLossRate()).isNull();
     }
 
     /** 已有日表行时整行更新：头数归零后均重写 NULL（不残留旧值）。 */
@@ -214,18 +224,17 @@ class WarehouseStatServiceImplTest {
     }
 
     /**
-     * 回补：已有日表行只 set 猪肉段那几列 —— 日表实体里分割段等列标了 ALWAYS，
-     * 用实体 updateById 会把它们清成 NULL。这里钉住「不走 updateById、SET 里没有分割列」。
+     * 回补已有日表时只更新实际计算的列，保留预冷、毛菜称量和月台等独立指标。
      */
     @Test
-    @DisplayName("回补已有日表行：只 SET 猪肉段列，不用 updateById（避免把分割段等列清空），并刷新月表")
-    void testRefreshUpdatesOnlyPorkColumns() {
+    @DisplayName("回补已有日表行：更新生产指标、保留独立指标并刷新月表")
+    void testRefreshUpdatesProductionColumns() {
         stubCohort(2, bd("260"), bd("220"), bd("200"), bd("220"), bd("260"), bd("200"));
         WarehouseIndicatorRecord existing = new WarehouseIndicatorRecord();
         existing.setId(9L);
         when(indicatorMapper.selectOne(any())).thenReturn(existing);
 
-        service.refreshPorkSegment(DATE, DATE);
+        service.refreshProductionIndicators(DATE, DATE);
 
         ArgumentCaptor<Wrapper<WarehouseIndicatorRecord>> captor = ArgumentCaptor.forClass(Wrapper.class);
         verify(indicatorMapper).update(org.mockito.ArgumentMatchers.isNull(), captor.capture());
@@ -233,7 +242,10 @@ class WarehouseStatServiceImplTest {
         String sqlSet = captor.getValue().getSqlSet();
         assertThat(sqlSet).contains("slaughter_count", "avg_slaughter_weight", "avg_arrive_weight",
             "slaughter_rate", "bar_total_weight", "avg_bar_weight", "bar_yield_rate");
-        assertThat(sqlSet).doesNotContain("cut_bar_count", "cut_rate", "veg_loss", "finished_count");
+        assertThat(sqlSet).contains("finished_count", "slaughter_ytd_received_count", "slaughter_ytd_completed_count",
+            "slaughter_completion_rate", "cut_bar_count", "cut_loss", "cut_loss_rate", "cut_pending_half_count",
+            "veg_raw_inbound_weight", "veg_delivery_out_weight", "veg_produced_portion_count", "prod_pick_weight");
+        assertThat(sqlSet).doesNotContain("precool_loss", "veg_weigh_weight", "transport_loss_rate");
         // 回补不碰作物日表和生产损耗
         verify(croppMapper, never()).insert(any(org.dromara.djs.warehouse.stat.domain.WarehouseCroppRecord.class));
         verify(productionLossService, never()).aggregate(any());
@@ -248,7 +260,7 @@ class WarehouseStatServiceImplTest {
         stubCohort(1, bd("120"), bd("100"), bd("90"), bd("100"), bd("120"), bd("90"));
         stubFinished(0, BigDecimal.ZERO);
 
-        String msg = service.refreshPorkSegment(DATE, DATE);
+        String msg = service.refreshProductionIndicators(DATE, DATE);
 
         verify(indicatorMapper).insert(any(WarehouseIndicatorRecord.class));
         assertThat(msg).contains("created=1");
@@ -257,7 +269,7 @@ class WarehouseStatServiceImplTest {
     @Test
     @DisplayName("回补区间倒置 → 直接拒绝")
     void testRefreshRejectsInvertedRange() {
-        assertThatThrownBy(() -> service.refreshPorkSegment(DATE, DATE.minusDays(1)))
+        assertThatThrownBy(() -> service.refreshProductionIndicators(DATE, DATE.minusDays(1)))
             .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -272,14 +284,22 @@ class WarehouseStatServiceImplTest {
         stubCohort(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
             BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
         stubFinished(0, BigDecimal.ZERO);
-        when(aggregateMapper.sumMonthlyFromDaily(TENANT, MONTH)).thenReturn(Map.of(
-            "slaughterCount", 7,
-            "sumRateArrive", bd("420"),
-            "sumRateBase", bd("500"),
-            "sumBarYieldNumer", bd("380"),
-            "sumBarYieldBase", bd("400"),
-            "sumCutProduct", bd("150"),
-            "sumCutBar", bd("200")));
+        when(aggregateMapper.sumMonthlyFromDaily(TENANT, MONTH)).thenReturn(Map.ofEntries(
+            Map.entry("slaughterCount", 7),
+            Map.entry("sumRateArrive", bd("420")),
+            Map.entry("sumRateBase", bd("500")),
+            Map.entry("sumBarYieldNumer", bd("380")),
+            Map.entry("sumBarYieldBase", bd("400")),
+            Map.entry("sumCutProduct", bd("150")),
+            Map.entry("sumCutBar", bd("200")),
+            Map.entry("sumBarWeight", bd("300")),
+            Map.entry("sumBarPigCount", 3),
+            Map.entry("sumDailyBarRate", bd("100")),
+            Map.entry("positiveBarRateDays", 2),
+            Map.entry("cutLoss", bd("4")),
+            Map.entry("cutLossPickupWeight", bd("400")),
+            Map.entry("vegProductionPickWeight", bd("100")),
+            Map.entry("vegProducedPortionCount", 20)));
 
         service.aggregate(DATE);
 
@@ -292,6 +312,13 @@ class WarehouseStatServiceImplTest {
         assertThat(m.getSlaughterRate()).isEqualByComparingTo("84.000");
         assertThat(m.getBarYieldRate()).isEqualByComparingTo("95.000");
         assertThat(m.getCutYieldRate()).isEqualByComparingTo("75.000");
+        assertThat(m.getSourceMarketingCount()).isEqualTo(2);
+        assertThat(m.getSourceMarketingAvgWeight()).isEqualByComparingTo("130.000");
+        assertThat(m.getReceivedBarAvgWeight()).isEqualByComparingTo("100.000");
+        assertThat(m.getMatrixBarYieldRate()).isEqualByComparingTo("50.00");
+        assertThat(m.getCutLossRate()).isEqualByComparingTo("1.00");
+        assertThat(m.getVegProductionPickWeight()).isEqualByComparingTo("100.000");
+        assertThat(m.getVegProducedPortionCount()).isEqualTo(20);
     }
 
     /** 月表分母为 0 → 比率 null（配 ALWAYS 更新策略真覆盖旧值）。 */
@@ -319,6 +346,38 @@ class WarehouseStatServiceImplTest {
         assertThat(m.getSlaughterRate()).isNull();
         assertThat(m.getBarYieldRate()).isNull();
         assertThat(m.getCutYieldRate()).isNull();
+    }
+
+    @Test
+    void testDailyCalculatesCompletionAndCutLossOnTheirBases() {
+        when(aggregateMapper.selectSlaughterYtdCompletion(TENANT, DATE_STR))
+            .thenReturn(Map.of("receivedCount", 100, "completedCount", 90));
+        when(aggregateMapper.sumCutBarWeight(TENANT, DATE_STR)).thenReturn(bd("100"));
+        when(aggregateMapper.sumCutLossByPickup(TENANT, DATE_STR)).thenReturn(bd("4"));
+        when(aggregateMapper.sumVegDeliveryOutWeight(TENANT, DATE_STR)).thenReturn(bd("30"));
+
+        WarehouseIndicatorRecord row = runAggregateAndCaptureDaily();
+
+        assertThat(row.getSlaughterYtdReceivedCount()).isEqualTo(100);
+        assertThat(row.getSlaughterYtdCompletedCount()).isEqualTo(90);
+        assertThat(row.getSlaughterCompletionRate()).isEqualByComparingTo("90.00");
+        assertThat(row.getCutLossRate()).isEqualByComparingTo("4.00");
+        assertThat(row.getVegDeliveryOutWeight()).isEqualByComparingTo("30.000");
+    }
+
+    @Test
+    void testAnnualUsesMonthlyTotalsAndReturnsTheirBases() {
+        when(aggregateMapper.sumAnnualFromMonthly(TENANT, "2026-01", "2026-12"))
+            .thenReturn(Map.of("cutLoss", bd("4"), "cutLossPickupWeight", bd("400"),
+                "vegRawInboundWeight", bd("50"), "vegDeliveryOutWeight", bd("35")));
+
+        var year = service.getAnnual(2026);
+
+        assertThat(year.cutLoss()).isEqualByComparingTo("4");
+        assertThat(year.cutLossPickupWeight()).isEqualByComparingTo("400");
+        assertThat(year.cutLossRate()).isEqualByComparingTo("1.00");
+        assertThat(year.vegRawInboundWeight()).isEqualByComparingTo("50");
+        assertThat(year.vegDeliveryOutWeight()).isEqualByComparingTo("35");
     }
 
     // ============================================================
