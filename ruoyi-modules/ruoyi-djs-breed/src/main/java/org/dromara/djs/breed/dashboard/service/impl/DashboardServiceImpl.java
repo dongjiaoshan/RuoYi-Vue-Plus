@@ -37,6 +37,7 @@ import org.dromara.djs.breed.production.domain.vo.FattenAgeStageVo;
 import org.dromara.djs.breed.production.mapper.SowPerformanceMapper;
 import org.dromara.djs.breed.production.service.IFattenAgeStageService;
 import org.dromara.djs.breed.production.service.IProductionCycleConfigService;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -57,6 +58,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.TreeSet;
 
 /**
  * 养殖 dashboard 聚合查询 + 聚合写入实现（BRD-DASH-001）。
@@ -109,6 +111,9 @@ public class DashboardServiceImpl implements IDashboardService {
     private final IProductionCycleConfigService productionCycleConfigService;
     private final IFattenAgeStageService fattenAgeStageService;
     private final ProductionIndicatorCalculator productionIndicators;
+
+    @Value("${djs.schedule.breed-aggregate-rebuild-days:60}")
+    private int rebuildDays = 60;
 
     /** 配种→分娩天数配置键（row183）：缺省 114 天。 */
     private static final String CONFIG_KEY_BREED_TO_FARROW = "sow_breed_to_farrow_days";
@@ -908,8 +913,46 @@ public class DashboardServiceImpl implements IDashboardService {
             month.getLactationValidLitterCount(), month.getAvgLactationDaysWeaned(),
             month.getLactationDaysSumByFarrow(), month.getAvgLactationDaysFarrowed(), month.getBirthLitterWeanedPigletCount(),
             month.getAvgBirthLitterWeanedPiglets(), month.getAbortionCount(), month.getWeanAgeDaysSum(),
-            month.getWeanAgeValidCount(), month.getAvgWeanAgeDays(), month.getAvgMarketingWeight(),
-            month.getMarketingCount(), month.getMarketingWeight(), month.getWeanedCount(), month.getAvgWeanedPerLitter());
+            month.getWeanAgeValidCount(),
+            month.getAvgWeanAgeDays() == null ? null : month.getAvgWeanAgeDays().setScale(1, RoundingMode.HALF_UP),
+            month.getAvgMarketingWeight(),
+            month.getMarketingCount(), month.getMarketingWeight(), month.getWeanedCount(), month.getAvgWeanedPerLitter(),
+            month.getAvgProdSowStock(), month.getFarrowLossRate(), month.getBornCount(),
+            month.getDeathCount(), month.getCullingCount(), month.getWeanBreedInterval(),
+            month.getFarrowRate(), month.getMateLitterCount(), month.getCohortFarrowCount(),
+            month.getTotalBornCount(), month.getAvgBornPerLitter(), month.getAvgLiveBornPerLitter(),
+            month.getMonthNpdDays(), month.getNpdDays(), month.getBreedingSowCount(),
+            month.getRepeatBreedingSowCount(), month.getRepeatBreedingRate(), month.getEntryFirstBreedDaysSum(),
+            month.getEntryFirstBreedValidCount(), month.getAvgEntryFirstBreedDays(), month.getReserveFirstBreedAgeDaysSum(),
+            month.getReserveFirstBreedAgeValidCount(), month.getAvgReserveFirstBreedAgeDays(), month.getWeanBreedDaysSum(),
+            month.getWeanBreedValidCount(), month.getDailyFarrowSowCount(), month.getDailyLiveBornCount(),
+            month.getFarrowParitySum(), month.getFarrowParityValidCount(), month.getAvgFarrowParity(),
+            month.getSmallLiveBornLitterCount(), month.getSmallLiveBornLitterRate(), month.getHealthyBornCount(),
+            month.getHealthyBornRecordCount(), month.getAvgHealthyBornPerLitter(), month.getDeadBornCount(),
+            month.getDeadBornRate(), month.getAvgDeadBornPerLitter(), month.getMummyBornCount(),
+            month.getMummyBornRate(), month.getAvgMummyBornPerLitter(), month.getFarrowBornCount(),
+            month.getGestationDaysSum(), month.getGestationValidCount(), month.getAvgGestationDays(),
+            month.getBirthWeightSum(), month.getBirthWeightPigletCount(), month.getAvgBirthWeight(),
+            month.getWeanedWeightSum(), month.getAvgWeanedWeight(), month.getFarrowLossCount(),
+            month.getFarrowLossLiveBornCount(), month.getUnlinkedPigletDeathCullCount(), month.getMarketingAgeDaysSum(),
+            month.getMarketingAgeValidCount(), month.getMarketingMissingBirthCount(), month.getAvgMarketingAgeDays(),
+            month.getMarketingNetGainKg(), month.getMarketingGainDays(), month.getAvgDailyGainGrams(),
+            month.getPigletDeathCount(), month.getProductionSowCullCount(), month.getProductionSowCullRate(),
+            month.getProductionSowDeathCount(), month.getProductionSowDeathRate(), month.getOpeningPigletStock(),
+            month.getFarrowingHousePigletCount(), month.getFarrowingHouseDeathRate(), month.getFatteningDeathCount(),
+            month.getFatteningDeathRate(), month.getFatteningCullCount(), month.getFatteningCullRate(),
+            month.getFatteningStockSum(), month.getAvgFatteningStock(), month.getFeedWeightKg(),
+            month.getOrganicFeedWeightKg(), month.getVaccinePigTimes(), month.getHealthPigTimes(),
+            month.getTreatmentPigTimes(), month.getDeathCullCount(), month.getReturnHeatCount(),
+            month.getEmptySowCount(), month.getEndProductionSowStock(), month.getEndProductionSowStockDate(),
+            month.getProductionSowStockSum(), month.getIndicatorDayCount(), month.getPigletDeathAgeDaysSum(),
+            month.getPigletDeathAgeValidCount(), month.getPigletDeathMissingBirthCount(), month.getAvgPigletDeathAgeDays(),
+            month.getWeaningTransferAgeDaysSum(), month.getWeaningTransferAgeValidCount(), month.getAvgWeaningTransferAgeDays(),
+            month.getWeaningTransferWeightSum(), month.getWeaningTransferWeightValidCount(), month.getAvgWeaningTransferWeight(),
+            month.getHealthyBornTotalCount(), month.getHealthyBornRate(), month.getWeakBornCount(),
+            month.getAvgWeakBornPerLitter(), month.getWeakBornRate(), month.getNewProductionSowCount(),
+            month.getProductionSowReplacementRate(), month.getCulledSowParitySum(), month.getCulledSowParityValidCount(),
+            month.getAvgCulledSowParity(), month.getPregnancyLossSowCount(), month.getPregnancyLossRate());
     }
 
     /** 月表 BigDecimal 字段取值：m 或值为 null → ZERO。 */
@@ -1017,11 +1060,6 @@ public class DashboardServiceImpl implements IDashboardService {
             return new BigDecimal(n.toString());
         }
         return BigDecimal.ZERO;
-    }
-
-    /** 有效个体为零时保留缺失，其余按总量和有效头数计算。 */
-    private static BigDecimal measuredAverage(BigDecimal sum, int validCount) {
-        return validCount == 0 ? null : scale3(divide(sum, validCount));
     }
 
     /** 安全除：denom&lt;=0 返 0；保留 6 位中间精度，外层再 setScale。 */
@@ -1179,18 +1217,40 @@ public class DashboardServiceImpl implements IDashboardService {
     @Transactional(rollbackFor = Exception.class)
     public void aggregateRollups(String tenantId, LocalDate asOf,
                                  Collection<YearMonth> months, Collection<Short> years) {
+        var affectedMonths = new TreeSet<>(months);
+        var affectedYears = new TreeSet<>(years);
+        for (YearMonth month : months) {
+            LocalDateTime start = month.atDay(1).atStartOfDay();
+            LocalDateTime end = month.plusMonths(1).atDay(1).atStartOfDay();
+            LocalDateTime cutoff = LocalDate.now().atStartOfDay();
+            if (end.isAfter(cutoff)) {
+                end = cutoff;
+            }
+            for (LocalDate weanDate : productionIndicators.priorMaternalWeanDates(tenantId, start, end,
+                asOf.minusDays(Math.max(rebuildDays, 1) - 1L), end)) {
+                affectedMonths.add(YearMonth.from(weanDate));
+                affectedYears.add((short) weanDate.getYear());
+            }
+            // 回刷月末日报也会改变已存在的次月期初仔猪存栏（第 80 行）。
+            YearMonth next = month.plusMonths(1);
+            if (!asOf.isBefore(month.atEndOfMonth()) && !months.contains(next)
+                && next.atDay(1).isBefore(cutoff.toLocalDate()) && selectMonth(tenantId, next) != null) {
+                affectedMonths.add(next);
+                affectedYears.add((short) next.getYear());
+            }
+        }
         // 必须排在月/年 upsert 之前：那两步的分娩率现在直接读 t_farm_farrowing_rate，
         // 先刷表再汇总，否则本轮算的是上一轮的结局快照。
-        refreshFarrowingRate(tenantId, months);
+        refreshFarrowingRate(tenantId, affectedMonths);
         // 同理，断奶记录的三个汇总列是逐头明细的冗余（甲方 V6 行239 第 2 点），
         // 明细改过之后不拉齐，月/年断奶类指标就会算在陈旧值上。窗口 30 天见 D-0102。
         weaningAggregateSyncMapper.resyncFromDetail(
             tenantId, asOf.minusDays(WEANING_RESYNC_DAYS - 1L), asOf.plusDays(1));
         upsertSowPerformance(tenantId, asOf);
-        for (YearMonth m : months) {
+        for (YearMonth m : affectedMonths) {
             upsertMonthlyProduction(tenantId, m);
         }
-        for (Short y : years) {
+        for (Short y : affectedYears) {
             upsertAnnualIndicator(tenantId, y);
         }
     }
@@ -1724,7 +1784,8 @@ public class DashboardServiceImpl implements IDashboardService {
 
         // row43①：引种、活产、死亡、淘汰有日表时取日表 Σ，且按 T-1 收口
         //   （日表无未来行）；日表整段无行（历史未落盘）才回落业务表兜底。
-        boolean useDaily = aggregateQueryMapper.countIndicatorDays(tenantId, from, to) > 0;
+        int daysElapsedInMonth = aggregateQueryMapper.countIndicatorDays(tenantId, from, to);
+        boolean useDaily = daysElapsedInMonth > 0;
 
         // ---- row13 高级指标（从已落盘 farm_indicator 日表 Σ 回读 + 部分实时算） ----
         Map<String, Object> sum = aggregateQueryMapper.sumIndicatorRange(tenantId, from, to);
@@ -1788,7 +1849,6 @@ public class DashboardServiceImpl implements IDashboardService {
         BigDecimal weanBreedInterval = wbCnt > 0 ? scale3(divide(new BigDecimal(wbDays), wbCnt)) : BigDecimal.ZERO;
         // 月均生产母猪存栏（row114 新列）= Σ日期末生产母猪头数 / 当月「已历天数」（= 当月已落盘日表天数，
         //   与年表 daysElapsed 同口径；非自然月天数——当月未走完时按已历天数，避免分母虚大拉低月均存栏）
-        int daysElapsedInMonth = aggregateQueryMapper.countIndicatorDays(tenantId, from, to);
         BigDecimal avgProdSowStock = scale3(divide(new BigDecimal(sumEndProdSow), daysElapsedInMonth));
         // 当月NPD天数（D-0129）= Σ日非生产母猪头数 + Σ日妊娠损失天数，去掉 230 后备。
         //   从两个原始字段分别汇总，妊娠损失只计一次；日 npd_days 已包含妊娠损失。
@@ -1801,15 +1861,15 @@ public class DashboardServiceImpl implements IDashboardService {
         BigDecimal avgBornPerLitter = scale3(divide(new BigDecimal(sumTotalBorn), sumFarrowSow));
         BigDecimal avgLiveBornPerLitter = scale3(divide(new BigDecimal(sumLiveBorn), sumFarrowSow));
         BigDecimal avgWeanedPerLitter = scale3(divide(BigDecimal.valueOf(weanedCount), weaning.count()));
-        // 产房损失率% = Σ本窝哺乳期死淘数 / Σ本窝活仔数，只统计当月已断奶的窝（D-0065）。
-        //   分子取断奶登记填的 lactation_death_count，不用「活仔 − 断奶数」倒算：贴标率不足时断奶清单
-        //   铺行数 < 活仔数，差值会把「没贴标所以没进清单」的头误判成死亡。
-        //   分母只算已断奶的窝，不会把「已分娩未到断奶期」的窝误算成损失。
-        Map<String, Object> loss = aggregateQueryMapper.selectFarrowHouseLoss(tenantId, from, to);
-        BigDecimal farrowLossRate = farrowHouseLossRate(loss);
-
         MonthlyProduction m = existingOrNew(selectMonth(tenantId, month), MonthlyProduction::new);
         m.setStatMonth(month.toString());
+        m.setBreedingSowCount(breedingSowCount);
+        m.setWeanBreedDaysSum(wbDays);
+        m.setWeanBreedValidCount(wbCnt);
+        m.setDailyFarrowSowCount(sumFarrowSow);
+        m.setDailyLiveBornCount(sumLiveBorn);
+        m.setIndicatorDayCount(daysElapsedInMonth);
+        m.setProductionSowStockSum(sumEndProdSow);
         m.setIntroduceCount(introduceCount);
         m.setIntroduceBoarCount(introduceBoarCount);
         m.setBornCount(bornCount);
@@ -1832,13 +1892,12 @@ public class DashboardServiceImpl implements IDashboardService {
         m.setAvgBirthLitterWeanedPiglets(scale3(divide(BigDecimal.valueOf(weaning.birthLitterPiglets()), weaning.count())));
         m.setReserveFirstBreedCount(productionIndicators.firstReserveBreeding(tenantId, dtFrom, dtTo));
         m.setFirstParityFarrowSowCount(mapInt(farrow, "firstParity"));
-        m.setAbortionCount(mapInt(productionIndicators.abnormalTotals(tenantId, dtFrom, dtTo), "abortion"));
         var measures = productionIndicators.pigletMeasures(tenantId, dtFrom, dtTo);
         int ageSum = mapInt(measures, "ageDaysSum");
         int ageCount = mapInt(measures, "ageValidCount");
         m.setWeanAgeDaysSum(ageSum);
         m.setWeanAgeValidCount(ageCount);
-        m.setAvgWeanAgeDays(measuredAverage(BigDecimal.valueOf(ageSum), ageCount));
+        m.setAvgWeanAgeDays(monthlyAverage(ageSum, ageCount, 1));
         m.setMateLitterCount(mateLitter);
         m.setCohortFarrowCount(cohortFarrow);
         m.setFarrowRate(farrowRate);
@@ -1852,7 +1911,7 @@ public class DashboardServiceImpl implements IDashboardService {
         m.setAvgBornPerLitter(avgBornPerLitter);
         m.setAvgLiveBornPerLitter(avgLiveBornPerLitter);
         m.setAvgWeanedPerLitter(avgWeanedPerLitter);
-        m.setFarrowLossRate(farrowLossRate);
+        populateMonthlyIndicators(tenantId, from, to, sum, m, marketing, weaning);
         if (m.getId() == null) {
             m.setDelFlag("0");
             m.setDelUnique(0L);
@@ -1860,6 +1919,150 @@ public class DashboardServiceImpl implements IDashboardService {
         } else {
             monthlyProductionMapper.updateById(m);
         }
+    }
+
+    private void populateMonthlyIndicators(String tenantId, LocalDate from, LocalDate to, Map<String, Object> daily,
+                                           MonthlyProduction month, ProductionIndicatorCalculator.Marketing marketing,
+                                           ProductionIndicatorCalculator.Weaning weaning) {
+        LocalDateTime start = from.atStartOfDay();
+        LocalDateTime end = to.atStartOfDay();
+
+        // 45–49 配种指标，按业务日选配种、按母猪去重。
+        int repeat = productionIndicators.repeatBreedingCount(tenantId, start, end);
+        month.setRepeatBreedingSowCount(repeat);
+        month.setRepeatBreedingRate(monthlyPercent(repeat, month.getBreedingSowCount()));
+        var first = productionIndicators.firstBreedingMeasures(tenantId, start, end);
+        month.setEntryFirstBreedDaysSum(mapInt(first, "entryDays"));
+        month.setEntryFirstBreedValidCount(mapInt(first, "entryCount"));
+        month.setAvgEntryFirstBreedDays(monthlyAverage(month.getEntryFirstBreedDaysSum(), month.getEntryFirstBreedValidCount(), 1));
+        month.setReserveFirstBreedAgeDaysSum(mapInt(first, "reserveAge"));
+        month.setReserveFirstBreedAgeValidCount(mapInt(first, "reserveAgeCount"));
+        month.setAvgReserveFirstBreedAgeDays(monthlyAverage(
+            month.getReserveFirstBreedAgeDaysSum(), month.getReserveFirstBreedAgeValidCount(), 1));
+
+        // 57–66、106–108 同一批分娩源。健仔率的分母只来自有健仔记录的分娩单。
+        var farrow = productionIndicators.monthlyFarrowMeasures(tenantId, start, end);
+        int litters = month.getFarrowSowCount();
+        month.setFarrowParitySum(mapInt(farrow, "paritySum"));
+        month.setFarrowParityValidCount(mapInt(farrow, "parityCount"));
+        month.setAvgFarrowParity(monthlyAverage(month.getFarrowParitySum(), month.getFarrowParityValidCount(), 2));
+        month.setSmallLiveBornLitterCount(mapInt(farrow, "smallLitters"));
+        month.setSmallLiveBornLitterRate(monthlyPercent(month.getSmallLiveBornLitterCount(), litters));
+        month.setHealthyBornCount(nullableInt(farrow, "healthy"));
+        month.setHealthyBornRecordCount(mapInt(farrow, "healthyRecords"));
+        month.setHealthyBornTotalCount(mapInt(farrow, "healthyTotal"));
+        month.setAvgHealthyBornPerLitter(monthlyAverage(mapInt(farrow, "healthy"), litters, 3));
+        month.setHealthyBornRate(monthlyPercent(mapInt(farrow, "healthy"), month.getHealthyBornTotalCount()));
+        month.setDeadBornCount(mapInt(farrow, "deadBorn"));
+        month.setMummyBornCount(mapInt(farrow, "mummyBorn"));
+        month.setWeakBornCount(mapInt(farrow, "weakBorn"));
+        month.setFarrowBornCount(mapInt(farrow, "totalBorn"));
+        month.setDeadBornRate(monthlyPercent(month.getDeadBornCount(), month.getFarrowBornCount()));
+        month.setMummyBornRate(monthlyPercent(month.getMummyBornCount(), month.getFarrowBornCount()));
+        month.setWeakBornRate(monthlyPercent(month.getWeakBornCount(), month.getFarrowBornCount()));
+        month.setAvgDeadBornPerLitter(monthlyAverage(month.getDeadBornCount(), litters, 3));
+        month.setAvgMummyBornPerLitter(monthlyAverage(month.getMummyBornCount(), litters, 3));
+        month.setAvgWeakBornPerLitter(monthlyAverage(month.getWeakBornCount(), litters, 3));
+        month.setGestationDaysSum(mapInt(farrow, "gestationDays"));
+        month.setGestationValidCount(mapInt(farrow, "gestationCount"));
+        month.setAvgGestationDays(monthlyAverage(month.getGestationDaysSum(), month.getGestationValidCount(), 1));
+        month.setBirthWeightSum(mapBd(farrow, "birthWeight"));
+        month.setBirthWeightPigletCount(mapInt(farrow, "weighedPiglets"));
+        month.setAvgBirthWeight(ProductionIndicatorCalculator.dailyAverage(
+            month.getBirthWeightSum(), month.getBirthWeightPigletCount(), 3));
+
+        // 69/101 与第 70 行复用同一断奶批次头数，未称重头数仍在分母中。
+        BigDecimal weanedWeight = aggregateQueryMapper.sumWeanedWeightInRange(tenantId, from, to);
+        month.setWeanedWeightSum(weanedWeight == null ? BigDecimal.ZERO : weanedWeight);
+        month.setAvgWeanedWeight(ProductionIndicatorCalculator.dailyAverage(
+            month.getWeanedWeightSum(), month.getWeanedCount(), 3));
+
+        // 75/76 与第 73 行复用出栏时的育肥名单。
+        month.setMarketingAgeDaysSum(marketing.age().days());
+        month.setMarketingAgeValidCount(marketing.age().count());
+        month.setMarketingMissingBirthCount(marketing.age().missing());
+        month.setAvgMarketingAgeDays(monthlyAverage(marketing.age().days(), marketing.age().count(), 1));
+        month.setMarketingNetGainKg(marketing.netGain());
+        month.setMarketingGainDays(marketing.gainDays());
+        month.setAvgDailyGainGrams(ProductionIndicatorCalculator.dailyAverage(
+            marketing.netGain().movePointRight(3), marketing.gainDays(), 1));
+
+        // 72、77–82、98、110 按死淘发生时的猪型与状态归群。
+        var terminals = productionIndicators.monthlyTerminals(tenantId, start, end, weaning);
+        month.setFarrowLossCount(terminals.lossCount());
+        month.setFarrowLossLiveBornCount(terminals.lossLiveBorn());
+        month.setUnlinkedPigletDeathCullCount(terminals.unlinked());
+        month.setFarrowLossRate(monthlyPercent(terminals.lossCount(), terminals.lossLiveBorn()));
+        month.setPigletDeathCount(terminals.pigletDeaths());
+        month.setProductionSowCullCount(terminals.sowCulls());
+        month.setProductionSowDeathCount(terminals.sowDeaths());
+        month.setFatteningDeathCount(terminals.fatteningDeaths());
+        month.setFatteningCullCount(terminals.fatteningCulls());
+        Integer openingPiglets = farmIndicatorRecordMapper.selectEndPigletCount(tenantId, from.minusDays(1));
+        month.setOpeningPigletStock(openingPiglets);
+        month.setFarrowingHousePigletCount(mapInt(farrow, "liveBorn") + (openingPiglets == null ? 0 : openingPiglets));
+        month.setFarrowingHouseDeathRate(monthlyPercent(terminals.pigletDeaths(), month.getFarrowingHousePigletCount()));
+        month.setPigletDeathAgeDaysSum(terminals.deathAge().days());
+        month.setPigletDeathAgeValidCount(terminals.deathAge().count());
+        month.setPigletDeathMissingBirthCount(terminals.deathAge().missing());
+        month.setAvgPigletDeathAgeDays(monthlyAverage(terminals.deathAge().days(), terminals.deathAge().count(), 1));
+        month.setCulledSowParitySum(terminals.paritySum());
+        month.setCulledSowParityValidCount(terminals.parityCount());
+        month.setAvgCulledSowParity(monthlyAverage(terminals.paritySum(), terminals.parityCount(), 2));
+
+        // 78/79/81/82/97/109/111 用同一覆盖天数，将分母保留为存栏总头日和日报天数，计算时不先舍入。
+        int days = month.getIndicatorDayCount();
+        int sumSows = month.getProductionSowStockSum();
+        int sumFattening = mapInt(daily, "sumEndFattening");
+        month.setFatteningStockSum(sumFattening);
+        month.setAvgFatteningStock(monthlyAverage(sumFattening, days, 3));
+        month.setProductionSowCullRate(stockPercent(terminals.sowCulls(), sumSows, days));
+        month.setProductionSowDeathRate(stockPercent(terminals.sowDeaths(), sumSows, days));
+        month.setFatteningDeathRate(stockPercent(terminals.fatteningDeaths(), sumFattening, days));
+        month.setFatteningCullRate(stockPercent(terminals.fatteningCulls(), sumFattening, days));
+        month.setNewProductionSowCount(mapInt(daily, "sumNewProductionSow"));
+        month.setProductionSowReplacementRate(stockPercent(month.getNewProductionSowCount(), sumSows, days));
+        month.setPregnancyLossSowCount(productionIndicators.countPregnancyLoss(tenantId, start, end));
+        month.setPregnancyLossRate(stockPercent(month.getPregnancyLossSowCount(), sumSows, days));
+
+        // 83–87、91、93–96 计数和期末快照。
+        month.setFeedWeightKg(mapBd(daily, "sumFeedWeight"));
+        month.setOrganicFeedWeightKg(mapBd(daily, "sumOrganicFeedWeight"));
+        var medicine = productionIndicators.medicineTimes(tenantId, start, end);
+        month.setVaccinePigTimes(mapInt(medicine, "vaccine"));
+        month.setHealthPigTimes(mapInt(medicine, "health"));
+        month.setTreatmentPigTimes(mapInt(medicine, "treatment"));
+        month.setDeathCullCount(month.getDeathCount() + month.getCullingCount());
+        month.setReturnHeatCount(mapInt(daily, "sumReturnHeat"));
+        month.setEmptySowCount(mapInt(daily, "sumEmptySow"));
+        month.setAbortionCount(mapInt(daily, "sumAbortion"));
+        FarmIndicatorRecord lastDay = farmIndicatorRecordMapper.selectLastIndicatorDay(tenantId, from, to);
+        month.setEndProductionSowStock(lastDay == null ? null : lastDay.getEndProductionSowCount());
+        month.setEndProductionSowStockDate(lastDay == null ? null : lastDay.getStatDate());
+
+        // 103/104 同一个断奶转移窗口，日龄与重量的覆盖分别记录。
+        var transfers = productionIndicators.weaningTransferMeasures(tenantId, start, end);
+        month.setWeaningTransferAgeDaysSum(mapInt(transfers, "ageSum"));
+        month.setWeaningTransferAgeValidCount(mapInt(transfers, "ageCount"));
+        month.setAvgWeaningTransferAgeDays(monthlyAverage(
+            month.getWeaningTransferAgeDaysSum(), month.getWeaningTransferAgeValidCount(), 1));
+        month.setWeaningTransferWeightSum(mapBd(transfers, "weightSum"));
+        month.setWeaningTransferWeightValidCount(mapInt(transfers, "weightCount"));
+        month.setAvgWeaningTransferWeight(ProductionIndicatorCalculator.dailyAverage(
+            month.getWeaningTransferWeightSum(), month.getWeaningTransferWeightValidCount(), 3));
+    }
+
+    private static BigDecimal monthlyAverage(int sum, int count, int scale) {
+        return ProductionIndicatorCalculator.dailyAverage(BigDecimal.valueOf(sum), count, scale);
+    }
+
+    private static BigDecimal monthlyPercent(int count, int population) {
+        return stockPercent(count, population, 1);
+    }
+
+    private static BigDecimal stockPercent(int count, int stockSum, int days) {
+        return ProductionIndicatorCalculator.dailyAverage(
+            BigDecimal.valueOf(count).multiply(BigDecimal.valueOf(days)).movePointRight(2), stockSum, 2);
     }
 
     private void upsertAnnualIndicator(String tenantId, short year) {

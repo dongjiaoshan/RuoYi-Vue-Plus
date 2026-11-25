@@ -7,6 +7,7 @@ import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.GroupMem
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.IndividualWeaning;
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.MarketingEvent;
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.TypeChange;
+import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.TerminalEvent;
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.WeanedLitter;
 import org.dromara.djs.breed.dashboard.mapper.ProductionIndicatorMapper.WeaningBatchRow;
 import org.springframework.stereotype.Component;
@@ -38,10 +39,6 @@ class ProductionIndicatorCalculator {
 
     Map<String, Object> farrowTotals(String tenantId, LocalDateTime from, LocalDateTime to) {
         return mapper.farrowTotals(tenantId, from, to);
-    }
-
-    Map<String, Object> abnormalTotals(String tenantId, LocalDateTime from, LocalDateTime to) {
-        return mapper.abnormalTotals(tenantId, from, to);
     }
 
     Map<String, Object> dailyAbnormalTotals(String tenantId, LocalDateTime from, LocalDateTime to) {
@@ -88,11 +85,13 @@ class ProductionIndicatorCalculator {
     Weaning weaningForMonth(String tenantId, LocalDateTime from, LocalDateTime to, LocalDateTime asOf) {
         List<WeanedLitter> litters = mapper.weanedLitters(tenantId, from, to);
         if (litters.isEmpty()) {
-            return new Weaning(0, 0, 0, 0, 0);
+            return new Weaning(0, 0, 0, 0, 0, List.of(), Map.of());
         }
         Set<Long> litterIds = litters.stream().map(WeanedLitter::farrowId).collect(Collectors.toSet());
         Set<Long> fostered = new HashSet<>();
         Set<Long> withPiglets = new HashSet<>();
+        Map<Long, LocalDate> lactationThrough = new HashMap<>();
+        litters.forEach(litter -> lactationThrough.put(litter.farrowId(), litter.weanDate()));
         int birthLitterPiglets = 0;
         for (WeaningBatchRow row : mapper.weaningBatches(tenantId, litterIds, asOf)) {
             int piglets = row.detailId() == null ? row.recordedCount() : 1;
@@ -107,9 +106,14 @@ class ProductionIndicatorCalculator {
                 fostered.add(birthFarrow);
                 fostered.add(row.hostFarrowId());
             }
-            // 同期断奶仔猪，用生母窝号与同期实际断奶窝配对。
-            if (litterIds.contains(birthFarrow) && !row.weaningDate().isBefore(from) && row.weaningDate().isBefore(to)) {
+            // D-0215：按生母实际断奶月收口，后续批次仍归生母窝。
+            if (litterIds.contains(birthFarrow)) {
                 birthLitterPiglets += piglets;
+                if (piglets > 0) {
+                    LocalDate batchDay = row.weaningDate().toLocalDate();
+                    lactationThrough.computeIfPresent(birthFarrow, (id, lastDay) ->
+                        batchDay.isAfter(lastDay) ? batchDay : lastDay);
+                }
             }
         }
         int normal = 0;
@@ -120,7 +124,7 @@ class ProductionIndicatorCalculator {
             }
             lactationDays += (int) ChronoUnit.DAYS.between(litter.farrowDate(), litter.weanDate());
         }
-        return new Weaning(litters.size(), normal, lactationDays, litters.size(), birthLitterPiglets);
+        return new Weaning(litters.size(), normal, lactationDays, litters.size(), birthLitterPiglets, litters, lactationThrough);
     }
 
     DailyGroups dailyGroups(String tenantId, LocalDate day) {
@@ -205,15 +209,26 @@ class ProductionIndicatorCalculator {
         var histories = typeHistories(tenantId, events.stream().map(MarketingEvent::pigId).collect(Collectors.toSet()));
         int count = 0;
         BigDecimal weight = BigDecimal.ZERO;
+        var age = new AgeTotals();
+        BigDecimal netGain = BigDecimal.ZERO;
+        int gainDays = 0;
         for (MarketingEvent event : events) {
             String type = typeBefore(histories.getOrDefault(event.pigId(), List.of()), event.eventId(), event.changeTime(),
                 event.oldPigType(), event.currentPigType(), event.weanDate());
             if (FATTENING.equals(type)) {
                 count++;
-                weight = weight.add(event.weight());
+                if (event.weight() != null) {
+                    weight = weight.add(event.weight());
+                }
+                age.add(event.birthDate(), event.marketingDate());
+                if (event.weanDate() != null && !event.weanDate().isAfter(event.marketingDate())
+                    && event.weight() != null && event.weanWeight() != null && event.weanWeight().signum() > 0) {
+                    netGain = netGain.add(event.weight().subtract(event.weanWeight()));
+                    gainDays += (int) ChronoUnit.DAYS.between(event.weanDate(), event.marketingDate()) + 1;
+                }
             }
         }
-        return new Marketing(count, weight);
+        return new Marketing(count, weight, age, netGain, gainDays);
     }
 
     private Map<Long, List<TypeChange>> typeHistories(String tenantId, Set<Long> ids) {
@@ -272,14 +287,144 @@ class ProductionIndicatorCalculator {
         }
         if (FATTENING.equals(type)) {
             fattening.add(pigId);
-        } else if (SOW.equals(type) && status != null && !status.isEmpty() && !"HB".equals(status)) {
+        } else if (SOW.equals(type) && isProductionSowStatus(status)) {
             sows.add(pigId);
         }
     }
 
-    record Weaning(int count, int normalCount, int lactationDays, int validLactationCount, int birthLitterPiglets) {}
+    Map<String, Object> firstBreedingMeasures(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return mapper.firstBreedingMeasures(tenantId, from, to);
+    }
+
+    int repeatBreedingCount(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return mapper.countRepeatBreeding(tenantId, from, to);
+    }
+
+    Map<String, Object> monthlyFarrowMeasures(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return mapper.monthlyFarrowMeasures(tenantId, from, to);
+    }
+
+    Map<String, Object> medicineTimes(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return mapper.medicineTimes(tenantId, from, to);
+    }
+
+    Map<String, Object> weaningTransferMeasures(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return mapper.weaningTransferMeasures(tenantId, from, to);
+    }
+
+    List<LocalDate> priorMaternalWeanDates(String tenantId, LocalDateTime from, LocalDateTime to,
+                                         LocalDate windowStart, LocalDateTime cutoff) {
+        return mapper.priorMaternalWeanDates(tenantId, from, to, windowStart, cutoff);
+    }
+
+    MonthlyTerminals monthlyTerminals(String tenantId, LocalDateTime from, LocalDateTime to, Weaning weaning) {
+        Map<Long, WeanedLitter> litters = weaning.litters().stream()
+            .collect(Collectors.toMap(WeanedLitter::farrowId, litter -> litter));
+        LocalDateTime scanFrom = weaning.litters().stream().map(litter -> litter.farrowDate().atStartOfDay())
+            .min(LocalDateTime::compareTo).filter(date -> date.isBefore(from)).orElse(from);
+        LocalDateTime scanTo = weaning.lactationThrough().values().stream().map(day -> day.plusDays(1).atStartOfDay())
+            .max(LocalDateTime::compareTo).filter(date -> date.isAfter(to)).orElse(to);
+
+        List<TerminalEvent> events = mapper.terminalEvents(tenantId, scanFrom, scanTo);
+        var histories = typeHistories(tenantId, events.stream().map(TerminalEvent::pigId).collect(Collectors.toSet()));
+        int pigletDeaths = 0;
+        int sowDeaths = 0;
+        int sowCulls = 0;
+        int fatteningDeaths = 0;
+        int fatteningCulls = 0;
+        int lossCount = 0;
+        int unlinked = 0;
+        int paritySum = 0;
+        int parityCount = 0;
+        var deathAge = new AgeTotals();
+        for (TerminalEvent event : events) {
+            var history = histories.getOrDefault(event.pigId(), List.of());
+            String type = terminalType(history, event);
+            boolean inMonth = !event.eventAt().isBefore(from) && event.eventAt().isBefore(to);
+            boolean death = "DIE".equals(event.eventType());
+            if (PIGLET.equals(type)) {
+                WeanedLitter birth = event.birthFarrowId() == null ? null : litters.get(event.birthFarrowId());
+                LocalDate date = event.eventAt().toLocalDate();
+                if (birth != null && !date.isBefore(birth.farrowDate())
+                    && !date.isAfter(weaning.lactationThrough().get(birth.farrowId()))) {
+                    lossCount++;
+                }
+                if (inMonth && event.birthFarrowId() == null) {
+                    unlinked++;
+                }
+                if (inMonth && death) {
+                    pigletDeaths++;
+                    deathAge.add(event.birthDate(), date);
+                }
+            } else if (inMonth && FATTENING.equals(type)) {
+                if (death) {
+                    fatteningDeaths++;
+                } else {
+                    fatteningCulls++;
+                }
+            } else if (inMonth && SOW.equals(type) && isProductionSowStatus(event.oldStatus())) {
+                if (death) {
+                    sowDeaths++;
+                } else {
+                    sowCulls++;
+                    if (event.parity() != null) {
+                        paritySum += event.parity();
+                        parityCount++;
+                    }
+                }
+            }
+        }
+        int lossLiveBorn = weaning.litters().stream().mapToInt(WeanedLitter::liveBorn).sum();
+        return new MonthlyTerminals(pigletDeaths, sowDeaths, sowCulls, fatteningDeaths, fatteningCulls,
+            lossCount, lossLiveBorn, unlinked, deathAge, paritySum, parityCount);
+    }
+
+    private static String terminalType(List<TypeChange> history, TerminalEvent event) {
+        if (event.oldPigType() != null) {
+            return event.oldPigType();
+        }
+        // 优先沿类型流水回放，缺类型链时从事件前状态、死亡单冻结值、在场快照或出生窝取得锚点。
+        String fallback = switch (Objects.toString(event.oldStatus(), "")) {
+            case "HB", "PZ", "FM", "DN", "LC", "KH", "FQ" -> SOW;
+            case "YF" -> FATTENING;
+            default -> event.deathPigType() != null ? event.deathPigType()
+                : event.snapshotPigType() != null ? event.snapshotPigType()
+                : event.birthFarrowId() != null || event.weanDate() != null ? PIGLET : null;
+        };
+        return typeBefore(history, event.eventId(), event.changeTime(), null, fallback, event.weanDate());
+    }
+
+    private static boolean isProductionSowStatus(String status) {
+        return status != null && !status.isEmpty() && !"HB".equals(status) && !"END".equals(status);
+    }
+
+    static final class AgeTotals {
+        private int days;
+        private int count;
+        private int missing;
+
+        void add(LocalDate birth, LocalDate date) {
+            if (birth == null) {
+                missing++;
+            } else if (!birth.isAfter(date)) {
+                days += (int) ChronoUnit.DAYS.between(birth, date);
+                count++;
+            }
+        }
+
+        int days() { return days; }
+        int count() { return count; }
+        int missing() { return missing; }
+    }
+
+    record MonthlyTerminals(int pigletDeaths, int sowDeaths, int sowCulls, int fatteningDeaths, int fatteningCulls,
+                            int lossCount, int lossLiveBorn, int unlinked, AgeTotals deathAge,
+                            int paritySum, int parityCount) {}
+
+    record Weaning(int count, int normalCount, int lactationDays, int validLactationCount, int birthLitterPiglets,
+                   List<WeanedLitter> litters, Map<Long, LocalDate> lactationThrough) {}
 
     record DailyGroups(int productionSowHeadDays, int fatteningHeadDays, int endFattening, int endPiglets, int newFattening) {}
 
-    record Marketing(int count, BigDecimal weight) {}
+    record Marketing(int count, BigDecimal weight, AgeTotals age, BigDecimal netGain, int gainDays) {}
 }

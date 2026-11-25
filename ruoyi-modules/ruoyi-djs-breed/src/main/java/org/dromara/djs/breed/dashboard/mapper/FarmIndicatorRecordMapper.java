@@ -24,6 +24,21 @@ public interface FarmIndicatorRecordMapper extends BaseMapperPlus<FarmIndicatorR
         """)
     FarmIndicatorRecord selectEndStockForUpdate(String tenantId, LocalDate day);
 
+    @Select("""
+        SELECT end_piglet_count
+          FROM t_farm_indicator_record
+         WHERE tenant_id = #{tenantId} AND stat_date = #{day} AND del_flag = '0'
+        """)
+    Integer selectEndPigletCount(String tenantId, LocalDate day);
+
+    @Select("""
+        SELECT stat_date, end_production_sow_count
+          FROM t_farm_indicator_record
+         WHERE tenant_id = #{tenantId} AND stat_date >= #{from} AND stat_date < #{to} AND del_flag = '0'
+         ORDER BY stat_date DESC LIMIT 1
+        """)
+    FarmIndicatorRecord selectLastIndicatorDay(String tenantId, LocalDate from, LocalDate to);
+
     /** 单日补跑时同步已存在的次日日报期初值；次日缺报时不造行。 */
     @Update("""
         UPDATE t_farm_indicator_record

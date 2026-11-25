@@ -47,7 +47,7 @@ public interface AggregateQueryMapper {
         + "                   COUNT(*)                        AS cnt, "
         + "                   COALESCE(SUM(d.weight), 0)      AS wsum "
         + "              FROM t_farm_pig_weaning_detail d "
-        + "             WHERE d.del_flag = '0' "
+        + "             WHERE d.del_flag = '0' AND d.tenant_id = #{tenantId} "
         + "             GROUP BY d.weaning_id) dc ON dc.weaning_id = w.id "
         + " WHERE w.tenant_id = #{tenantId} "
         + "   AND w.del_flag = '0' "
@@ -177,6 +177,10 @@ public interface AggregateQueryMapper {
     int sumWeanedInRange(@Param("tenantId") String tenantId,
                          @Param("from") LocalDate from,
                          @Param("to") LocalDate to);
+
+    /** 与月度断奶头数共用按批次统计的取数口径。 */
+    @Select("SELECT " + WEAN_WEIGHT_EXPR + WEAN_DETAIL_SRC)
+    BigDecimal sumWeanedWeightInRange(String tenantId, LocalDate from, LocalDate to);
 
     /**
      * 当年仍活的母猪平均存栏。
@@ -1012,7 +1016,14 @@ public interface AggregateQueryMapper {
         + "  COALESCE(SUM(end_nonprod_sow_count),0)    AS sumEndNonprodSow, "
         + "  COALESCE(SUM(preg_loss_days),0)           AS sumPregLossDays, "
         + "  COALESCE(SUM(year_batch_farrow_count),0)  AS sumYearBatchFarrow, "
-        + "  COALESCE(SUM(growth_total_days),0)        AS sumGrowthDays "
+        + "  COALESCE(SUM(growth_total_days),0)         AS sumGrowthDays, "
+        + "  COALESCE(SUM(end_fattening_count),0)       AS sumEndFattening, "
+        + "  COALESCE(SUM(new_production_sow_count),0)  AS sumNewProductionSow, "
+        + "  COALESCE(SUM(return_heat_count),0)          AS sumReturnHeat, "
+        + "  COALESCE(SUM(empty_sow_count),0)            AS sumEmptySow, "
+        + "  COALESCE(SUM(abortion_count),0)             AS sumAbortion, "
+        + "  COALESCE(SUM(feed_weight_kg),0)            AS sumFeedWeight, "
+        + "  COALESCE(SUM(organic_feed_weight_kg),0)    AS sumOrganicFeedWeight "
         + " FROM t_farm_indicator_record "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "

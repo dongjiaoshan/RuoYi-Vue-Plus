@@ -488,8 +488,8 @@ class DashboardServiceImplTest {
         // 两笔正常育肥出栏共 200 kg，独立背膘取样合计 90 mm。
         LocalDateTime at = LocalDate.of(2026, 6, 25).atTime(12, 0);
         when(productionIndicatorMapper.marketingEvents(anyString(), any(), any())).thenReturn(List.of(
-            new MarketingEvent(1, 1, at, null, "fattening", null, new BigDecimal("110")),
-            new MarketingEvent(2, 2, at, null, "fattening", null, new BigDecimal("90"))
+            new MarketingEvent(1, 1, at, null, "fattening", null, new BigDecimal("110"), at.toLocalDate(), null, null),
+            new MarketingEvent(2, 2, at, null, "fattening", null, new BigDecimal("90"), at.toLocalDate(), null, null)
         ));
         when(aggregateQueryMapper.aggregateBackfatForDay(anyString(), any(), any()))
             .thenReturn(mapOfAll("backfatSum", new BigDecimal("90"), "backfatCnt", 2));
@@ -997,6 +997,130 @@ class DashboardServiceImplTest {
     }
 
     /** triggerAggregate 跑通所需的最小 stub 集（各 upsert 的通用依赖）。 */
+    @Test
+    void monthlyBreedingFarrowingAndTransfersPersistRatesAndTheirBases() {
+        var period = YearMonth.of(2025, 11);
+        stubAggregateSkeleton();
+        when(aggregateQueryMapper.countDistinctBreedingSowInRange(anyString(), any(), any())).thenReturn(2);
+        when(productionIndicatorMapper.countRepeatBreeding(anyString(), any(), any())).thenReturn(1);
+        when(productionIndicatorMapper.firstBreedingMeasures(anyString(), any(), any()))
+            .thenReturn(mapOfAll("entryDays", 101, "entryCount", 2, "reserveAge", 468, "reserveAgeCount", 2));
+        when(productionIndicatorMapper.farrowTotals(anyString(), any(), any())).thenReturn(mapOfAll("farrowSows", 4));
+        when(productionIndicatorMapper.monthlyFarrowMeasures(anyString(), any(), any())).thenReturn(mapOfAll(
+            "paritySum", 7, "parityCount", 3, "smallLitters", 3, "healthy", 10, "healthyRecords", 3, "healthyTotal", 17,
+            "totalBorn", 26, "liveBorn", 21, "deadBorn", 3, "mummyBorn", 2, "weakBorn", 4, "gestationDays", 239,
+            "gestationCount", 2, "birthWeight", new BigDecimal("18.25"), "weighedPiglets", 13));
+        when(aggregateQueryMapper.sumWeanedInRange(anyString(), any(), any())).thenReturn(5);
+        when(aggregateQueryMapper.sumWeanedWeightInRange(anyString(), any(), any())).thenReturn(new BigDecimal("12"));
+        when(productionIndicatorMapper.weanedPigletMeasures(anyString(), any(), any()))
+            .thenReturn(mapOfAll("ageDaysSum", 64, "ageValidCount", 3));
+        when(productionIndicatorMapper.weaningTransferMeasures(anyString(), any(), any()))
+            .thenReturn(mapOfAll("ageSum", 68, "ageCount", 3, "weightSum", new BigDecimal("12"), "weightCount", 2));
+        when(productionIndicatorMapper.medicineTimes(anyString(), any(), any()))
+            .thenReturn(mapOfAll("vaccine", 5, "health", 2, "treatment", 1));
+
+        service.aggregateRollups("1001", period.atDay(15), List.of(period), List.of());
+        var persisted = ArgumentCaptor.forClass(MonthlyProduction.class);
+        verify(monthlyProductionMapper).insert(persisted.capture());
+        var row = persisted.getValue();
+        assertThat(row.getBreedingSowCount()).as("养殖 44").isEqualTo(2);
+        assertThat(row.getRepeatBreedingSowCount()).as("养殖 45").isEqualTo(1);
+        assertThat(row.getRepeatBreedingRate()).as("养殖 46").isEqualByComparingTo("50.00");
+        assertThat(row.getAvgEntryFirstBreedDays()).as("养殖 48").isEqualByComparingTo("50.5");
+        assertThat(row.getAvgReserveFirstBreedAgeDays()).as("养殖 49").isEqualByComparingTo("234.0");
+        assertThat(row.getAvgFarrowParity()).as("养殖 57").isEqualByComparingTo("2.33");
+        assertThat(row.getSmallLiveBornLitterRate()).as("养殖 58").isEqualByComparingTo("75.00");
+        assertThat(row.getHealthyBornCount()).as("养殖 59").isEqualTo(10);
+        assertThat(row.getAvgHealthyBornPerLitter()).as("养殖 60").isEqualByComparingTo("2.500");
+        assertThat(row.getDeadBornRate()).as("养殖 61").isEqualByComparingTo("11.54");
+        assertThat(row.getAvgDeadBornPerLitter()).as("养殖 62").isEqualByComparingTo("0.750");
+        assertThat(row.getMummyBornRate()).as("养殖 63").isEqualByComparingTo("7.69");
+        assertThat(row.getAvgMummyBornPerLitter()).as("养殖 64").isEqualByComparingTo("0.500");
+        assertThat(row.getAvgGestationDays()).as("养殖 65").isEqualByComparingTo("119.5");
+        assertThat(row.getAvgBirthWeight()).as("养殖 66").isEqualByComparingTo("1.404");
+        assertThat(row.getAvgWeanedWeight()).as("养殖 69 / 养殖 101").isEqualByComparingTo("2.400");
+        assertThat(row.getAvgWeanAgeDays()).as("养殖 71").isEqualByComparingTo("21.3");
+        assertThat(row.getVaccinePigTimes()).as("养殖 85").isEqualTo(5);
+        assertThat(row.getHealthPigTimes()).as("养殖 86").isEqualTo(2);
+        assertThat(row.getTreatmentPigTimes()).as("养殖 87").isEqualTo(1);
+        assertThat(row.getAvgWeaningTransferAgeDays()).as("养殖 103").isEqualByComparingTo("22.7");
+        assertThat(row.getAvgWeaningTransferWeight()).as("养殖 104").isEqualByComparingTo("6.000");
+        assertThat(row.getHealthyBornRate()).as("养殖 106").isEqualByComparingTo("58.82");
+        assertThat(row.getAvgWeakBornPerLitter()).as("养殖 107").isEqualByComparingTo("1.000");
+        assertThat(row.getWeakBornRate()).as("养殖 108").isEqualByComparingTo("15.38");
+    }
+
+    @Test
+    void monthlyRollupWeightsInventoryAndKeepsBirthLitterAndActualDeathCohortsIndependent() {
+        LocalDate feb1 = LocalDate.of(2025, 2, 1);
+        LocalDate feb2 = feb1.plusDays(1);
+        LocalDate jan12 = LocalDate.of(2025, 1, 12);
+        var period = YearMonth.from(feb1);
+        stubAggregateSkeleton();
+        var marketing = new MarketingEvent(30, 1, feb1.atStartOfDay(), "fattening", "sow", feb1.minusDays(99),
+            new BigDecimal("80"), feb1, feb1.minusDays(180), new BigDecimal("20"));
+        when(productionIndicatorMapper.marketingEvents(anyString(), any(), any())).thenReturn(List.of(marketing));
+        when(productionIndicatorMapper.weanedLitters(anyString(), any(), any()))
+            .thenReturn(List.of(new WeanedLitter(7, jan12, feb1, 10)));
+        when(productionIndicatorMapper.weaningBatches(anyString(), any(), any())).thenReturn(List.of(
+            new WeaningBatchRow(7L, null, null, 2, feb1.atStartOfDay()),
+            new WeaningBatchRow(7L, null, null, 3, LocalDate.of(2025, 3, 2).atStartOfDay())));
+        when(productionIndicatorMapper.terminalEvents(anyString(), any(), any())).thenReturn(List.of(
+            terminal(1, "DIE", feb1, "piglet", null, jan12, 7L, null),
+            terminal(2, "ELIMINATE", feb2, "sow", "DN", null, null, 5),
+            terminal(3, "DIE", feb2, "sow", "PZ", null, null, null),
+            terminal(4, "DIE", feb2, "fattening", null, null, null, null),
+            terminal(5, "ELIMINATE", feb2, "fattening", null, null, null, null)));
+        when(aggregateQueryMapper.countIndicatorDays(anyString(), any(), any())).thenReturn(3);
+        when(aggregateQueryMapper.sumIndicatorRange(anyString(), any(), any())).thenReturn(mapOfAll(
+            "sumEndProductionSow", 9, "sumEndFattening", 12, "sumDeathPig", 3, "sumCullingPig", 2,
+            "sumReturnHeat", 2, "sumEmptySow", 1, "sumAbortion", 2, "sumNewProductionSow", 1,
+            "sumFeedWeight", new BigDecimal("55"), "sumOrganicFeedWeight", new BigDecimal("35")));
+        var lastDay = new FarmIndicatorRecord();
+        lastDay.setStatDate(feb2);
+        lastDay.setEndProductionSowCount(5);
+        when(farmIndicatorRecordMapper.selectLastIndicatorDay(anyString(), any(), any())).thenReturn(lastDay);
+        when(farmIndicatorRecordMapper.selectEndPigletCount(anyString(), any())).thenReturn(2);
+        when(productionIndicatorMapper.monthlyFarrowMeasures(anyString(), any(), any())).thenReturn(mapOfAll("liveBorn", 8));
+        when(productionIndicatorMapper.countPregnancyLoss(anyString(), any(), any())).thenReturn(2);
+
+        service.aggregateRollups("1001", feb2, List.of(period), List.of());
+        var persisted = ArgumentCaptor.forClass(MonthlyProduction.class);
+        verify(monthlyProductionMapper).insert(persisted.capture());
+        var row = persisted.getValue();
+
+        assertThat(row.getFarrowLossRate()).as("养殖 72").isEqualByComparingTo("10.00");
+        assertThat(row.getAvgMarketingAgeDays()).as("养殖 75").isEqualByComparingTo("180.0");
+        assertThat(row.getAvgDailyGainGrams()).as("养殖 76").isEqualByComparingTo("600.0");
+        assertThat(row.getPigletDeathCount()).as("养殖 77").isEqualTo(1);
+        assertThat(row.getProductionSowCullRate()).as("养殖 78").isEqualByComparingTo("33.33");
+        assertThat(row.getProductionSowDeathRate()).as("养殖 79").isEqualByComparingTo("33.33");
+        assertThat(row.getFarrowingHouseDeathRate()).as("养殖 80").isEqualByComparingTo("10.00");
+        assertThat(row.getFatteningDeathRate()).as("养殖 81").isEqualByComparingTo("25.00");
+        assertThat(row.getFatteningCullRate()).as("养殖 82").isEqualByComparingTo("25.00");
+        assertThat(row.getFeedWeightKg()).as("养殖 83").isEqualByComparingTo("55");
+        assertThat(row.getOrganicFeedWeightKg()).as("养殖 84").isEqualByComparingTo("35");
+        assertThat(row.getDeathCullCount()).as("养殖 91").isEqualTo(5);
+        assertThat(row.getReturnHeatCount()).as("养殖 93").isEqualTo(2);
+        assertThat(row.getEmptySowCount()).as("养殖 94").isEqualTo(1);
+        assertThat(row.getAbortionCount()).as("养殖 95").isEqualTo(2);
+        assertThat(row.getEndProductionSowStock()).as("养殖 96").isEqualTo(5);
+        assertThat(row.getEndProductionSowStockDate()).isEqualTo(feb2);
+        assertThat(row.getAvgProdSowStock()).as("养殖 97").isEqualByComparingTo("3");
+        assertThat(row.getIndicatorDayCount()).isEqualTo(3);
+        assertThat(row.getAvgPigletDeathAgeDays()).as("养殖 98").isEqualByComparingTo("20.0");
+        assertThat(row.getAvgBirthLitterWeanedPiglets()).as("养殖 102 有效批次共5头").isEqualByComparingTo("5.000");
+        assertThat(row.getProductionSowReplacementRate()).as("养殖 109").isEqualByComparingTo("33.33");
+        assertThat(row.getAvgCulledSowParity()).as("养殖 110").isEqualByComparingTo("5.00");
+        assertThat(row.getPregnancyLossRate()).as("养殖 111").isEqualByComparingTo("66.67");
+    }
+
+    private ProductionIndicatorMapper.TerminalEvent terminal(long id, String event, LocalDate day, String type,
+                                                              String status, LocalDate birth, Long farrow, Integer parity) {
+        return new ProductionIndicatorMapper.TerminalEvent(id, event, day.atStartOfDay(), id, day.atStartOfDay(),
+            status, type, null, null, null, birth, farrow, parity);
+    }
+
     private void stubAggregateSkeleton() {
         when(aggregateQueryMapper.countByLifecycle(anyString(), any())).thenReturn(new ArrayList<>());
         when(aggregateQueryMapper.countStatusEventInRange(anyString(), any(), any(), any())).thenReturn(0);
@@ -1012,7 +1136,7 @@ class DashboardServiceImplTest {
     private void stubYearWeaning() {
         var farrow = LocalDate.of(2026, 8, 1);
         var litters = java.util.stream.LongStream.range(0, 16)
-            .mapToObj(id -> new WeanedLitter(id, farrow, farrow.plusDays(21))).toList();
+            .mapToObj(id -> new WeanedLitter(id, farrow, farrow.plusDays(21), 0)).toList();
         when(productionIndicatorMapper.weanedLitters(anyString(), any(), any())).thenReturn(litters);
         when(aggregateQueryMapper.sumWeanedInRange(anyString(), any(), any())).thenReturn(188);
     }
@@ -1021,21 +1145,21 @@ class DashboardServiceImplTest {
     void productionIndicatorsReachDayMonthAndYearOnAggregate() {
         stubAggregateSkeleton();
         LocalDate date = LocalDate.of(2025, 2, 1);
-        var marketing = new MarketingEvent(1, 2, date.atStartOfDay(), null, "fattening", null, new BigDecimal("110"));
+        var marketing = new MarketingEvent(1, 2, date.atStartOfDay(), null, "fattening", null, new BigDecimal("110"), date, null, null);
         when(productionIndicatorMapper.marketingEvents(anyString(), any(), any())).thenReturn(List.of(marketing));
         when(productionIndicatorMapper.weanedPigletMeasures(anyString(), any(), any()))
             .thenReturn(mapOfAll("ageDaysSum", 46, "ageValidCount", 2, "weightSum", new BigDecimal("18"), "weightValidCount", 3));
         when(productionIndicatorMapper.farrowTotals(anyString(), any(), any()))
             .thenReturn(mapOfAll("deformedBorn", 0, "firstParity", 1));
-        when(productionIndicatorMapper.abnormalTotals(anyString(), any(), any()))
-            .thenReturn(mapOfAll("abortion", 3));
+        when(aggregateQueryMapper.sumIndicatorRange(anyString(), any(), any()))
+            .thenReturn(mapOfAll("sumAbortion", 2));
         when(productionIndicatorMapper.dailyAbnormalTotals(anyString(), any(), any()))
             .thenReturn(mapOfAll("returnHeat", 1, "emptySow", 2, "abortion", 2));
         when(productionIndicatorMapper.countFirstReserveBreeding(anyString(), any(), any())).thenReturn(2);
         when(productionIndicatorMapper.endGroupMembers(anyString(), eq(date)))
             .thenReturn(List.of(new GroupMember(5, "sow", "sow", null)));
         when(productionIndicatorMapper.weanedLitters(anyString(), any(), any()))
-            .thenReturn(List.of(new WeanedLitter(7, date.minusDays(21), date)));
+            .thenReturn(List.of(new WeanedLitter(7, date.minusDays(21), date, 0)));
         when(productionIndicatorMapper.weaningBatches(anyString(), any(), any()))
             .thenReturn(List.of(new WeaningBatchRow(7L, 7L, 8L, 1, date.atStartOfDay())));
         when(aggregateQueryMapper.sumWeanedInRange(anyString(), any(), any())).thenReturn(1);
@@ -1057,7 +1181,7 @@ class DashboardServiceImplTest {
         assertThat(daily.getValue().getReturnHeatCount()).isEqualTo(1);
         assertThat(daily.getValue().getEmptySowCount()).isEqualTo(2);
         assertThat(daily.getValue().getAbortionCount()).isEqualTo(2);
-        assertThat(monthly.getValue().getAbortionCount()).isEqualTo(3);
+        assertThat(monthly.getValue().getAbortionCount()).isEqualTo(2);
         assertThat(monthly.getValue().getReserveFirstBreedCount()).isEqualTo(2);
         assertThat(monthly.getValue().getAvgWeanAgeDays()).isEqualByComparingTo("23");
         assertThat(monthly.getValue().getFirstParityFarrowSowCount()).isEqualTo(1);
