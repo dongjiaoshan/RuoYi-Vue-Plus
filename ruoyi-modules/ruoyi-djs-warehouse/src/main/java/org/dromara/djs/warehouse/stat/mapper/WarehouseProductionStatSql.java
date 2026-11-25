@@ -1,6 +1,6 @@
 package org.dromara.djs.warehouse.stat.mapper;
 
-/** 仓库日报与实时看板共用的 V1.1 取数口径。 */
+/** 仓库日报与实时看板共用的 生产指标取数口径。 */
 public final class WarehouseProductionStatSql {
 
     private WarehouseProductionStatSql() {
@@ -8,6 +8,17 @@ public final class WarehouseProductionStatSql {
 
     /** 按扇计，兼容历史未标半只的记录（原口径按整只处理）。 */
     public static final String CUT_SIDES = "CASE WHEN is_half = 1 THEN 1 ELSE 2 END";
+
+    /** 按白条编号关联有效领用单；没有归属领用日的流水保留给未配对统计。 */
+    public static final String CUT_OUTPUT_PICKUP_JOIN = """
+        FROM t_warehouse_stock_flow f
+        LEFT JOIN t_warehouse_pig_cut_record c
+          ON c.tenant_id = f.tenant_id AND c.white_bar_no = f.white_bar_no
+         AND f.white_bar_no <> '' AND c.out_type = 'cut' AND c.del_flag = '0' AND c.pickup_time IS NOT NULL
+        WHERE f.tenant_id = #{tenantId} AND f.flow_type = 'cut_out_in' AND f.inout_type = 'IN'
+        """;
+
+    public static final String EFFECTIVE_CUT_OUTPUT = " AND f.del_flag = '0' ";
 
     /** 毛菜有效入库流水，别名 f。 */
     public static final String RAW_VEG_INBOUND = """

@@ -135,17 +135,14 @@ class WarehouseStatAggregateSqlContractTest {
     }
 
     @Test
-    @DisplayName("月表：出品率 = Σbar_yield_numer_weight / Σbar_yield_base_weight（与日率同口径）")
-    void monthlyUsesYieldCohortBaseColumns() throws Exception {
+    @DisplayName("月白条出品率只计正值日，年度基数保留实录零值日")
+    void monthlySeparatesPositiveAndComparableBarYieldDays() throws Exception {
         String sql = select("sumMonthlyFromDaily", String.class, String.class);
-        assertThat(sql).as("屠宰率月分子/分母走 cohort 基数列")
-            .contains("SUM(slaughter_rate_arrive_weight)")
-            .contains("SUM(slaughter_rate_base_weight)");
-        assertThat(sql).as("出品率月分子必须是 bar_yield_numer_weight，不能是 bar_total_weight")
-            .contains("SUM(bar_yield_numer_weight)");
-        assertThat(sql).as("出品率月分母必须是 bar_yield_base_weight（Σ出栏重量）")
-            .contains("SUM(bar_yield_base_weight)");
-        assertThat(sql).as("finished_arrive_weight 已降为诊断列，不再进月率")
+        assertThat(sql).contains("SUM(slaughter_rate_arrive_weight)", "SUM(slaughter_rate_base_weight)")
+            .contains("SUM(CASE WHEN stat_date < CURDATE() AND bar_yield_rate > 0 THEN bar_yield_rate END)")
+            .contains("COUNT(CASE WHEN stat_date < CURDATE() AND bar_yield_rate > 0 THEN 1 END)")
+            .contains("SUM(CASE WHEN slaughter_count > 0 THEN bar_yield_rate END)",
+                "COUNT(CASE WHEN slaughter_count > 0 THEN bar_yield_rate END)")
             .doesNotContain("SUM(finished_arrive_weight)");
     }
 }

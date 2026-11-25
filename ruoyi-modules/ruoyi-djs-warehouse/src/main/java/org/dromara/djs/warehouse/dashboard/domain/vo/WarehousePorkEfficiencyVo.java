@@ -11,9 +11,8 @@ import java.util.List;
 /**
  * 猪只分割效能管理 VO（mp 仓库管理看板 tab1，对齐原型 404fcd9b）。
  *
- * <p>消费 WMS-STAT-001 落盘表：年度 KPI 汇总当年日表 {@code t_warehouse_indicator_record}；
- * 月度趋势取月表 {@code t_warehouse_monthly_record}（柱=出栏头数 + 3 折线出品率）；
- * 日矩阵取近 N 日日表（指标行 × 日期列 + 累计列）。无数据时各段 0 / 空列表，不抛错。</p>
+ * <p>年度送宰头数与均重使用出栏源，白条出品率与分割率读年度接口的月表汇总；
+ * 月趋势的分割率读月表，其余趋势与日矩阵共用日表。</p>
  *
  * @author djs
  * @since WMS-DASH-MP-001
@@ -29,13 +28,13 @@ public class WarehousePorkEfficiencyVo implements Serializable {
 
     // ====== 年度屠宰指标统计 4 KPI（原型「年度屠宰指标统计」）======
 
-    /** 送宰头数（自养按当年出栏时间，外购按当年送宰日期；包含尚未接收的猪）。 */
+    /** 送宰头数（按当年出栏或送宰日期累计）。 */
     private Integer slaughterCount;
     /** 送宰均重 kg（当年出栏/送宰源总重 ÷ 同一批猪头数；无头数 → null）。 */
     private BigDecimal avgSlaughterWeight;
     /** 屠宰出品率%（当年非NULL日屠宰出品率之和/该字段有值日数；真实0计入，无值 → null）。 */
     private BigDecimal slaughterRate;
-    /** 白条出品率%（当年非NULL日白条出品率之和/该字段有值日数；真实0计入，无值 → null）。 */
+    /** 白条出品率%（当年可比日均值，实录 0% 计入，无可比日时为 0）。 */
     private BigDecimal barYieldRate;
 
     // ====== 年度分割指标统计 4 KPI（原型「年度分割指标统计」）======
@@ -46,14 +45,14 @@ public class WarehousePorkEfficiencyVo implements Serializable {
     private BigDecimal cutBarWeightTon;
     /** 分割品总重（吨，当年日分割产品总重之和 / 1000）。 */
     private BigDecimal cutProductWeightTon;
-    /** 分割率%（当年日分割产品总重之和/分割白条总重之和×100；分母 0 → null）。 */
+    /** 分割率%（按领用年同批产出重/领用重×100，分母为 0 时返回 0）。 */
     private BigDecimal cutRate;
 
     // ====== 月度屠宰效能趋势（柱 + 3 折线，原型「月度屠宰效能趋势」）======
 
     /** 月份标签（yyyy-MM，按月份升序，仅所选年份），柱与折线共用 X 轴。 */
     private List<String> trendMonths = new ArrayList<>();
-    /** 出栏头数序列（柱，主 Y 轴，与 trendMonths 等长）。 */
+    /** 当月接收头数序列（柱，主 Y 轴，与 trendMonths 等长）。 */
     private List<Integer> trendSlaughterCount = new ArrayList<>();
     /** 屠宰出品率%序列（折线，次 Y 轴，与 trendMonths 等长）。 */
     private List<BigDecimal> trendSlaughterRate = new ArrayList<>();
@@ -70,7 +69,7 @@ public class WarehousePorkEfficiencyVo implements Serializable {
     private List<MatrixRow> matrixRows = new ArrayList<>();
 
     /**
-     * 日矩阵单指标行。值已在后端格式化成字符串（整数原样 / DECIMAL 2 位小数 / 空值空串），前端直接渲染。
+     * 日矩阵单指标行。值已在后端格式化成字符串，缺源出栏重时白条出品率为空串。
      */
     @Data
     public static class MatrixRow implements Serializable {
@@ -81,7 +80,7 @@ public class WarehousePorkEfficiencyVo implements Serializable {
         private String metric;
         /** 逐日值（与 matrixDays 顺序、长度一致）。 */
         private List<String> dailyValues = new ArrayList<>();
-        /** 本月/区间累计（均值/率类留空串，不汇总）。 */
+        /** 本月/区间累计。 */
         private String total;
     }
 }

@@ -76,7 +76,7 @@ public interface WarehouseProductionDashboardMapper {
     /**
      * 取某年（stat_month LIKE 'yyyy-%'）仓库月表行，按月份升序。
      *
-     * <p>月度屠宰效能趋势（柱 + 3 折线）数据源。</p>
+     * <p>小程序月趋势分割出品率的数据源。</p>
      *
      * @param tenantId  租户
      * @param yearPrefix 年份前缀（yyyy-，如 2026-）

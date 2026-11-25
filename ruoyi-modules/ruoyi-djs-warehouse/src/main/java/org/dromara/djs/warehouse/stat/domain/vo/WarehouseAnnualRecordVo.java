@@ -9,6 +9,9 @@ public record WarehouseAnnualRecordVo(
     BigDecimal cutLossPickupWeight,
     BigDecimal cutLossRate,
     BigDecimal vegRawInboundWeight,
-    BigDecimal vegDeliveryOutWeight
+    BigDecimal vegDeliveryOutWeight,
+    int slaughterCount, // 第 53 行：年屠宰头数，按首次实际接收年累计。
+    BigDecimal barYieldRate,
+    BigDecimal cutRate
 ) {
 }

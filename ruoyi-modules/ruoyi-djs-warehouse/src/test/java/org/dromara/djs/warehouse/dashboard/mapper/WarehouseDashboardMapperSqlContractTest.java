@@ -34,15 +34,19 @@ class WarehouseDashboardMapperSqlContractTest {
     }
 
     @Test
-    @DisplayName("白条分割产品总重按当天 cut_out_in 入库流水统计")
+    @DisplayName("白条分割产品总重通过 cut_out_in 流水匹配当天领用单")
     void cutProductWeightUsesCutOutStockFlow() throws Exception {
         String sql = selectSql("sumTodayCutProductWeight");
 
         assertThat(sql)
-            .contains("from t_warehouse_stock_flow")
+            .contains("from t_warehouse_stock_flow f")
             .contains("flow_type = 'cut_out_in'")
-            .contains("date(flow_date) = curdate()")
-            .contains("sum(change_quantity)")
+            .contains("c.pickup_time >= curdate()")
+            .contains("c.tenant_id = f.tenant_id and c.white_bar_no = f.white_bar_no")
+            .contains("c.del_flag = '0'")
+            .contains("f.del_flag = '0'")
+            .doesNotContain("f.remark")
+            .contains("sum(f.change_quantity)")
             .doesNotContain("t_warehouse_product_production");
     }
 

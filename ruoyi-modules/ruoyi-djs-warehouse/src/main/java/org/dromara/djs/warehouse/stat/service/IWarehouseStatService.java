@@ -39,6 +39,9 @@ public interface IWarehouseStatService {
      */
     String refreshProductionIndicators(LocalDate from, LocalDate to);
 
+    /** 查找近期分割变更影响的窗口外领用日，供 warehouse-stat 回刷。 */
+    List<LocalDate> findEarlierCutPickupDates(LocalDate from, LocalDate until);
+
     /**
      * 仓库日报表列表（row16）：按日期范围倒序返回全量（行数=天数，前端客户端分页）。
      *

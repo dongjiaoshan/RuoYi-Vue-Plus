@@ -7,6 +7,7 @@ import org.dromara.djs.warehouse.stat.domain.WarehouseMonthlyRecord;
 import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 
 /**
  * 仓库月数据记录视图对象（WMS-STAT-001，邓博 admin row18）。
@@ -56,6 +57,14 @@ public class WarehouseMonthlyRecordVo implements Serializable {
     private BigDecimal matrixBarYieldRate;
     /** 按领用月统计的分割扇数。 */
     private BigDecimal cutBarCount;
+    /** 按领用月统计的分割白条总重（kg）。 */
+    private BigDecimal cutBarWeight;
+    /** 按领用月统计的分割品总重（kg）。 */
+    private BigDecimal cutProductWeight;
+    /** 月内全部可比日的白条出品率合计（含 0%）。 */
+    private BigDecimal barYieldRateSum;
+    /** 月内全部可比日的天数（含 0%）。 */
+    private Integer barYieldRateDays;
     /** 按领用月统计的分割损耗重（kg）。 */
     private BigDecimal cutLoss;
     /** 同批分割领用总重（kg）。 */
@@ -70,4 +79,12 @@ public class WarehouseMonthlyRecordVo implements Serializable {
     private BigDecimal vegDeliveryOutWeight;
     /** 有效果蔬生产份数。 */
     private Integer vegProducedPortionCount;
+
+    public BigDecimal getBarYieldRate() {
+        return barYieldRate == null ? null : barYieldRate.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    public BigDecimal getCutYieldRate() {
+        return cutYieldRate == null ? null : cutYieldRate.setScale(2, RoundingMode.HALF_UP);
+    }
 }

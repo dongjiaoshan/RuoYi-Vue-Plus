@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
@@ -22,7 +23,7 @@ import java.util.Map;
  *       —— 屠宰头数 / 送宰总重·均重 / 接收重量·均重 / 白条总重·均重 / 屠宰出品率 / 白条出品率（D-0140）；
  *       另有处理完成 cohort（{@code finish_time}）→ 处理完成头数 / 其接收重量之和（两个诊断列）</li>
  *   <li>{@code t_warehouse_pig_cut_record}：分割扇数 / 分割领用重（pickup_time + pickup_weight）</li>
- *   <li>{@code t_warehouse_stock_flow} {@code flow_type='cut_out_in'}：分割产品总重（flow_date）</li>
+ *   <li>{@code t_warehouse_stock_flow} {@code flow_type='cut_out_in'}：按分割单领用日归集产出</li>
  *   <li>{@code t_warehouse_loss_flow}：损耗按 loss_type 取，分割损耗通过来源单归领用日</li>
  *   <li>{@code t_warehouse_vegetable_handle}：毛菜称量 / 发往月台（picked / send_platform，pick_start_time）</li>
  *   <li>{@code t_warehouse_handle_record}：作物维度采摘 / 发往月台（按 crop_id GROUP，handle_time）</li>
@@ -59,11 +60,12 @@ public interface WarehouseStatAggregateMapper {
      *       流水有耳号按耳号对猪，外购等无耳号的按 {@code white_bar_no → product_inhouse.white_bar_id} 对猪
      *       （在库表行发走后只软删，不过滤 del_flag 才找得回）</li>
      *   <li>{@code rateArrive} / {@code rateBase} / {@code barYieldNumer}：完整接收批次的接收、出栏、白条总重，
-     *       按 D-0140 原文计算两个率，不因个别猪缺出栏重量而缩小分子</li>
+     *       沿用完整批次的重量基数；白条出品率遇缺源出栏重的日批次无可比值</li>
      * </ul>
      */
     @Select("""
         SELECT COUNT(*)                                                         AS receivedCount,
+               COUNT(CASE WHEN t.baseWeight IS NULL OR t.baseWeight <= 0 THEN 1 END) AS missingBaseCount,
                COALESCE(SUM(t.baseWeight), 0)                                   AS baseWeight,
                COALESCE(SUM(t.arriveWeight), 0)                                 AS arriveWeight,
                COALESCE(SUM(t.barWeight), 0)                                    AS barWeight,
@@ -142,6 +144,17 @@ public interface WarehouseStatAggregateMapper {
     Map<String, Object> selectSlaughterYtdCompletion(@Param("tenantId") String tenantId,
                                                      @Param("statDate") String statDate);
 
+    /** 日末已接收未完成的猪，跨年仍计入。 */
+    @Select("""
+        SELECT COUNT(*)
+        FROM t_warehouse_bar_info b
+        WHERE b.del_flag = '0' AND b.tenant_id = #{tenantId}
+          AND b.in_method = 1 AND b.arrive_weight IS NOT NULL
+          AND COALESCE(b.arrive_time, b.in_time) < DATE_ADD(#{statDate}, INTERVAL 1 DAY)
+          AND (b.finish_time IS NULL OR b.finish_time >= DATE_ADD(#{statDate}, INTERVAL 1 DAY))
+        """)
+    int countPendingSlaughter(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
     /** 按领用日统计分割扇数，半扇 1、整只 2。 */
     @Select("SELECT COALESCE(SUM(" + WarehouseProductionStatSql.CUT_SIDES + "), 0) " + """
         FROM t_warehouse_pig_cut_record
@@ -149,6 +162,16 @@ public interface WarehouseStatAggregateMapper {
           AND white_bar_id IS NOT NULL AND out_type = 'cut'
         """)
     BigDecimal countCutBar(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+    /** 当日领用、当日日末前完成的白条扇数。 */
+    @Select("SELECT COALESCE(SUM(" + WarehouseProductionStatSql.CUT_SIDES + "), 0) " + """
+        FROM t_warehouse_pig_cut_record
+        WHERE del_flag = '0' AND tenant_id = #{tenantId}
+          AND white_bar_id IS NOT NULL AND out_type = 'cut'
+          AND pickup_time >= #{statDate} AND pickup_time < DATE_ADD(#{statDate}, INTERVAL 1 DAY)
+          AND cut_done_time >= pickup_time AND cut_done_time < DATE_ADD(#{statDate}, INTERVAL 1 DAY)
+        """)
+    int countCompletedCutSides(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
     /** 报表日结束时，已领用但尚未完成的白条扇数。 */
     @Select("SELECT COALESCE(SUM(" + WarehouseProductionStatSql.CUT_SIDES + "), 0) " + """
@@ -206,26 +229,43 @@ public interface WarehouseStatAggregateMapper {
         """)
     BigDecimal sumCutBarWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
-    /**
-     * 分割产品总重：当日「对白条分割产出的猪肉产品」总重
-     * = Σ stock_flow.change_quantity（flow_type='cut_out_in'，flow_date）。
-     *
-     * <p>口径（测试 row188）：「后管白条分割管理菜单对白条进行分割，产生的猪肉产品总重量」。
-     * 分割产出（cut_out_in）是 {@code submitCutOut} 每部位入冻品库时写的不可变审计流水，与
-     * {@code bar_info.cut_product_weight}（{@link org.dromara.djs.warehouse.flow.mapper.StockFlowMapper#sumCutOutByWhiteBarId}
-     * 按 white_bar_id 聚合）同源，本方法按 flow_date 做日维度聚合。</p>
-     *
-     * <p><b>不读 product_inhouse</b>：product_inhouse 是燎毛入库产出行（整只/半只/猪头/猪蹄 raw 白条重，
-     * 含 belong_type='pork' 的猪头/猪蹄副产），是分割的「原料」不是「产出」。按它聚合会把整白条燎毛重
-     * （且含副产）当成分割产品，数值远大于领用重（物理不可能，如 07-03：燎毛口径 601 &gt; 领用 303.8），
-     * 故改读 cut_out_in 分割产出流水（07-03 = 159，≤ 领用重，符合口径）。</p>
-     */
-    @Select("""
-        SELECT COALESCE(SUM(change_quantity), 0) FROM t_warehouse_stock_flow
-        WHERE del_flag = '0' AND tenant_id = #{tenantId}
-          AND DATE(flow_date) = #{statDate} AND flow_type = 'cut_out_in'
+    /** 分割产出重量归到对应白条领用日。 */
+    @Select("SELECT COALESCE(SUM(f.change_quantity), 0) "
+        + WarehouseProductionStatSql.CUT_OUTPUT_PICKUP_JOIN + WarehouseProductionStatSql.EFFECTIVE_CUT_OUTPUT + """
+        AND c.pickup_time >= #{statDate} AND c.pickup_time < DATE_ADD(#{statDate}, INTERVAL 1 DAY)
         """)
     BigDecimal sumCutProductWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+    /** 无有效领用单的入库流水按产出业务日单列计数。 */
+    @Select("SELECT COUNT(*) "
+        + WarehouseProductionStatSql.CUT_OUTPUT_PICKUP_JOIN + WarehouseProductionStatSql.EFFECTIVE_CUT_OUTPUT + """
+        AND c.id IS NULL
+        AND f.flow_date >= #{statDate} AND f.flow_date < DATE_ADD(#{statDate}, INTERVAL 1 DAY)
+        """)
+    int countUnmatchedCutOutputs(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+    /** 窗口内发生或补录、更正的产出，反查窗口外领用日期；包括已冲销的流水。 */
+    @Select("SELECT DISTINCT DATE(c.pickup_time) "
+        + WarehouseProductionStatSql.CUT_OUTPUT_PICKUP_JOIN + """
+        AND c.pickup_time < #{from}
+        AND ((f.flow_date >= #{from} AND f.flow_date < #{until})
+          OR (f.create_time >= #{from} AND f.create_time < #{until})
+          OR (f.update_time >= #{from} AND f.update_time < #{until}))
+        """)
+    List<LocalDate> selectEarlierCutOutputPickupDates(@Param("tenantId") String tenantId,
+        @Param("from") LocalDate from, @Param("until") LocalDate until);
+
+    /** 补录、更正完成时刻或冲销领用时，同样重算窗口外的原领用日。 */
+    @Select("""
+        SELECT DISTINCT DATE(pickup_time)
+        FROM t_warehouse_pig_cut_record
+        WHERE tenant_id = #{tenantId} AND out_type = 'cut' AND pickup_time < #{from}
+          AND ((cut_done_time >= #{from} AND cut_done_time < #{until})
+            OR (create_time >= #{from} AND create_time < #{until})
+            OR (update_time >= #{from} AND update_time < #{until}))
+        """)
+    List<LocalDate> selectEarlierChangedCutPickupDates(@Param("tenantId") String tenantId,
+        @Param("from") LocalDate from, @Param("until") LocalDate until);
 
     /** 某损耗类型当日总重（防重复计：所有损耗一律从 loss_flow 按 loss_type 取，A#8）。 */
     @Select("""
@@ -503,31 +543,19 @@ public interface WarehouseStatAggregateMapper {
     //  仓库月表（row18）源聚合 —— 从已落盘日表 Σ 回读
     // ============================================================
 
-    /**
-     * 汇总某月已落盘日表（屠宰头数之和 + 各分子/分母 Σ），月率用 Σ 分子÷Σ 分母（非日率平均）。
-     * 返 Map(slaughterCount, sumRateArrive, sumRateBase, sumBarYieldNumer, sumBarYieldBase, sumCutProduct, sumCutBar)。
-     *
-     * <p>屠宰出品率 / 白条出品率的分子分母是日表落盘时写下的基数列（当日接收且有出栏重量的那批猪），
-     * 月率必须拿这些基数 Σ 后再相除，不能拿 {@code arrive_weight} / {@code slaughter_weight} / {@code bar_total_weight}
-     * 凑——那几列含没有出栏重量的猪，跟比率不是同一批。也不能拿日比率求平均，不能用
-     * {@code finished_arrive_weight}（诊断列）。</p>
-     *
-     * <p>矩阵累计只纳入截至昨日的日率。</p>
-     *
-     * @param month yyyy-MM
-     */
+    /** 汇总日表。月白条出品率只用截至昨日的正值日，年度基数保留所有可比日。 */
     @Select("""
         SELECT COALESCE(SUM(slaughter_count), 0)              AS slaughterCount,
                COALESCE(SUM(slaughter_rate_arrive_weight), 0) AS sumRateArrive,
                COALESCE(SUM(slaughter_rate_base_weight), 0)   AS sumRateBase,
-               COALESCE(SUM(bar_yield_numer_weight), 0)       AS sumBarYieldNumer,
-               COALESCE(SUM(bar_yield_base_weight), 0)        AS sumBarYieldBase,
                COALESCE(SUM(cut_product_weight), 0)           AS sumCutProduct,
                COALESCE(SUM(cut_bar_weight), 0)              AS sumCutBar,
                COALESCE(SUM(bar_total_weight), 0)            AS sumBarWeight,
                COALESCE(SUM(bar_pig_count), 0)               AS sumBarPigCount,
-               COALESCE(SUM(CASE WHEN stat_date < CURDATE() THEN bar_yield_rate END), 0) AS sumDailyBarRate,
+               COALESCE(SUM(CASE WHEN stat_date < CURDATE() AND bar_yield_rate > 0 THEN bar_yield_rate END), 0) AS sumDailyBarRate,
                COUNT(CASE WHEN stat_date < CURDATE() AND bar_yield_rate > 0 THEN 1 END) AS positiveBarRateDays,
+               COALESCE(SUM(CASE WHEN slaughter_count > 0 THEN bar_yield_rate END), 0) AS barYieldRateSum,
+               COUNT(CASE WHEN slaughter_count > 0 THEN bar_yield_rate END) AS barYieldRateDays,
                COALESCE(SUM(cut_bar_count), 0)               AS cutBarCount,
                COALESCE(SUM(cut_loss), 0)                    AS cutLoss,
                COALESCE(SUM(cut_bar_weight), 0)              AS cutLossPickupWeight,
@@ -543,7 +571,12 @@ public interface WarehouseStatAggregateMapper {
 
     /** 汇总指定月份范围内的年度指标基数。 */
     @Select("""
-        SELECT COALESCE(SUM(cut_loss), 0) AS cutLoss,
+        SELECT COALESCE(SUM(slaughter_count), 0) AS slaughterCount,
+               COALESCE(SUM(bar_yield_rate_sum), 0) AS barYieldRateSum,
+               COALESCE(SUM(bar_yield_rate_days), 0) AS barYieldRateDays,
+               COALESCE(SUM(cut_bar_weight), 0) AS cutBarWeight,
+               COALESCE(SUM(cut_product_weight), 0) AS cutProductWeight,
+               COALESCE(SUM(cut_loss), 0) AS cutLoss,
                COALESCE(SUM(cut_loss_pickup_weight), 0) AS cutLossPickupWeight,
                COALESCE(SUM(veg_raw_inbound_weight), 0) AS vegRawInboundWeight,
                COALESCE(SUM(veg_delivery_out_weight), 0) AS vegDeliveryOutWeight

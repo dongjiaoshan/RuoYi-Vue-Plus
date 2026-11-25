@@ -157,13 +157,14 @@ class WarehouseStatServiceImplTest {
     }
 
     /**
-     * 3 头里有 1 头没有出栏重量：D-0140 分子仍取整批接收/白条总重，不添加剔除条件。
-     * 分母为已录出栏重量之和；均重除以接收头数 3。
+     * 3 头里有 1 头缺出栏重量时，保留整批的重量基数和屠宰出品率，白条出品率为空。
      */
     @Test
     @DisplayName("缺出栏重量不缩小整批接收/白条分子，均重仍除以接收头数")
     void testRatesUseWholeReceivedCohort() {
-        stubCohort(3, bd("230"), bd("305"), bd("190"), bd("210"), bd("230"), bd("150"));
+        when(aggregateMapper.selectReceivedCohortAgg(TENANT, DATE_STR)).thenReturn(Map.of(
+            "receivedCount", 3, "baseWeight", bd("230"), "arriveWeight", bd("305"), "barWeight", bd("190"),
+            "missingBaseCount", 1));
         stubFinished(0, BigDecimal.ZERO);
 
         WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
@@ -173,17 +174,17 @@ class WarehouseStatServiceImplTest {
         assertThat(saved.getSlaughterRate()).isEqualByComparingTo("132.609");
         assertThat(saved.getBarYieldNumerWeight()).isEqualByComparingTo("190.000");
         assertThat(saved.getBarYieldBaseWeight()).isEqualByComparingTo("230.000");
-        assertThat(saved.getBarYieldRate()).isEqualByComparingTo("82.609");
+        assertThat(saved.getBarYieldRate()).isNull();
         // 白条总重展示列仍是整批 190，均重 = 190 / 3
         assertThat(saved.getBarTotalWeight()).isEqualByComparingTo("190.000");
         assertThat(saved.getAvgBarWeight()).isEqualByComparingTo("63.333");
         assertThat(saved.getAvgArriveWeight()).isEqualByComparingTo("101.667");
     }
 
-    /** 当天没接收任何猪：所有均值 / 比率落 null，重量与头数落 0（ALWAYS 策略会覆盖旧值）。 */
+    /** 当天没有接收，出栏和白条均重、白条出品率为零。 */
     @Test
-    @DisplayName("当天无接收 → 均重、出品率全落 null，头数与重量落 0")
-    void testEmptyCohortYieldsNulls() {
+    @DisplayName("当天无接收时出栏和白条均重、白条出品率为零")
+    void testEmptyCohortAveragesAndBarYieldAreZero() {
         stubCohort(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
             BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
         stubFinished(0, BigDecimal.ZERO);
@@ -191,11 +192,11 @@ class WarehouseStatServiceImplTest {
         WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
 
         assertThat(saved.getSlaughterCount()).isZero();
-        assertThat(saved.getAvgSlaughterWeight()).isNull();
+        assertThat(saved.getAvgSlaughterWeight()).isEqualByComparingTo("0.000");
         assertThat(saved.getAvgArriveWeight()).isNull();
-        assertThat(saved.getAvgBarWeight()).isNull();
+        assertThat(saved.getAvgBarWeight()).isEqualByComparingTo("0.000");
         assertThat(saved.getSlaughterRate()).isNull();
-        assertThat(saved.getBarYieldRate()).isNull();
+        assertThat(saved.getBarYieldRate()).isEqualByComparingTo("0.00");
         assertThat(saved.getBarTotalWeight()).isEqualByComparingTo("0.000");
         assertThat(saved.getSlaughterCompletionRate()).isEqualByComparingTo("0.00");
         assertThat(saved.getCutLossRate()).isNull();
@@ -273,13 +274,8 @@ class WarehouseStatServiceImplTest {
             .isInstanceOf(IllegalArgumentException.class);
     }
 
-    /**
-     * 月表：屠宰出品率 = Σ分子/Σ分母，白条出品率 = Σ出品率分子/Σ出品率分母。
-     * 用与「Σ接收/Σ送宰」明显不同的数字，保证走的是基数列而不是展示列；
-     * 出品率分母取 sumBarYieldBase（不是 sumFinishedArrive），验月表侧与日率同口径。
-     */
     @Test
-    @DisplayName("月表比率从日表 cohort 基数列 Σ 后重算（出品率分母取 barYieldBase）")
+    @DisplayName("月表屠宰出品率按重量汇总，白条出品率按正值日平均")
     void testMonthlyRatesFromCohortBases() {
         stubCohort(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
             BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
@@ -288,8 +284,6 @@ class WarehouseStatServiceImplTest {
             Map.entry("slaughterCount", 7),
             Map.entry("sumRateArrive", bd("420")),
             Map.entry("sumRateBase", bd("500")),
-            Map.entry("sumBarYieldNumer", bd("380")),
-            Map.entry("sumBarYieldBase", bd("400")),
             Map.entry("sumCutProduct", bd("150")),
             Map.entry("sumCutBar", bd("200")),
             Map.entry("sumBarWeight", bd("300")),
@@ -310,7 +304,7 @@ class WarehouseStatServiceImplTest {
         assertThat(m.getStatMonth()).isEqualTo(MONTH);
         assertThat(m.getSlaughterCount()).isEqualTo(7);
         assertThat(m.getSlaughterRate()).isEqualByComparingTo("84.000");
-        assertThat(m.getBarYieldRate()).isEqualByComparingTo("95.000");
+        assertThat(m.getBarYieldRate()).isEqualByComparingTo("50.00");
         assertThat(m.getCutYieldRate()).isEqualByComparingTo("75.000");
         assertThat(m.getSourceMarketingCount()).isEqualTo(2);
         assertThat(m.getSourceMarketingAvgWeight()).isEqualByComparingTo("130.000");
@@ -321,9 +315,8 @@ class WarehouseStatServiceImplTest {
         assertThat(m.getVegProducedPortionCount()).isEqualTo(20);
     }
 
-    /** 月表分母为 0 → 比率 null（配 ALWAYS 更新策略真覆盖旧值）。 */
     @Test
-    @DisplayName("月表 cohort 基数全 0 → 比率 null")
+    @DisplayName("月表基数全零时，屠宰出品率仍为空，白条出品率和分割率为零")
     void testMonthlyZeroBasesYieldNull() {
         stubCohort(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
             BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
@@ -332,8 +325,6 @@ class WarehouseStatServiceImplTest {
             "slaughterCount", 0,
             "sumRateArrive", BigDecimal.ZERO,
             "sumRateBase", BigDecimal.ZERO,
-            "sumBarYieldNumer", bd("380"),
-            "sumBarYieldBase", BigDecimal.ZERO,
             "sumCutProduct", BigDecimal.ZERO,
             "sumCutBar", BigDecimal.ZERO));
 
@@ -344,8 +335,8 @@ class WarehouseStatServiceImplTest {
         WarehouseMonthlyRecord m = captor.getValue();
 
         assertThat(m.getSlaughterRate()).isNull();
-        assertThat(m.getBarYieldRate()).isNull();
-        assertThat(m.getCutYieldRate()).isNull();
+        assertThat(m.getBarYieldRate()).isEqualByComparingTo("0.00");
+        assertThat(m.getCutYieldRate()).isEqualByComparingTo("0.00");
     }
 
     @Test

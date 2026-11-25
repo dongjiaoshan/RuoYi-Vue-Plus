@@ -19,8 +19,8 @@ import java.time.LocalDate;
  * <p>每个 tenant_id + stat_date 一行；由 {@link org.dromara.djs.warehouse.stat.job.WarehouseStatJob}
  * 每晚跑批落盘 T-1 全量仓库日指标（UPSERT 幂等）。admin「仓库日报表」只读列表读本表。</p>
  *
- * <p><b>率/均值类列可空 + ALWAYS</b>：分母≤0 时落 NULL（无意义不造假）。MP updateById 默认跳 null
- * 会把重算成 NULL 的列留旧脏值，故率/均值类列标 {@code @TableField(updateStrategy = ALWAYS)}
+ * <p><b>可空统计列</b>：MP updateById 默认跳 null，可能保留重算前的旧值。
+ * 可空列用 {@code @TableField(updateStrategy = ALWAYS)}
  * 让重算的 NULL 真覆盖旧值。重量/头数类有 DEFAULT 0、恒非 null，不需要 ALWAYS。</p>
  *
  * @author djs
@@ -45,7 +45,7 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     private Integer slaughterCount;
     /** 送宰总重（当日接收的猪只出栏重量之和；外购取 outsource_pig.pig_weight）。 */
     private BigDecimal slaughterWeight;
-    /** 送宰均重（送宰总重/屠宰头数；分母 0 → null）。 */
+    /** 送宰均重（送宰总重/屠宰头数；分母为 0 时返回 0）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgSlaughterWeight;
 
@@ -68,11 +68,11 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     private BigDecimal barTotalWeight;
     /** 白条均重分母：当日接收的猪只头数（≡ 屠宰头数）。矩阵「累计」按 Σ分子/Σ分母 重算用。 */
     private Integer barPigCount;
-    /** 白条出品率分子（当日接收且有出栏重量的猪的白条产品重量之和，月表按 Σ分子/Σ分母 重算用）。 */
+    /** 白条出品率分子（当日接收批次的白条产品重量之和）。 */
     private BigDecimal barYieldNumerWeight;
     /** 白条出品率分母（同一批猪的 Σ 出栏重量，与屠宰出品率同一个分母）。 */
     private BigDecimal barYieldBaseWeight;
-    /** 白条均重（白条总重/接收头数；分母 0 → null）。 */
+    /** 白条均重（白条总重/接收头数；分母为 0 时返回 0）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgBarWeight;
 
@@ -81,7 +81,7 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     private Integer finishedCount;
     /** 处理完成猪只的接收重量之和（Σ arrive_weight）。 */
     private BigDecimal finishedArriveWeight;
-    /** 白条出品率%（出品率分子/出品率分母×100；分母 0 → null）。 */
+    /** 白条出品率%（有接收但缺源出栏重时为空，无头数时为 0）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal barYieldRate;
 
@@ -91,11 +91,13 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     private BigDecimal cutBarCount;
     /** 预冷损耗（当日 loss_flow precool_loss 之和）。 */
     private BigDecimal precoolLoss;
-    /** 分割产品总重（当日分割车间产出产品重之和）。 */
+    /** 分割产品总重（当日领用白条对应的产出重量）。 */
     private BigDecimal cutProductWeight;
+    /** 按产出业务日统计的未配对有效分割产出流水数。 */
+    private Integer cutOutputUnmatchedCount;
     /** 分割白条总重（当日白条出库总重 = Σ cut_record.pickup_weight）。 */
     private BigDecimal cutBarWeight;
-    /** 分割率%（分割产品总重/分割白条总重×100；分母 0 → null）。 */
+    /** 分割率%（同批产出重/领用重×100；分母为 0 时返回 0）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal cutRate;
     /** 分割间损耗重（按对应分割单的领用日归集）。 */
@@ -136,6 +138,10 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     private BigDecimal slaughterCompletionRate;
     /** 日末已领用未完成分割扇数。 */
     private Integer cutPendingHalfCount;
+    /** 日末所有已接收、尚未完成燎毛的猪只头数。 */
+    private Integer slaughterPendingCount;
+    /** 当日领用的白条截至当日日末的完成率（%）。 */
+    private BigDecimal cutCompletionRate;
     /** 同批分割损耗重除以领用重（%，分母 0 时为空）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal cutLossRate;

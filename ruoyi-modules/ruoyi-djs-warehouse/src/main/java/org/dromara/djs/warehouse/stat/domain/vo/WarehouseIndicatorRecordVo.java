@@ -7,6 +7,7 @@ import org.dromara.djs.warehouse.stat.domain.WarehouseIndicatorRecord;
 import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 
 /**
@@ -55,7 +56,7 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     private Integer finishedCount;
     /** 处理完成猪只的接收重量之和（诊断列，不参与比率/均值）。 */
     private BigDecimal finishedArriveWeight;
-    /** 白条出品率分子（当日接收且有出栏重量的猪的白条产品重量之和）。 */
+    /** 白条出品率分子（当日接收批次的白条产品重量之和）。 */
     private BigDecimal barYieldNumerWeight;
     /** 白条出品率分母（同一批猪的 Σ 出栏重量）。 */
     private BigDecimal barYieldBaseWeight;
@@ -70,6 +71,8 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     private BigDecimal precoolLoss;
     /** 分割产品总重。 */
     private BigDecimal cutProductWeight;
+    /** 按产出业务日统计的未配对有效分割产出流水数。 */
+    private Integer cutOutputUnmatchedCount;
     /** 分割白条总重。 */
     private BigDecimal cutBarWeight;
     /** 分割率%。 */
@@ -106,6 +109,10 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     private BigDecimal slaughterCompletionRate;
     /** 日末已领用未完成分割扇数。 */
     private Integer cutPendingHalfCount;
+    /** 日末所有已接收、尚未完成燎毛的猪只头数。 */
+    private Integer slaughterPendingCount;
+    /** 当日领用的白条截至当日日末的完成率（%）。 */
+    private BigDecimal cutCompletionRate;
     /** 同批分割损耗重除以领用重（%，分母 0 时为空）。 */
     private BigDecimal cutLossRate;
     /** 果蔬毛菜实际入库重量（kg）。 */
@@ -114,4 +121,12 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     private BigDecimal vegDeliveryOutWeight;
     /** 有效果蔬生产份数。 */
     private Integer vegProducedPortionCount;
+
+    public BigDecimal getBarYieldRate() {
+        return barYieldRate == null ? null : barYieldRate.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    public BigDecimal getCutRate() {
+        return cutRate == null ? null : cutRate.setScale(2, RoundingMode.HALF_UP);
+    }
 }

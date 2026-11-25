@@ -19,7 +19,7 @@ import java.math.BigDecimal;
  * {@link org.dromara.djs.warehouse.stat.job.WarehouseStatJob} 在日表落盘后汇总当月日表
  * （当月每日刷新、历史月固定）。admin「仓库月报表」只读列表读本表。</p>
  *
- * <p>出栏指标按源出栏月统计，其余由日表汇总。原有出品率仍按合计基数重算。</p>
+ * <p>出栏指标按源出栏月统计，其余由日表汇总。白条出品率取正值日均值，分割出品率按领用批次汇总。</p>
  *
  * @author djs
  * @since WMS-STAT-001
@@ -43,10 +43,10 @@ public class WarehouseMonthlyRecord extends TenantEntity {
     /** 屠宰出品率%（当月 Σ日屠宰出品率分子 ÷ Σ日分母 ×100；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal slaughterRate;
-    /** 白条出品率%（当月日白条总重之和/当月日送宰总重之和×100；分母 0 → null）。 */
+    /** 白条出品率%（只平均当月正值日）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal barYieldRate;
-    /** 分割出品率%（当月日分割产品总重之和/当月日分割白条总重之和×100；分母 0 → null）。 */
+    /** 分割出品率%（领用月同批总产出重 ÷ 总领用重 × 100；分母 0 时返回 0）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal cutYieldRate;
 
@@ -72,6 +72,14 @@ public class WarehouseMonthlyRecord extends TenantEntity {
     private BigDecimal matrixBarYieldRate;
     /** 按领用月统计的分割扇数。 */
     private BigDecimal cutBarCount;
+    /** 按领用月统计的分割白条总重（kg）。 */
+    private BigDecimal cutBarWeight;
+    /** 按领用月统计的分割品总重（kg）。 */
+    private BigDecimal cutProductWeight;
+    /** 月内全部可比日的白条出品率合计（含 0%）。 */
+    private BigDecimal barYieldRateSum;
+    /** 月内全部可比日的天数（含 0%）。 */
+    private Integer barYieldRateDays;
     /** 按领用月统计的分割损耗重（kg）。 */
     private BigDecimal cutLoss;
     /** 同批分割领用总重（kg）。 */

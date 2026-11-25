@@ -309,18 +309,11 @@ public interface WarehouseDashboardMapper {
         + "   AND del_flag = '0'")
     BigDecimal countTodayCutBars(@Param("tenantId") String tenantId);
 
-    /**
-     * 今日白条分割产品总重：当天分割间入库流水 {@code cut_out_in} 的重量之和。
-     *
-     * <p>分割产品在白条分割页确认入库时即写不可变库存流水；后续是否打包、是否有耳号均不影响本指标。
-     * 该口径与仓库日统计 {@code WarehouseStatAggregateMapper.sumCutProductWeight} 同源。</p>
-     */
-    @Select("SELECT COALESCE(SUM(change_quantity), 0) "
-        + "  FROM t_warehouse_stock_flow "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND flow_type = 'cut_out_in' "
-        + "   AND DATE(flow_date) = CURDATE() "
-        + "   AND del_flag = '0'")
+    /** 今日领用白条对应的分割产出总重，与日报共用白条编号关联。 */
+    @Select("SELECT COALESCE(SUM(f.change_quantity), 0) "
+        + WarehouseProductionStatSql.CUT_OUTPUT_PICKUP_JOIN + WarehouseProductionStatSql.EFFECTIVE_CUT_OUTPUT + """
+        AND c.pickup_time >= CURDATE() AND c.pickup_time < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+        """)
     BigDecimal sumTodayCutProductWeight(@Param("tenantId") String tenantId);
 
     /**

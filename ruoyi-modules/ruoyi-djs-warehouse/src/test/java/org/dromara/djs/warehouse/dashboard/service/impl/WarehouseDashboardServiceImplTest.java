@@ -10,6 +10,8 @@ import org.dromara.djs.warehouse.dashboard.mapper.WarehouseProductionDashboardMa
 import org.dromara.djs.warehouse.dashboard.mapper.WarehouseProductionDashboardMapper.SlaughterSummaryRow;
 import org.dromara.djs.warehouse.stat.domain.WarehouseIndicatorRecord;
 import org.dromara.djs.warehouse.stat.domain.WarehouseMonthlyRecord;
+import org.dromara.djs.warehouse.stat.domain.vo.WarehouseAnnualRecordVo;
+import org.dromara.djs.warehouse.stat.service.IWarehouseStatService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -29,9 +31,9 @@ import java.time.YearMonth;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 /**
@@ -63,15 +65,24 @@ class WarehouseDashboardServiceImplTest {
     @Mock
     private WarehouseProductionDashboardMapper productionDashboardMapper;
 
+    @Mock
+    private IWarehouseStatService warehouseStatService;
+
     private WarehouseDashboardServiceImpl service;
 
     private MockedStatic<TenantHelper> tenantHelperMock;
 
     @BeforeEach
     void setUp() {
-        service = new WarehouseDashboardServiceImpl(dashboardMapper, productionDashboardMapper);
+        service = new WarehouseDashboardServiceImpl(dashboardMapper, productionDashboardMapper, warehouseStatService);
+        when(warehouseStatService.getAnnual(anyInt())).thenAnswer(call -> annual(call.getArgument(0), 0, "0.00"));
         tenantHelperMock = Mockito.mockStatic(TenantHelper.class);
         tenantHelperMock.when(TenantHelper::getTenantId).thenReturn("1001");
+    }
+
+    private WarehouseAnnualRecordVo annual(int year, int slaughterCount, String barYieldRate) {
+        return new WarehouseAnnualRecordVo(year, BigDecimal.ZERO, BigDecimal.ZERO, null,
+            BigDecimal.ZERO, BigDecimal.ZERO, slaughterCount, new BigDecimal(barYieldRate), BigDecimal.ZERO);
     }
 
     @AfterEach
@@ -195,6 +206,7 @@ class WarehouseDashboardServiceImplTest {
             eq("1001"), eq(LocalDate.of(2026, 1, 1)), eq(LocalDate.of(2026, 12, 31))))
             .thenReturn(List.of(d1, d2, d3));
 
+        when(warehouseStatService.getAnnual(2026)).thenReturn(annual(2026, 10, "60.00"));
         WarehousePorkEfficiencyVo vo = service.getPorkEfficiency(2026, "2026-01");
 
         assertThat(vo.getSlaughterCount()).isEqualTo(10);
@@ -207,7 +219,7 @@ class WarehouseDashboardServiceImplTest {
     }
 
     @Test
-    @DisplayName("两项出品率的日值全NULL时保留NULL；送宰均重按总重/头数照常算出")
+    @DisplayName("缺可比值时年白条出品率为零，屠宰出品率为空，送宰均重沿用源头数")
     void getPorkEfficiency_yearlyNullDailyMetricsStayNull() {
         SlaughterSummaryRow sent = new SlaughterSummaryRow();
         sent.setSlaughterCount(1);
@@ -224,12 +236,12 @@ class WarehouseDashboardServiceImplTest {
 
         assertThat(vo.getAvgSlaughterWeight()).isEqualByComparingTo("100.00");
         assertThat(vo.getSlaughterRate()).isNull();
-        assertThat(vo.getBarYieldRate()).isNull();
+        assertThat(vo.getBarYieldRate()).isEqualByComparingTo("0.00");
     }
 
     @Test
-    @DisplayName("年度送宰按出栏源，包含未接收猪，与按接收日的日表独立")
-    void getPorkEfficiency_annualMarketingCohortIncludesPigsAwaitingReceipt() {
+    @DisplayName("年度送宰头数和送宰均重使用同批出栏源")
+    void getPorkEfficiency_annualSentCountMatchesMarketingAverage() {
         WarehouseIndicatorRecord received = indicatorRow(LocalDate.of(2026, 3, 1), 1,
             "100", "90", "80", "90", "100", "80", "100");
         when(productionDashboardMapper.selectIndicatorRecordsInRange(
@@ -241,26 +253,30 @@ class WarehouseDashboardServiceImplTest {
         when(productionDashboardMapper.selectSlaughterInRange(
             "1001", LocalDate.of(2026, 1, 1), LocalDate.of(2027, 1, 1))).thenReturn(sent);
 
+        when(warehouseStatService.getAnnual(2026)).thenReturn(annual(2026, 1, "0.00"));
         WarehousePorkEfficiencyVo vo = service.getPorkEfficiency(2026, "2026-03");
 
         assertThat(vo.getSlaughterCount()).isEqualTo(2);
         assertThat(vo.getAvgSlaughterWeight()).isEqualByComparingTo("150.00");
     }
 
-    /** D-0148：月趋势与同月日矩阵累计一致，各日头数不同也不改用 Σ基数率。 */
     @Test
-    @DisplayName("月趋势从日表按月汇总，与同月日矩阵累计头数及三率逐项相等")
-    void getPorkEfficiency_monthlyTrendMatchesDailyMatrixTotals() {
+    @DisplayName("月趋势分割率读月表，日矩阵累计按正值日分割率平均")
+    void getPorkEfficiency_cutTrendUsesMonthlyRateAndMatrixAveragesDailyRates() {
         WarehouseIndicatorRecord d1 = indicatorRow(LocalDate.of(2026, 3, 1), 1,
             "100", "90", "80", "90", "100", "80", "100");
         d1.setSlaughterRate(new BigDecimal("90"));
         d1.setBarYieldRate(new BigDecimal("80"));
         d1.setCutRate(new BigDecimal("20"));
+        d1.setCutProductWeight(new BigDecimal("20"));
+        d1.setCutBarWeight(new BigDecimal("100"));
         WarehouseIndicatorRecord d2 = indicatorRow(LocalDate.of(2026, 3, 2), 9,
             "1800", "900", "720", "900", "1800", "720", "1800");
         d2.setSlaughterRate(new BigDecimal("50"));
         d2.setBarYieldRate(new BigDecimal("40"));
         d2.setCutRate(new BigDecimal("80"));
+        d2.setCutProductWeight(new BigDecimal("240"));
+        d2.setCutBarWeight(new BigDecimal("300"));
         WarehouseIndicatorRecord emptyDay = new WarehouseIndicatorRecord();
         emptyDay.setStatDate(LocalDate.of(2026, 3, 3));
         emptyDay.setSlaughterCount(0);
@@ -276,13 +292,13 @@ class WarehouseDashboardServiceImplTest {
             "1001", LocalDate.of(2026, 3, 1), LocalDate.of(2026, 3, 31)))
             .thenReturn(List.of(d1, d2, emptyDay));
 
-        // 月持久表可能仍是基数重算旧值，dashboard 不再读取它。
+        // 20/100 和 240/300 的月表分割率为 65%，日率平均为 50%。
         WarehouseMonthlyRecord m = new WarehouseMonthlyRecord();
         m.setStatMonth("2026-03");
         m.setSlaughterCount(6);
         m.setSlaughterRate(new BigDecimal("98.214"));
         m.setBarYieldRate(new BigDecimal("77.305"));
-        m.setCutYieldRate(new BigDecimal("75.000"));
+        m.setCutYieldRate(new BigDecimal("65.00"));
         when(productionDashboardMapper.selectMonthlyRecordsByYear(eq("1001"), eq("2026-%")))
             .thenReturn(List.of(m));
 
@@ -292,15 +308,34 @@ class WarehouseDashboardServiceImplTest {
         assertThat(vo.getTrendSlaughterCount()).containsExactly(3, 10);
         assertThat(vo.getTrendSlaughterRate().get(1)).isEqualByComparingTo("70.00");
         assertThat(vo.getTrendBarYieldRate().get(1)).isEqualByComparingTo("60.00");
-        assertThat(vo.getTrendCutYieldRate().get(1)).isEqualByComparingTo("50.00");
+        assertThat(vo.getTrendCutYieldRate().get(1)).isEqualByComparingTo("65.00");
         assertThat(vo.getTrendSlaughterCount().get(1).toString()).isEqualTo(totalOf(vo, "屠宰头数"));
         assertThat(vo.getTrendSlaughterRate().get(1)).isEqualByComparingTo(totalOf(vo, "屠宰出品率"));
         assertThat(vo.getTrendBarYieldRate().get(1)).isEqualByComparingTo(totalOf(vo, "白条出品率"));
-        assertThat(vo.getTrendCutYieldRate().get(1)).isEqualByComparingTo(totalOf(vo, "分割率"));
+        assertThat(totalOf(vo, "分割率")).isEqualTo("50.00");
         assertThat(vo.getTrendSlaughterRate().get(0)).isZero();
         assertThat(vo.getTrendBarYieldRate().get(0)).isZero();
         assertThat(vo.getTrendCutYieldRate().get(0)).isZero();
-        verify(productionDashboardMapper, never()).selectMonthlyRecordsByYear("1001", "2026-%");
+        verify(productionDashboardMapper).selectMonthlyRecordsByYear("1001", "2026-%");
+    }
+
+    @Test
+    @DisplayName("屠宰均重日格和累计格均保留 3 位，累计沿用正值日平均")
+    void getPorkEfficiency_matrixMarketingAverageKeepsThreeDecimals() {
+        WarehouseIndicatorRecord first = new WarehouseIndicatorRecord();
+        first.setStatDate(LocalDate.of(2026, 3, 1));
+        first.setAvgSlaughterWeight(new BigDecimal("33.333"));
+        WarehouseIndicatorRecord second = new WarehouseIndicatorRecord();
+        second.setStatDate(LocalDate.of(2026, 3, 2));
+        second.setAvgSlaughterWeight(new BigDecimal("66.668"));
+        when(productionDashboardMapper.selectIndicatorRecordsInRange(
+            "1001", LocalDate.of(2026, 3, 1), LocalDate.of(2026, 3, 31))).thenReturn(List.of(first, second));
+
+        WarehousePorkEfficiencyVo vo = service.getPorkEfficiency(2026, "2026-03");
+
+        assertThat(totalOf(vo, "屠宰均重")).isEqualTo("50.001");
+        assertThat(vo.getMatrixRows().stream().filter(row -> "屠宰均重".equals(row.getMetric()))
+            .findFirst().orElseThrow().getDailyValues()).contains("33.333", "66.668");
     }
 
     @Test
@@ -354,14 +389,14 @@ class WarehouseDashboardServiceImplTest {
 
         assertThat(totalOf(vo, "屠宰头数")).isEqualTo("11");
         assertThat(totalOf(vo, "分割扇数")).isEqualTo("3.00");
-        assertThat(totalOf(vo, "屠宰均重")).isEqualTo("150.00");
+        assertThat(totalOf(vo, "屠宰均重")).isEqualTo("150.000");
         assertThat(vo.getMatrixRows()).extracting(WarehousePorkEfficiencyVo.MatrixRow::getMetric)
             .doesNotContain("送宰均重");
     }
 
-    /** 当年无日表数据 → 两个率落 null（前端显「—」），不造 0。 */
+
     @Test
-    @DisplayName("年度无数据 → 屠宰率 / 白条出品率 null，不造 0")
+    @DisplayName("年度无数据时，屠宰出品率为空，白条出品率为零")
     void getPorkEfficiency_noYearRows_ratesNull() {
         when(productionDashboardMapper.selectIndicatorRecordsInRange(
             eq("1001"), eq(LocalDate.of(2026, 1, 1)), eq(LocalDate.of(2026, 12, 31))))
@@ -371,7 +406,7 @@ class WarehouseDashboardServiceImplTest {
 
         assertThat(vo.getSlaughterCount()).isZero();
         assertThat(vo.getSlaughterRate()).isNull();
-        assertThat(vo.getBarYieldRate()).isNull();
+        assertThat(vo.getBarYieldRate()).isEqualByComparingTo("0.00");
         assertThat(vo.getAvgSlaughterWeight()).isNull();
     }
 
@@ -380,7 +415,7 @@ class WarehouseDashboardServiceImplTest {
      * Σ白条总重 ÷ Σ当日入白条库猪只耳号去重数，<b>不是</b>「日均重再求平均」。
      *
      * <p>用两天拉开差距：D1 一头 110kg（均重 110.00），D2 十头 1240.9kg（均重 124.09）。
-     * 正确累计 = (110+1240.9)/(1+10) = 1350.9/11 = 122.81；
+     * 正确累计 = (110+1240.9)/(1+10) = 1350.9/11 = 122.809；
      * 旧的「日均值平均」= (110.00+124.09)/2 = 117.05 —— 只有 11 头里 1 头的那天被当成
      * 与 10 头那天同等权重，这正是甲方圈出来的偏差。</p>
      */
@@ -397,13 +432,13 @@ class WarehouseDashboardServiceImplTest {
 
         WarehousePorkEfficiencyVo.MatrixRow row = vo.getMatrixRows().stream()
             .filter(r -> "白条均重".equals(r.getMetric())).findFirst().orElseThrow();
-        // 1350.900 / 11 = 122.81（日均重再平均会得到 117.05）
-        assertThat(row.getTotal()).isEqualTo("122.81");
+        // 1350.900 / 11 = 122.809（日均重再平均会得到 117.05）
+        assertThat(row.getTotal()).isEqualTo("122.809");
     }
 
-    /** 整月一头白条都没入库（Σ分母 = 0）→ 累计兜 0.00，不除零、不留空。 */
+    /** 整月一头白条都没入库（Σ分母 = 0）→ 累计兜 0.000，不除零、不留空。 */
     @Test
-    @DisplayName("日矩阵「累计」：Σ去重耳号数为 0 → 白条均重累计兜 0.00，不除零")
+    @DisplayName("日矩阵「累计」：Σ去重耳号数为 0 → 白条均重累计兜 0.000，不除零")
     void getPorkEfficiency_avgBarWeightTotalZeroDenominator() {
         WarehouseIndicatorRecord d1 = barRow(LocalDate.of(2026, 8, 20), "0.000", 0, null);
         when(productionDashboardMapper.selectIndicatorRecordsInRange(
@@ -414,25 +449,11 @@ class WarehouseDashboardServiceImplTest {
 
         WarehousePorkEfficiencyVo.MatrixRow row = vo.getMatrixRows().stream()
             .filter(r -> "白条均重".equals(r.getMetric())).findFirst().orElseThrow();
-        assertThat(row.getTotal()).isEqualTo("0.00");
+        assertThat(row.getTotal()).isEqualTo("0.000");
     }
 
-    /**
-     * 回归钉子：<b>只有白条均重</b>改走 Σ分子/Σ分母，其余率/均值类指标的「累计」仍是
-     * 「Σ日值 ÷ 有数据天数」。
-     *
-     * <p>{@code PorkMetric} 加了一对可选的 {@code totalNumer/totalDenom}，两个都不给就走原逻辑。
-     * 「不给就等价于原逻辑」这件事光靠读代码支撑不住 —— 下一个人往这对取值器上接第二个指标时
-     * 改坏了没人会发现，所以在这里钉死两个代表指标的现状值。</p>
-     *
-     * <p>用两天把两种算法拉开：D1 屠宰率 90%（90/100）、D2 屠宰率 50%（500/1000）。
-     * 现状「日值平均」= (90+50)/2 = <b>70.00</b>；若误接成 Σ分子/Σ分母 = 590/1100 = 53.64。
-     * 送宰均重同理：现状 (100+200)/2 = <b>150.00</b>；Σ/Σ = 1900/10 = 190.00。
-     * 这两个数<b>不是</b>在断言现状更正确 —— 它只是「本次没动它们」的护栏，
-     * 真要改口径请连这条用例一起改。</p>
-     */
     @Test
-    @DisplayName("回归：其余率/均值指标的累计仍是 Σ日值 ÷ 有数据天数（本次只动了白条均重）")
+    @DisplayName("屠宰出品率和屠宰均重累计沿用日值平均")
     void getPorkEfficiency_otherRateTotalsUnchanged() {
         WarehouseIndicatorRecord d1 = new WarehouseIndicatorRecord();
         d1.setStatDate(LocalDate.of(2026, 8, 20));
@@ -467,9 +488,9 @@ class WarehouseDashboardServiceImplTest {
 
         // 未接 cohort 基数的指标：仍是日值平均（接成 Σ/Σ 会分别变成 53.64 / 190.00）
         assertThat(totalOf(vo, "屠宰出品率")).isEqualTo("70.00");
-        assertThat(totalOf(vo, "屠宰均重")).isEqualTo("150.00");
-        // 已接 cohort 基数的白条均重：Σ分子/Σ分母 = 1350.900/11 = 122.81（日值平均是 117.05）
-        assertThat(totalOf(vo, "白条均重")).isEqualTo("122.81");
+        assertThat(totalOf(vo, "屠宰均重")).isEqualTo("150.000");
+        // 已接 cohort 基数的白条均重：Σ分子/Σ分母 = 1350.900/11 = 122.809（日值平均是 117.05）
+        assertThat(totalOf(vo, "白条均重")).isEqualTo("122.809");
     }
 
     @Test

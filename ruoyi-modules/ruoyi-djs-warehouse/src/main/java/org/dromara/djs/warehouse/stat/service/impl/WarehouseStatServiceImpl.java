@@ -31,6 +31,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeSet;
 
 /**
  * 仓库统计指标聚合 + 只读查询实现（WMS-STAT-001，邓博 admin row16/17/18）。
@@ -42,10 +43,10 @@ import java.util.Map;
  * <ol>
  *   <li>猪肉段全部按<b>接收 cohort</b>取数（D-0140，甲方 V6 行284）：一头猪只属于它在燎毛间的接收日
  *     {@code DATE(COALESCE(bar.arrive_time, bar.in_time))}，后续哪天再处理都算回这一天。屠宰头数 / 送宰均重 /
- *     接收均重 / 白条均重以接收头数为分母；屠宰出品率、白条出品率只取有出栏重量的猪，分子分母同一批。
+ *     接收均重 / 白条均重以接收头数为分母；白条出品率在接收批缺源出栏重时为空。
  *     定时任务每天整行重算 T-1，再回补最近 {@value #INDICATOR_REFRESH_DAYS} 天的接收批及 V1.1 生产指标。
  *     处理完成 cohort（bar.finish_time）→ 处理完成头数 / 该批猪接收重量之和，两个诊断列，不参与任何比率或均值。
- *     日表落 4 个率的基数列，月率按 Σ基数 重算</li>
+ *     日表落率的重量基数；白条月出品率使用正值日均值</li>
  *   <li>路损率 = (发往月台−月台接收)/发往月台×100（A2 日表，分母用发往=损耗占发出量）；作物表按 row17 (发往−接收)/接收×100</li>
  *   <li>所有损耗一律从 loss_flow 按 loss_type 取（防重复计）</li>
  *   <li>月台接收只算自产 receive_type=1</li>
@@ -152,14 +153,17 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         BigDecimal cutBar = scale3(aggregateMapper.sumCutBarWeight(tenantId, statDate));
         r.setCutBarCount(aggregateMapper.countCutBar(tenantId, statDate));
         r.setCutProductWeight(cutProduct);
+        r.setCutOutputUnmatchedCount(aggregateMapper.countUnmatchedCutOutputs(tenantId, statDate));
         r.setCutBarWeight(cutBar);
-        // 口径#6（B1）：分割率 = 分割产品总重 ÷ 分割白条总重 × 100。
-        // 分母用 cutBarWeight(分割白条总重 = Σ cut_record.pickup_weight) = Kevin 确认口径（非分割产品总重自身），固化不改。
-        r.setCutRate(pctOrNull(cutProduct, cutBar));
+        // 分子、分母均归同批白条的领用日。
+        r.setCutRate(percent2OrZero(cutProduct, cutBar));
+        r.setCutCompletionRate(percent2OrZero(
+            BigDecimal.valueOf(aggregateMapper.countCompletedCutSides(tenantId, statDate)), r.getCutBarCount()));
         BigDecimal cutLoss = scale3(aggregateMapper.sumCutLossByPickup(tenantId, statDate));
         r.setCutLoss(cutLoss);
         r.setCutLossRate(percent2OrNull(cutLoss, cutBar));
         r.setCutPendingHalfCount(aggregateMapper.countPendingCutSides(tenantId, statDate));
+        r.setSlaughterPendingCount(aggregateMapper.countPendingSlaughter(tenantId, statDate));
 
         Map<String, Object> ytd = aggregateMapper.selectSlaughterYtdCompletion(tenantId, statDate);
         int received = mapInt(ytd, "receivedCount");
@@ -222,7 +226,7 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
      *   <li>接收均重 = 这批猪的接收重量之和 ÷ 接收头数</li>
      *   <li>白条均重 = 这批猪的白条产品重量之和 ÷ 接收头数</li>
      *   <li>屠宰出品率 = 接收重量之和 ÷ 出栏重量之和 × 100；白条出品率 = 白条产品重量之和 ÷ 出栏重量之和 × 100
-     *       —— 分子取完整接收批次总重，不因缺出栏重量而剔除；基数列落盘供月表按 Σ基数 重算</li>
+     *       —— 使用完整接收批次的重量；白条出品率在批次缺源出栏重时没有可比值</li>
      * </ul>
      */
     private void fillPorkSegment(String tenantId, String statDate, WarehouseIndicatorRecord r) {
@@ -238,7 +242,7 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
 
         r.setSlaughterCount(received);
         r.setSlaughterWeight(baseWeight);
-        r.setAvgSlaughterWeight(divideOrNull(baseWeight, heads));
+        r.setAvgSlaughterWeight(divideOrZero(baseWeight, heads, 3));
 
         r.setArriveWeight(arrive);
         r.setArrivePigCount(received);
@@ -249,10 +253,10 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
 
         r.setBarTotalWeight(barWeight);
         r.setBarPigCount(received);
-        r.setAvgBarWeight(divideOrNull(barWeight, heads));
+        r.setAvgBarWeight(divideOrZero(barWeight, heads, 3));
         r.setBarYieldNumerWeight(barYieldNumer);
         r.setBarYieldBaseWeight(rateBase);
-        r.setBarYieldRate(pctOrNull(barYieldNumer, rateBase));
+        r.setBarYieldRate(mapInt(c, "missingBaseCount") > 0 ? null : percent2OrZero(barYieldNumer, rateBase));
     }
 
     /**
@@ -315,10 +319,13 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
                     .set(WarehouseIndicatorRecord::getCutBarCount, p.getCutBarCount())
                     .set(WarehouseIndicatorRecord::getCutBarWeight, p.getCutBarWeight())
                     .set(WarehouseIndicatorRecord::getCutProductWeight, p.getCutProductWeight())
+                    .set(WarehouseIndicatorRecord::getCutOutputUnmatchedCount, p.getCutOutputUnmatchedCount())
                     .set(WarehouseIndicatorRecord::getCutRate, p.getCutRate())
                     .set(WarehouseIndicatorRecord::getCutLoss, p.getCutLoss())
                     .set(WarehouseIndicatorRecord::getCutLossRate, p.getCutLossRate())
                     .set(WarehouseIndicatorRecord::getCutPendingHalfCount, p.getCutPendingHalfCount())
+                    .set(WarehouseIndicatorRecord::getSlaughterPendingCount, p.getSlaughterPendingCount())
+                    .set(WarehouseIndicatorRecord::getCutCompletionRate, p.getCutCompletionRate())
                     .set(WarehouseIndicatorRecord::getVegRawInboundWeight, p.getVegRawInboundWeight())
                     .set(WarehouseIndicatorRecord::getVegDeliveryOutWeight, p.getVegDeliveryOutWeight())
                     .set(WarehouseIndicatorRecord::getVegProducedPortionCount, p.getVegProducedPortionCount())
@@ -335,6 +342,14 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
             tenantId, from, to, updated, created, months);
         return String.format("ok | tenant=%s | indicators %s~%s | updated=%d | created=%d | months=%s",
             tenantId, from, to, updated, created, months);
+    }
+
+    @Override
+    public List<LocalDate> findEarlierCutPickupDates(LocalDate from, LocalDate until) {
+        String tenantId = currentTenant();
+        var dates = new TreeSet<>(aggregateMapper.selectEarlierCutOutputPickupDates(tenantId, from, until));
+        dates.addAll(aggregateMapper.selectEarlierChangedCutPickupDates(tenantId, from, until));
+        return List.copyOf(dates);
     }
 
     /**
@@ -428,7 +443,7 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
 
     /**
      * 汇总仓库月表 t_warehouse_monthly_record（row18，从已落盘日表 Σ 回读，UPSERT 幂等）。
-     * 月率用 Σ 分子÷Σ 分母（非日率平均），分子分母都取日表落下的 cohort 基数列。
+     * 白条出品率取正值日平均。分割率用同批产出总重除以领用总重。
      *
      * <p>本方法总是把当月<b>全部</b>日表行重扫一遍，所以逐日重算时每跑完一天刷一次月表都是安全的
      * （不是增量累加，最后一天跑完即得当月正确值）。</p>
@@ -442,28 +457,28 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         r.setSlaughterCount(mapInt(m, "slaughterCount"));
         // 屠宰出品率 = Σ日分子 / Σ日分母 ×100
         r.setSlaughterRate(pctOrNull(mapBd(m, "sumRateArrive"), mapBd(m, "sumRateBase")));
-        // 白条出品率 = Σ日出品率分子 / Σ日出品率分母 ×100（两列都是「当日接收 ∩ 出栏重量非空」那批猪的基数，与日率同口径）
-        r.setBarYieldRate(pctOrNull(mapBd(m, "sumBarYieldNumer"), mapBd(m, "sumBarYieldBase")));
-        // 分割出品率 = Σ分割产品/Σ分割白条×100
-        r.setCutYieldRate(pctOrNull(mapBd(m, "sumCutProduct"), mapBd(m, "sumCutBar")));
-
         LocalDate firstDay = YearMonth.parse(month).atDay(1);
         var source = productionMapper.selectSlaughterInRange(tenantId, firstDay, firstDay.plusMonths(1));
         r.setSourceMarketingCount(source.getSlaughterCount());
         r.setSourceMarketingWeight(scale3(source.getSlaughterWeight()));
-        r.setSourceMarketingAvgWeight(divideOrNull(r.getSourceMarketingWeight(),
-            BigDecimal.valueOf(r.getSourceMarketingCount())));
+        r.setSourceMarketingAvgWeight(divideOrZero(r.getSourceMarketingWeight(),
+            BigDecimal.valueOf(r.getSourceMarketingCount()), 3));
 
         r.setReceivedBarWeight(scale3(mapBd(m, "sumBarWeight")));
         r.setReceivedBarPigCount(mapInt(m, "sumBarPigCount"));
-        r.setReceivedBarAvgWeight(divideOrNull(r.getReceivedBarWeight(), BigDecimal.valueOf(r.getReceivedBarPigCount())));
+        r.setReceivedBarAvgWeight(divideOrZero(r.getReceivedBarWeight(), BigDecimal.valueOf(r.getReceivedBarPigCount()), 3));
         r.setSumDailyBarYieldRate(scale3(mapBd(m, "sumDailyBarRate")));
         r.setPositiveBarYieldDays(mapInt(m, "positiveBarRateDays"));
         // 与小程序月矩阵一致：使用日率合计和正值日数。
-        r.setMatrixBarYieldRate(r.getPositiveBarYieldDays() == 0 ? BigDecimal.ZERO.setScale(2)
-            : r.getSumDailyBarYieldRate().divide(BigDecimal.valueOf(r.getPositiveBarYieldDays()), 2, RoundingMode.HALF_UP));
+        r.setBarYieldRate(divideOrZero(r.getSumDailyBarYieldRate(), BigDecimal.valueOf(r.getPositiveBarYieldDays()), 2));
+        r.setMatrixBarYieldRate(r.getBarYieldRate());
+        r.setBarYieldRateSum(mapBd(m, "barYieldRateSum").setScale(2, RoundingMode.HALF_UP));
+        r.setBarYieldRateDays(mapInt(m, "barYieldRateDays"));
 
         r.setCutBarCount(mapBd(m, "cutBarCount"));
+        r.setCutBarWeight(scale3(mapBd(m, "sumCutBar")));
+        r.setCutProductWeight(scale3(mapBd(m, "sumCutProduct")));
+        r.setCutYieldRate(percent2OrZero(r.getCutProductWeight(), r.getCutBarWeight()));
         r.setCutLoss(scale3(mapBd(m, "cutLoss")));
         r.setCutLossPickupWeight(scale3(mapBd(m, "cutLossPickupWeight")));
         r.setCutLossRate(percent2OrNull(r.getCutLoss(), r.getCutLossPickupWeight()));
@@ -524,7 +539,10 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         BigDecimal loss = scale3(mapBd(totals, "cutLoss"));
         BigDecimal pickup = scale3(mapBd(totals, "cutLossPickupWeight"));
         return new WarehouseAnnualRecordVo(year, loss, pickup, percent2OrNull(loss, pickup),
-            scale3(mapBd(totals, "vegRawInboundWeight")), scale3(mapBd(totals, "vegDeliveryOutWeight")));
+            scale3(mapBd(totals, "vegRawInboundWeight")), scale3(mapBd(totals, "vegDeliveryOutWeight")),
+            mapInt(totals, "slaughterCount"),
+            divideOrZero(mapBd(totals, "barYieldRateSum"), mapBd(totals, "barYieldRateDays"), 2),
+            percent2OrZero(mapBd(totals, "cutProductWeight"), mapBd(totals, "cutBarWeight")));
     }
 
     // ============================================================
@@ -598,6 +616,15 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
             return null;
         }
         return num.multiply(new BigDecimal("100")).divide(denom, 3, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal divideOrZero(BigDecimal numerator, BigDecimal denominator, int scale) {
+        return denominator == null || denominator.signum() <= 0 ? BigDecimal.ZERO.setScale(scale)
+            : numerator.divide(denominator, scale, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal percent2OrZero(BigDecimal numerator, BigDecimal denominator) {
+        return divideOrZero(numerator.movePointRight(2), denominator, 2);
     }
 
     private static BigDecimal percent2OrNull(BigDecimal numerator, BigDecimal denominator) {

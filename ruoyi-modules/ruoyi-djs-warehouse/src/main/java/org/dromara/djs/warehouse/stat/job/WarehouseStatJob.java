@@ -51,15 +51,18 @@ public class WarehouseStatJob {
 
     /**
      * 每日 0:00 触发：重算昨天 T-1（邓博 row9：每晚 12 点；养殖/仓库独立域，并发安全），
-     * 再按业务日期回补 T-32 至 T-2 的仓库生产指标。
+     * 再回补 T-32 至 T-2，以及本窗口内分割产出或完成变更影响的更早领用日。
      */
     @Scheduled(cron = "${djs.schedule.warehouse-stat-cron:0 0 0 * * ?}")
     public void aggregate() {
         DjsJobRunner.run(JOB_NAME, () -> {
             LocalDate yesterday = LocalDate.now().minusDays(1);
+            LocalDate from = yesterday.minusDays(WarehouseStatServiceImpl.INDICATOR_REFRESH_DAYS);
             warehouseStatService.aggregate(yesterday);
-            warehouseStatService.refreshProductionIndicators(
-                yesterday.minusDays(WarehouseStatServiceImpl.INDICATOR_REFRESH_DAYS), yesterday.minusDays(1));
+            warehouseStatService.refreshProductionIndicators(from, yesterday.minusDays(1));
+            for (LocalDate pickup : warehouseStatService.findEarlierCutPickupDates(from, yesterday.plusDays(1))) {
+                warehouseStatService.refreshProductionIndicators(pickup, pickup);
+            }
         });
     }
 }
