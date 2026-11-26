@@ -125,11 +125,15 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
      * <p>row38：退回入库 / 当日损耗按篮子校验用——只能退/损该篮子今日实际领用剩余的量，防止退回到「没领用过的
      * 篮子/库位」（如领用耳号 A 却退到库位 B）。返 ≤ 0 = 该篮今日无可退/可损量，调用方拦截。</p>
      *
+     * <p>退回只认领用退回两键（prod_return_in / pick_return_in，与 {@code MatFlowServiceImpl.RETURN_IN_FLOW_TYPES}
+     * 一致）。门店退回入库 {@code store_return_in} 是门店把货退回仓库，不是工人退回自己领的货，不扣领用剩余：
+     * 算进来会让退货专属篮「今日退回 &gt; 今日已领」，工人领了这篮的货就再也退不回去。</p>
+     *
      * @return 该篮子今日领用净剩余（无流水返 0）
      */
     @Select("SELECT COALESCE(SUM(CASE "
         + "   WHEN flow_type IN ('prod_pick_out','dept_pick_out','pick_out') THEN change_quantity "
-        + "   WHEN flow_type IN ('prod_return_in','pick_return_in','store_return_in','loss','pick_loss','feed_out','pick_feed') THEN -change_quantity "
+        + "   WHEN flow_type IN ('prod_return_in','pick_return_in','loss','pick_loss','feed_out','pick_feed') THEN -change_quantity "
         + "   ELSE 0 END), 0) "
         + "  FROM t_warehouse_stock_flow "
         + " WHERE product_id   = #{productId} "
@@ -160,7 +164,7 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
      */
     @Select("SELECT COALESCE(SUM(CASE "
         + "   WHEN flow_type IN ('prod_pick_out','dept_pick_out','pick_out') THEN change_quantity "
-        + "   WHEN flow_type IN ('prod_return_in','pick_return_in','store_return_in','loss','pick_loss','feed_out','pick_feed') THEN -change_quantity "
+        + "   WHEN flow_type IN ('prod_return_in','pick_return_in','loss','pick_loss','feed_out','pick_feed') THEN -change_quantity "
         + "   ELSE 0 END), 0) "
         + "  FROM t_warehouse_stock_flow "
         + " WHERE product_id = #{productId} "
