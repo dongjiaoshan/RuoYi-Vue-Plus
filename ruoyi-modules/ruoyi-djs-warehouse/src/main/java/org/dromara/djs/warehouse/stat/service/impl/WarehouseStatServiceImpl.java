@@ -2,8 +2,10 @@ package org.dromara.djs.warehouse.stat.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.warehouse.dashboard.mapper.WarehouseProductionDashboardMapper;
 import org.dromara.djs.warehouse.loss.service.IProductionLossService;
@@ -18,6 +20,7 @@ import org.dromara.djs.warehouse.stat.mapper.WarehouseCroppRecordMapper;
 import org.dromara.djs.warehouse.stat.mapper.WarehouseIndicatorRecordMapper;
 import org.dromara.djs.warehouse.stat.mapper.WarehouseMonthlyRecordMapper;
 import org.dromara.djs.warehouse.stat.mapper.WarehouseStatAggregateMapper;
+import org.dromara.djs.warehouse.stat.mapper.WarehouseStatAggregateMapper.VegStockBalance;
 import org.dromara.djs.warehouse.stat.service.IWarehouseStatService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
@@ -27,6 +30,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.YearMonth;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
@@ -64,6 +68,8 @@ import java.util.TreeSet;
 @RequiredArgsConstructor
 public class WarehouseStatServiceImpl implements IWarehouseStatService {
 
+    public static final String BUSINESS_ZONE = "Asia/Shanghai";
+    private static final ZoneId SHANGHAI = ZoneId.of(BUSINESS_ZONE);
     private static final String DEFAULT_TENANT = "1001";
     private static final DateTimeFormatter MONTH_FMT = DateTimeFormatter.ofPattern("yyyy-MM");
 
@@ -85,7 +91,7 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
     @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
     public String aggregate(LocalDate targetDate) {
         if (targetDate == null) {
-            targetDate = LocalDate.now().minusDays(1); // T-1
+            targetDate = businessToday().minusDays(1); // T-1
         }
         String tenantId = currentTenant();
         String statDate = targetDate.toString();
@@ -176,6 +182,11 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         r.setVegRawInboundWeight(scale3(aggregateMapper.sumVegRawInboundWeight(tenantId, statDate)));
         r.setVegDeliveryOutWeight(scale3(aggregateMapper.sumVegDeliveryOutWeight(tenantId, statDate)));
         r.setVegProducedPortionCount(aggregateMapper.countVegProducedPortions(tenantId, statDate));
+        fillVegPackAndDemandIndicators(tenantId, statDate, r);
+        LocalDate day = LocalDate.parse(statDate);
+        var stock = aggregateMapper.selectLatestVegStockTotals(tenantId, day, day);
+        r.setVegStockWeight(stock == null ? null : scale3(stock.stockWeight()));
+        r.setVegStockUnconvertedCount(stock == null ? null : scale3(stock.unconvertedCount()));
 
         // 净菜生产段（果蔬口径，row206 邓博最终口径）——仓库聚合日表只统计「果蔬生产损耗」。
         // 果蔬生产损耗 = max(0, 果蔬领用 − 退回 − 录入损耗 − 饲喂 − 果蔬打包生产使用量)，全部 belong_type='vegetable'。
@@ -193,10 +204,29 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
             vegPick.subtract(vegReturn).subtract(vegManualLoss).subtract(vegFeedOut).subtract(vegPackUsage)
                 .max(BigDecimal.ZERO));
         r.setProdPickWeight(vegPick);
+        r.setVegProdReturnWeight(vegReturn);
+        r.setVegPackUsageWeight(vegPackUsage);
         r.setProdLossWeight(prodLoss);
         // 净菜损耗率 = (生产损耗 + 录入损耗)/(生产领用 − 生产退回)×100（果蔬口径，分母≤0 → null）
         BigDecimal netDenom = vegPick.subtract(vegReturn);
         r.setNetVegLossRate(pctOrNull(prodLoss.add(vegManualLoss), netDenom));
+    }
+
+    private void fillVegPackAndDemandIndicators(String tenantId, String statDate, WarehouseIndicatorRecord r) {
+        var packs = aggregateMapper.selectVegPackIndicators(tenantId, statDate);
+        r.setVegStandardPortionCount(mapInt(packs, "standardCount"));
+        r.setVegOverspecPortionCount(mapInt(packs, "overspecCount"));
+        r.setVegOverspecPercentSum(mapBd(packs, "overspecSum"));
+        r.setVegOverspecRate(percent2OrZero(mapBd(packs, "overspecCount"), mapBd(packs, "standardCount")));
+        r.setVegAvgOverspecPercent(divideOrZero(r.getVegOverspecPercentSum(), mapBd(packs, "overspecCount"), 2));
+        r.setVegSpecQualifiedCount(mapInt(packs, "qualifiedCount"));
+        r.setVegUndamagedQualifiedCount(mapInt(packs, "undamagedQualifiedCount"));
+        r.setVegDamagedPortionCount(mapInt(packs, "damagedCount"));
+
+        var demand = aggregateMapper.selectVegDemandFulfillment(tenantId, statDate);
+        r.setVegDemandPortionCount(mapBd(demand, "requested"));
+        r.setVegDemandFulfillmentRate(percent2OrZero(mapBd(demand, "fulfilled"), r.getVegDemandPortionCount()));
+        r.setVegDemandKgExcludedCount(mapInt(demand, "kgExcluded"));
     }
 
     /** UPSERT 单条日表行（按 stat_date 查存在 → updateById / insert）。 */
@@ -329,6 +359,21 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
                     .set(WarehouseIndicatorRecord::getVegRawInboundWeight, p.getVegRawInboundWeight())
                     .set(WarehouseIndicatorRecord::getVegDeliveryOutWeight, p.getVegDeliveryOutWeight())
                     .set(WarehouseIndicatorRecord::getVegProducedPortionCount, p.getVegProducedPortionCount())
+                    .set(WarehouseIndicatorRecord::getVegStandardPortionCount, p.getVegStandardPortionCount())
+                    .set(WarehouseIndicatorRecord::getVegOverspecPortionCount, p.getVegOverspecPortionCount())
+                    .set(WarehouseIndicatorRecord::getVegOverspecPercentSum, p.getVegOverspecPercentSum())
+                    .set(WarehouseIndicatorRecord::getVegOverspecRate, p.getVegOverspecRate())
+                    .set(WarehouseIndicatorRecord::getVegAvgOverspecPercent, p.getVegAvgOverspecPercent())
+                    .set(WarehouseIndicatorRecord::getVegSpecQualifiedCount, p.getVegSpecQualifiedCount())
+                    .set(WarehouseIndicatorRecord::getVegUndamagedQualifiedCount, p.getVegUndamagedQualifiedCount())
+                    .set(WarehouseIndicatorRecord::getVegDamagedPortionCount, p.getVegDamagedPortionCount())
+                    .set(WarehouseIndicatorRecord::getVegDemandPortionCount, p.getVegDemandPortionCount())
+                    .set(WarehouseIndicatorRecord::getVegDemandFulfillmentRate, p.getVegDemandFulfillmentRate())
+                    .set(WarehouseIndicatorRecord::getVegDemandKgExcludedCount, p.getVegDemandKgExcludedCount())
+                    .set(WarehouseIndicatorRecord::getVegStockWeight, p.getVegStockWeight())
+                    .set(WarehouseIndicatorRecord::getVegStockUnconvertedCount, p.getVegStockUnconvertedCount())
+                    .set(WarehouseIndicatorRecord::getVegProdReturnWeight, p.getVegProdReturnWeight())
+                    .set(WarehouseIndicatorRecord::getVegPackUsageWeight, p.getVegPackUsageWeight())
                     .set(WarehouseIndicatorRecord::getProdPickWeight, p.getProdPickWeight())
                     .set(WarehouseIndicatorRecord::getProdLossWeight, p.getProdLossWeight())
                     .set(WarehouseIndicatorRecord::getNetVegLossRate, p.getNetVegLossRate()));
@@ -350,6 +395,67 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         var dates = new TreeSet<>(aggregateMapper.selectEarlierCutOutputPickupDates(tenantId, from, until));
         dates.addAll(aggregateMapper.selectEarlierChangedCutPickupDates(tenantId, from, until));
         return List.copyOf(dates);
+    }
+
+    @Override
+    public List<LocalDate> findEarlierVegIndicatorDates(LocalDate from, LocalDate until) {
+        String tenantId = currentTenant();
+        var dates = new TreeSet<>(aggregateMapper.selectEarlierVegDamageDates(tenantId, from, until));
+        dates.addAll(aggregateMapper.selectEarlierVegDemandDates(tenantId, from, until));
+        return List.copyOf(dates);
+    }
+
+    public static LocalDate businessToday() {
+        return LocalDate.now(SHANGHAI);
+    }
+
+    @Override
+    @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
+    public void captureVegStockSnapshot(LocalDate targetDate) {
+        captureVegStockSnapshot(targetDate, false);
+    }
+
+    @Override
+    @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
+    public void captureMissingVegStockSnapshot(LocalDate targetDate) {
+        captureVegStockSnapshot(targetDate, true);
+    }
+
+    private void captureVegStockSnapshot(LocalDate targetDate, boolean onlyIfMissing) {
+        LocalDate today = businessToday();
+        if (targetDate != null && targetDate.isBefore(today)) {
+            throw new ServiceException("过去日期不补拍库存快照，已跳过");
+        }
+        if (!today.equals(targetDate)) {
+            throw new ServiceException("库存快照只允许采集上海业务当天");
+        }
+        String tenantId = currentTenant();
+        String month = YearMonth.from(today).format(MONTH_FMT);
+        lockMonth(tenantId, month);
+        verifySnapshotDate(today);
+        if (onlyIfMissing && aggregateMapper.selectLatestVegStockTotals(tenantId, today, today) != null) {
+            return;
+        }
+        var balances = aggregateMapper.selectCurrentVegStock(tenantId, aggregateMapper.selectKgVegMaterialIds(tenantId));
+        verifySnapshotDate(today);
+
+        aggregateMapper.deleteVegStockSnapshot(tenantId, today);
+        // 库位 0 标记成功采集，即使本次不存在任何非零库存。
+        aggregateMapper.insertVegStockSnapshot(IdWorker.getId(), tenantId, today,
+            new VegStockBalance(0L, "", BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO));
+        for (var balance : balances) {
+            aggregateMapper.insertVegStockSnapshot(IdWorker.getId(), tenantId, today, balance);
+        }
+
+        upsertDaily(tenantId, today.toString());
+        upsertMonthly(tenantId, month);
+        verifySnapshotDate(today);
+    }
+
+    private static void verifySnapshotDate(LocalDate date) {
+        if (!date.equals(businessToday())) {
+            throw new ServiceException("已跨业务日，取消收工库存快照");
+        }
     }
 
     /**
@@ -486,6 +592,7 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         r.setVegRawInboundWeight(scale3(mapBd(m, "vegRawInboundWeight")));
         r.setVegDeliveryOutWeight(scale3(mapBd(m, "vegDeliveryOutWeight")));
         r.setVegProducedPortionCount(mapInt(m, "vegProducedPortionCount"));
+        fillVegMonthlyIndicators(tenantId, firstDay, m, r);
 
         WarehouseMonthlyRecord existing = monthlyMapper.selectOne(
             new LambdaQueryWrapper<WarehouseMonthlyRecord>()
@@ -499,6 +606,34 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
             r.setId(existing.getId());
             monthlyMapper.updateById(r);
         }
+    }
+
+    private void fillVegMonthlyIndicators(String tenantId, LocalDate firstDay, Map<String, Object> m,
+                                           WarehouseMonthlyRecord r) {
+        r.setVegDemandFulfillmentRate(mapBd(m, "vegDemandRate").setScale(2, RoundingMode.HALF_UP));
+        r.setVegDemandKgExcludedCount(mapInt(m, "vegDemandKgExcludedCount"));
+        BigDecimal netPickup = r.getVegProductionPickWeight().subtract(mapBd(m, "vegReturnWeight"));
+        r.setVegPackLossRate(netPickupPercent(netPickup.subtract(mapBd(m, "vegPackUsageWeight")), netPickup));
+        r.setVegDamagedPortionCount(mapInt(m, "vegDamagedPortionCount"));
+        r.setVegDamageRate(percent2OrZero(mapBd(m, "vegDamagedPortionCount"), mapBd(m, "vegProducedPortionCount")));
+        r.setVegProductionLossWeight(scale3(mapBd(m, "vegProductionLossWeight")));
+        r.setVegProductionLossRate(netPickupPercent(r.getVegProductionLossWeight(), netPickup));
+        r.setVegSpecQualifiedRate(percent2OrZero(mapBd(m, "vegSpecQualifiedCount"), mapBd(m, "vegStandardPortionCount")));
+        r.setVegAvgOverspecPercent(divideOrZero(mapBd(m, "vegOverspecPercentSum"), mapBd(m, "vegOverspecPortionCount"), 2));
+        r.setVegUndamagedQualifiedCount(mapInt(m, "vegUndamagedQualifiedCount"));
+
+        YearMonth month = YearMonth.from(firstDay);
+        LocalDate today = businessToday();
+        boolean currentMonth = month.equals(YearMonth.from(today));
+        LocalDate limit = currentMonth ? today : month.atEndOfMonth();
+        var stock = aggregateMapper.selectLatestVegStockTotals(tenantId, currentMonth ? firstDay : limit, limit);
+        r.setVegEndStockWeight(stock == null ? null : scale3(stock.stockWeight()));
+        r.setVegEndStockDate(stock == null ? null : stock.statDate());
+    }
+
+    private BigDecimal vegStockWeight(String tenantId, LocalDate from, LocalDate to) {
+        var stock = aggregateMapper.selectLatestVegStockTotals(tenantId, from, to);
+        return stock == null ? null : scale3(stock.stockWeight());
     }
 
     // ============================================================
@@ -528,21 +663,38 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
             .ge(monthFrom != null && !monthFrom.isBlank(), WarehouseMonthlyRecord::getStatMonth, monthFrom)
             .le(monthTo != null && !monthTo.isBlank(), WarehouseMonthlyRecord::getStatMonth, monthTo)
             .orderByDesc(WarehouseMonthlyRecord::getStatMonth);
-        return monthlyMapper.selectVoList(q);
+        List<WarehouseMonthlyRecordVo> records = monthlyMapper.selectVoList(q);
+        YearMonth currentMonth = YearMonth.from(businessToday());
+        // 跨月后，已关闭月份只能展示月末快照，即使月初日批尚未重算该月。
+        for (var row : records) {
+            YearMonth month = YearMonth.parse(row.getStatMonth());
+            if (month.isBefore(currentMonth) && !month.atEndOfMonth().equals(row.getVegEndStockDate())) {
+                row.setVegEndStockDate(null);
+                row.setVegEndStockWeight(null);
+            }
+        }
+        return records;
     }
 
     @Override
     public WarehouseAnnualRecordVo getAnnual(int year) {
         YearMonth firstMonth = YearMonth.of(year, 1);
-        Map<String, Object> totals = aggregateMapper.sumAnnualFromMonthly(currentTenant(),
+        String tenantId = currentTenant();
+        Map<String, Object> totals = aggregateMapper.sumAnnualFromMonthly(tenantId,
             firstMonth.format(MONTH_FMT), firstMonth.plusMonths(11).format(MONTH_FMT));
         BigDecimal loss = scale3(mapBd(totals, "cutLoss"));
         BigDecimal pickup = scale3(mapBd(totals, "cutLossPickupWeight"));
+        LocalDate today = businessToday();
+        // 本年最新有效快照可能在上月中旬，已结月份的月末指标可能为空。
+        BigDecimal endStock = year == today.getYear()
+            ? vegStockWeight(tenantId, firstMonth.atDay(1), today)
+            : (BigDecimal) totals.get("vegEndStockWeight");
         return new WarehouseAnnualRecordVo(year, loss, pickup, percent2OrNull(loss, pickup),
             scale3(mapBd(totals, "vegRawInboundWeight")), scale3(mapBd(totals, "vegDeliveryOutWeight")),
             mapInt(totals, "slaughterCount"),
             divideOrZero(mapBd(totals, "barYieldRateSum"), mapBd(totals, "barYieldRateDays"), 2),
-            percent2OrZero(mapBd(totals, "cutProductWeight"), mapBd(totals, "cutBarWeight")));
+            percent2OrZero(mapBd(totals, "cutProductWeight"), mapBd(totals, "cutBarWeight")),
+            endStock, percent2OrZero(mapBd(totals, "vegDamagedPortionCount"), mapBd(totals, "vegProducedPortionCount")));
     }
 
     // ============================================================
@@ -625,6 +777,12 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
 
     private static BigDecimal percent2OrZero(BigDecimal numerator, BigDecimal denominator) {
         return divideOrZero(numerator.movePointRight(2), denominator, 2);
+    }
+
+    /** 跨期退回可能形成负净领用，按有符号的账面净额计算。 */
+    private static BigDecimal netPickupPercent(BigDecimal numerator, BigDecimal netPickup) {
+        return netPickup.signum() == 0 ? BigDecimal.ZERO.setScale(2)
+            : numerator.movePointRight(2).divide(netPickup, 2, RoundingMode.HALF_UP);
     }
 
     private static BigDecimal percent2OrNull(BigDecimal numerator, BigDecimal denominator) {

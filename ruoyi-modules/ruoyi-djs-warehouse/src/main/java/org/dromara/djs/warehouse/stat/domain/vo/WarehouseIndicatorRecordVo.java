@@ -122,6 +122,37 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     /** 有效果蔬生产份数。 */
     private Integer vegProducedPortionCount;
 
+    /** 有正标准重的生产件数。 */
+    private Integer vegStandardPortionCount;
+    /** 实称超过标准重 103% 的生产件数。 */
+    private Integer vegOverspecPortionCount;
+    /** 各超规件超出百分比之和。 */
+    private BigDecimal vegOverspecPercentSum;
+    /** 果蔬生产次数超规率（%）。 */
+    private BigDecimal vegOverspecRate;
+    /** 超规件平均超出百分比（%）。 */
+    private BigDecimal vegAvgOverspecPercent;
+    /** 实称在标准重至 103% 内的合格件数。 */
+    private Integer vegSpecQualifiedCount;
+    /** 重量合格且未标损坏的件数。 */
+    private Integer vegUndamagedQualifiedCount;
+    /** 按原生产日归集的果蔬损坏份数。 */
+    private Integer vegDamagedPortionCount;
+    /** 可换算为份的有效果蔬需求量。 */
+    private BigDecimal vegDemandPortionCount;
+    /** 果蔬产品需求满足率（%）。 */
+    private BigDecimal vegDemandFulfillmentRate;
+    /** 无原始份数而排除的公斤需求条数。 */
+    private Integer vegDemandKgExcludedCount;
+    /** 日末果蔬原料库存（kg），未拍快照为空。 */
+    private BigDecimal vegStockWeight;
+    /** 日末无可靠折重的果蔬原料数量，未拍快照为空。 */
+    private BigDecimal vegStockUnconvertedCount;
+    /** 果蔬生产退回重量（kg）。 */
+    private BigDecimal vegProdReturnWeight;
+    /** 果蔬打包耗料重量（kg）。 */
+    private BigDecimal vegPackUsageWeight;
+
     public BigDecimal getBarYieldRate() {
         return barYieldRate == null ? null : barYieldRate.setScale(2, RoundingMode.HALF_UP);
     }

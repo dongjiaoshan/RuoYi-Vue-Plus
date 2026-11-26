@@ -11,6 +11,7 @@ import org.dromara.common.tenant.core.TenantEntity;
 
 import java.io.Serial;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 
 /**
  * 仓库月数据记录实体（WMS-STAT-001，表 {@code t_warehouse_monthly_record}，邓博 admin row18）。
@@ -95,6 +96,33 @@ public class WarehouseMonthlyRecord extends TenantEntity {
     private BigDecimal vegDeliveryOutWeight;
     /** 有效果蔬生产份数。 */
     private Integer vegProducedPortionCount;
+
+    /** 有可比需求的各日满足率的平均（%）。 */
+    private BigDecimal vegDemandFulfillmentRate;
+    /** 无原始份数而排除的公斤需求条数。 */
+    private Integer vegDemandKgExcludedCount;
+    /** 月果蔬打包损耗率（%）。 */
+    private BigDecimal vegPackLossRate;
+    /** 按原生产月归集的果蔬损坏份数。 */
+    private Integer vegDamagedPortionCount;
+    /** 月果蔬损坏率（%）。 */
+    private BigDecimal vegDamageRate;
+    /** 月内逐日领用损耗之和（kg）。 */
+    private BigDecimal vegProductionLossWeight;
+    /** 月果蔬生产损耗率（%）。 */
+    private BigDecimal vegProductionLossRate;
+    /** 月果蔬生产规格合格率（%）。 */
+    private BigDecimal vegSpecQualifiedRate;
+    /** 当月超规件平均超出百分比（%）。 */
+    private BigDecimal vegAvgOverspecPercent;
+    /** 月末果蔬原料库存（kg），无快照为空。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal vegEndStockWeight;
+    /** 期末库存所用快照日期。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private LocalDate vegEndStockDate;
+    /** 月内重量合格且未标损坏的份数。 */
+    private Integer vegUndamagedQualifiedCount;
 
     /** 软删标志（业务表必含）。 */
     @TableLogic

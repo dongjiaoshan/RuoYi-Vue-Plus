@@ -7,10 +7,16 @@ import org.dromara.djs.common.job.DjsJobRegistry;
 import org.dromara.djs.common.job.DjsJobRunner;
 import org.dromara.djs.warehouse.stat.service.IWarehouseStatService;
 import org.dromara.djs.warehouse.stat.service.impl.WarehouseStatServiceImpl;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.util.TreeSet;
 
 /**
  * 仓库统计聚合定时任务（WMS-STAT-001 调度接线，邓博 admin row16/17/18）。
@@ -39,30 +45,53 @@ public class WarehouseStatJob {
 
     /** job 名（注册表 key + 日志名 + admin 重跑下拉项）。 */
     public static final String JOB_NAME = "warehouse-stat";
+    public static final String VEG_STOCK_SNAPSHOT_JOB_NAME = "warehouse-veg-stock-snapshot";
+    private static final LocalTime STOCK_CLOSE_TIME = LocalTime.of(23, 50);
 
     /**
      * 注册重算逻辑到 {@link DjsJobRegistry}，供 admin 手动重跑（按目标日）调用。
-     * 与 {@link #aggregate()} 定时触发同源（共用 {@link IWarehouseStatService#aggregate}）。
+     * 两个 job 与调度入口复用同一个聚合或采集服务。
      */
     @PostConstruct
     public void register() {
         jobRegistry.register(JOB_NAME, warehouseStatService::aggregate);
+        jobRegistry.register(VEG_STOCK_SNAPSHOT_JOB_NAME, warehouseStatService::captureVegStockSnapshot);
     }
 
     /**
      * 每日 0:00 触发：重算昨天 T-1（邓博 row9：每晚 12 点；养殖/仓库独立域，并发安全），
-     * 再回补 T-32 至 T-2，以及本窗口内分割产出或完成变更影响的更早领用日。
+     * 再回补 T-32 至 T-2，以及窗口内的变更影响的更早领用、生产和需求日。
      */
-    @Scheduled(cron = "${djs.schedule.warehouse-stat-cron:0 0 0 * * ?}")
+    @Scheduled(cron = "${djs.schedule.warehouse-stat-cron:0 0 0 * * ?}", zone = WarehouseStatServiceImpl.BUSINESS_ZONE)
     public void aggregate() {
         DjsJobRunner.run(JOB_NAME, () -> {
-            LocalDate yesterday = LocalDate.now().minusDays(1);
+            LocalDate yesterday = WarehouseStatServiceImpl.businessToday().minusDays(1);
             LocalDate from = yesterday.minusDays(WarehouseStatServiceImpl.INDICATOR_REFRESH_DAYS);
             warehouseStatService.aggregate(yesterday);
             warehouseStatService.refreshProductionIndicators(from, yesterday.minusDays(1));
-            for (LocalDate pickup : warehouseStatService.findEarlierCutPickupDates(from, yesterday.plusDays(1))) {
-                warehouseStatService.refreshProductionIndicators(pickup, pickup);
+            LocalDate until = yesterday.plusDays(1);
+            var earlier = new TreeSet<>(warehouseStatService.findEarlierCutPickupDates(from, until));
+            earlier.addAll(warehouseStatService.findEarlierVegIndicatorDates(from, until));
+            for (LocalDate date : earlier) {
+                warehouseStatService.refreshProductionIndicators(date, date);
             }
         });
+    }
+    /** 收工时先拍当日库位余额，并立即刷新该日和该月的库存指标。 */
+    @Scheduled(cron = "${djs.schedule.warehouse-veg-stock-snapshot-cron:0 50 23 * * ?}",
+        zone = WarehouseStatServiceImpl.BUSINESS_ZONE)
+    public void captureVegStockSnapshot() {
+        DjsJobRunner.runForDate(VEG_STOCK_SNAPSHOT_JOB_NAME, DjsJobRunner.DEFAULT_TENANT,
+            WarehouseStatServiceImpl.businessToday(), DjsJobRunner.TRIGGER_SCHEDULE,
+            warehouseStatService::captureVegStockSnapshot);
+    }
+    /** 发布或重启错过当日调度时刻时，仍允许当晚首次采集。 */
+    @EventListener(ApplicationReadyEvent.class)
+    public void captureVegStockAfterLateStart() {
+        var now = ZonedDateTime.now(ZoneId.of(WarehouseStatServiceImpl.BUSINESS_ZONE));
+        if (!now.toLocalTime().isBefore(STOCK_CLOSE_TIME)) {
+            DjsJobRunner.runForDate(VEG_STOCK_SNAPSHOT_JOB_NAME, DjsJobRunner.DEFAULT_TENANT,
+                now.toLocalDate(), DjsJobRunner.TRIGGER_SCHEDULE, warehouseStatService::captureMissingVegStockSnapshot);
+        }
     }
 }

@@ -90,24 +90,27 @@ class WarehouseProductionIndicatorsMysqlTest {
                 tenant_id VARCHAR(20), del_flag CHAR(1), product_id BIGINT, inout_type VARCHAR(3),
                 flow_type VARCHAR(32), change_quantity DECIMAL(16,3), flow_date DATETIME,
                 ear_no VARCHAR(32), white_bar_no VARCHAR(32), remark VARCHAR(500),
-                create_time DATETIME, update_time DATETIME
+                create_time DATETIME, update_time DATETIME, white_bar_id BIGINT, demand_id BIGINT
             )
             """);
         execute("""
             CREATE TEMPORARY TABLE t_warehouse_product_info (
                 id BIGINT PRIMARY KEY, tenant_id VARCHAR(20), del_flag CHAR(1), product_attr INT,
-                belong_type VARCHAR(32), product_name VARCHAR(64), product_unit VARCHAR(16), product_spec VARCHAR(32)
+                belong_type VARCHAR(32), product_name VARCHAR(64), product_unit VARCHAR(16), product_spec VARCHAR(32),
+                material_num DECIMAL(12,3), product_material BIGINT
             )
             """);
         execute("""
             CREATE TEMPORARY TABLE t_warehouse_product_production (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT, tenant_id VARCHAR(20), del_flag CHAR(1), product_id BIGINT,
                 produce_date DATE, produce_no VARCHAR(32), product_weight DECIMAL(12,3), plot_id BIGINT,
-                product_unit VARCHAR(16), product_spec VARCHAR(32), pack_status VARCHAR(16), material_consume DECIMAL(12,3)
+                product_unit VARCHAR(16), product_spec VARCHAR(32), pack_status VARCHAR(16), material_consume DECIMAL(12,3),
+                is_damaged INT DEFAULT 0, damage_time DATETIME, update_time DATETIME
             )
             """);
         execute("""
-            INSERT INTO t_warehouse_product_info VALUES
+            INSERT INTO t_warehouse_product_info
+            (id,tenant_id,del_flag,product_attr,belong_type,product_name,product_unit,product_spec) VALUES
                 (1,'1001','0',2,'vegetable','毛菜','kg',NULL),
                 (2,'1001','0',1,'vegetable','果蔬成品','kg',NULL),
                 (3,'1001','0',1,'pork','猪肉成品','kg',NULL),
@@ -294,7 +297,7 @@ class WarehouseProductionIndicatorsMysqlTest {
         whiteBar("P1", 39, REPORT_DAY);
         execute("INSERT INTO t_warehouse_product_inhouse "
             + "SELECT 'P1-RIGHT','1001',id FROM t_warehouse_bar_info WHERE bar_id = 'P1'");
-        execute("INSERT INTO t_warehouse_stock_flow VALUES ('1001','0',4,'IN','slaughter_burn',41,?,NULL,'P1-RIGHT',NULL,NULL,NULL)",
+        execute("INSERT INTO t_warehouse_stock_flow (tenant_id,del_flag,product_id,inout_type,flow_type,change_quantity,flow_date,ear_no,white_bar_no,remark,create_time,update_time) VALUES ('1001','0',4,'IN','slaughter_burn',41,?,NULL,'P1-RIGHT',NULL,NULL,NULL)",
             REPORT_DAY.plusDays(1));
         WarehouseIndicatorRecord day = recompute(REPORT_DAY);
         assertThat(day.getBarPigCount()).isEqualTo(1);
@@ -473,7 +476,8 @@ class WarehouseProductionIndicatorsMysqlTest {
     void row23DeliveryUsesOnlyActualVegetableShipment() throws SQLException {
         deliveryAndNonShipments(REPORT_DAY);
         execute("""
-            INSERT INTO t_warehouse_product_info VALUES (5,'1001','1',1,'vegetable','已删除果蔬','kg',NULL)
+            INSERT INTO t_warehouse_product_info
+            (id,tenant_id,del_flag,product_attr,belong_type,product_name,product_unit,product_spec) VALUES (5,'1001','1',1,'vegetable','已删除果蔬','kg',NULL)
             """);
         flow(5, "ship_out", "OT", 25, REPORT_DAY);
         assertThat(recompute(REPORT_DAY).getVegDeliveryOutWeight()).isEqualByComparingTo("30");
@@ -878,11 +882,284 @@ class WarehouseProductionIndicatorsMysqlTest {
     }
 
     private void whiteBar(String ear, int weight, LocalDate day) throws SQLException {
-        execute("INSERT INTO t_warehouse_stock_flow VALUES ('1001','0',4,'IN','slaughter_burn',?,?,?,NULL,NULL,NULL,NULL)", weight, day, ear);
+        execute("INSERT INTO t_warehouse_stock_flow (tenant_id,del_flag,product_id,inout_type,flow_type,change_quantity,flow_date,ear_no,white_bar_no,remark,create_time,update_time) VALUES ('1001','0',4,'IN','slaughter_burn',?,?,?,NULL,NULL,NULL,NULL)", weight, day, ear);
     }
 
     private void weighed(int weight, LocalDate day) throws SQLException {
         execute("INSERT INTO t_warehouse_vegetable_handle VALUES ('1001','0',1,?,?)", day, weight);
+    }
+
+    @Test
+    @DisplayName("仓库 17、18、19、46、47、52：称重边界、缺标准重、月按件及损坏")
+    void vegPackSpecificationsUseEligiblePortionsAndWeightPerPiece() throws SQLException {
+        LocalDate day = REPORT_DAY;
+        product(5, 1, "kg", null, null);
+        product(6, 1, "kg", "0", null);
+        product(7, 1, "kg", "-1", null);
+        execute("UPDATE t_warehouse_product_info SET material_num=1 WHERE id=2");
+        vegPack(2, "A", day, "1.05", "packed", false);
+        vegPack(2, "B", day, "1.10", "shipped_out", false);
+        vegPack(2, "C", day, "1.00", "packed", false);
+        vegPack(2, "D", day, "1.03", "packed", true);
+        vegPack(2, "E", day, "0.98", "packed", false);
+        vegPack(2, "A", day, "1.05", "packed", false);
+        vegPack(2, "PENDING", day, "2.00", "pending", false);
+        vegPack(2, "VOID", day, "2.00", "packed", true);
+        execute("UPDATE t_warehouse_product_production SET del_flag='1' WHERE produce_no='VOID'");
+        vegPack(5, "NO_RULE", day, "2.00", "packed", false);
+        vegPack(6, "ZERO_RULE", day, "2.00", "packed", false);
+        vegPack(7, "NEG_RULE", day, "2.00", "packed", false);
+        var daily = recompute(day);
+        assertThat(daily.getVegStandardPortionCount()).isEqualTo(5);
+        assertThat(daily.getVegOverspecRate()).isEqualByComparingTo("40.00"); // 仓库 17
+        assertThat(daily.getVegAvgOverspecPercent()).isEqualByComparingTo("7.50"); // 仓库 18
+        assertThat(daily.getVegSpecQualifiedCount()).isEqualTo(2); // 仓库 19
+
+        vegPack(2, "F", day.plusDays(1), "1.30", "packed", false);
+        recompute(day.plusDays(1));
+        assertThat(recompute(day.plusDays(2)).getVegAvgOverspecPercent()).isEqualByComparingTo("0.00");
+        var monthly = monthly(day);
+        assertThat(monthly.getVegSpecQualifiedRate()).isEqualByComparingTo("33.33"); // 仓库 46
+        assertThat(monthly.getVegAvgOverspecPercent()).isEqualByComparingTo("15.00"); // 仓库 47
+        assertThat(monthly.getVegUndamagedQualifiedCount()).isEqualTo(1); // 仓库 52
+    }
+
+    @Test
+    @DisplayName("仓库 21、41、42、60：补登损坏回刷窗口外原生产日，跨月和年度同批")
+    void vegLateDamageRefreshesProductionDayMonthAndYear() throws SQLException {
+        LocalDate saved = LocalDate.now().minusDays(1);
+        LocalDate original = LocalDate.of(saved.getYear() - 1, 11, 21);
+        LocalDate december = original.plusMonths(1);
+        vegPack(2, "PREV", original, "1.00", "packed", false);
+        vegPack(2, "PREV-2", original, "1.00", "packed", false);
+        vegPack(2, "DEC", december, "1.00", "packed", false);
+        vegPack(2, "NEW", saved, "1.00", "packed", false);
+        demand(11, 2, original, 1, "份", "CONFIRMED");
+        assertThat(recompute(original).getVegDamagedPortionCount()).isZero();
+        assertThat(daily(original).getVegDemandFulfillmentRate()).isZero();
+        recompute(december);
+        execute("UPDATE t_warehouse_product_production SET is_damaged=1, damage_time=? WHERE produce_no='PREV'", saved);
+        LocalDate oldDemand = original.withDayOfMonth(25);
+        demand(12, 2, oldDemand, 1, "份", "CONFIRMED");
+        assertThat(recompute(oldDemand).getVegDemandFulfillmentRate()).isZero();
+        vegShipment(12, 2, oldDemand, "0", "ship_out");
+        execute("UPDATE t_warehouse_stock_flow SET create_time=? WHERE demand_id=12", saved);
+
+        WarehouseStatJob job = new WarehouseStatJob(service, new DjsJobRegistry());
+        try (MockedStatic<DjsJobRunner> runner = mockStatic(DjsJobRunner.class)) {
+            runner.when(() -> DjsJobRunner.run(eq(WarehouseStatJob.JOB_NAME), any(Runnable.class)))
+                .thenAnswer(call -> {
+                    call.getArgument(1, Runnable.class).run();
+                    return null;
+                });
+            job.aggregate();
+        }
+        assertThat(daily(original).getVegDamagedPortionCount()).isEqualTo(1); // 仓库 21
+        assertThat(daily(saved).getVegDamagedPortionCount()).isZero();
+        assertThat(daily(oldDemand).getVegDemandFulfillmentRate()).isEqualByComparingTo("100.00"); // 仓库 22
+        assertThat(monthly(original).getVegDamagedPortionCount()).isEqualTo(1); // 仓库 41
+        assertThat(monthly(original).getVegDamageRate()).isEqualByComparingTo("50.00"); // 仓库 42
+        assertThat(service.getAnnual(original.getYear()).vegDamageRate()).isEqualByComparingTo("33.33"); // 仓库 60
+        assertThat(service.getAnnual(saved.getYear()).vegDamageRate()).isEqualByComparingTo("0.00");
+    }
+
+    @Test
+    @DisplayName("仓库 22、27：按商品截断实发，公斤需求另计，月平均纳入零发货日")
+    void vegDemandUsesActualShipmentAndAveragesEligibleDays() throws SQLException {
+        LocalDate day = REPORT_DAY;
+        product(5, 1, "份", null, null);
+        product(6, 1, "kg", "0.5", null);
+        demand(11, 2, day, 10, "份", "CONFIRMED");
+        demand(12, 5, day, 5, "份", "COMPLETED");
+        demand(13, 6, day, 100, " 公斤 ", "CONFIRMED");
+        demand(14, 2, day, 100, "份", "CANCELLED");
+        demand(15, 2, day.plusDays(1), 2, "份", "IN_PRODUCTION");
+        demand(16, 6, day.plusDays(2), 3, "KG", "CONFIRMED");
+        for (int i = 0; i < 8; i++) vegShipment(11, 2, day, "0", "ship_out");
+        // 仓库 22：跨日的实际发车既不补原日报，也不冲抵另一天的需求单。
+        vegShipment(11, 2, day.plusDays(1), "0", "ship_out");
+        for (int i = 0; i < 6; i++) vegShipment(12, 5, day, "0", "ship_out");
+        vegShipment(11, 2, day, "1", "ship_out");
+        vegShipment(11, 2, day, "0", "prod_pick_out");
+        vegShipment(11, 5, day, "0", "ship_out");
+        vegShipment(14, 2, day, "0", "ship_out");
+        vegShipment(13, 6, day, "0", "ship_out");
+        vegPack(2, "PREPARED", day, "1.00", "packed", false);
+
+        var daily = recompute(day);
+        assertThat(daily.getVegDemandFulfillmentRate()).isEqualByComparingTo("86.67"); // 仓库 22
+        assertThat(daily.getVegDemandPortionCount()).isEqualByComparingTo("15");
+        assertThat(daily.getVegDemandKgExcludedCount()).isEqualTo(1);
+        assertThat(recompute(day.plusDays(1)).getVegDemandFulfillmentRate()).isEqualByComparingTo("0.00");
+        recompute(day.plusDays(2));
+        recompute(day.plusDays(3));
+        assertThat(monthly(day).getVegDemandFulfillmentRate()).isEqualByComparingTo("43.34"); // 仓库 27
+        assertThat(monthly(day).getVegDemandKgExcludedCount()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("仓库 26、38、43、45：逐日领用残差与月打包损耗分别用各自分子")
+    void vegLossPreservesDailyResidualAndDistinguishesMonthlyRates() throws SQLException {
+        LocalDate day = REPORT_DAY;
+        flow(1, "prod_pick_out", "OT", 100, day);
+        flow(1, "prod_return_in", "IN", 10, day);
+        flow(1, "pick_feed", "OT", 3, day);
+        execute("INSERT INTO t_warehouse_loss_flow VALUES ('1001','0','manual_loss',2,?,NULL,NULL,'vegetable')", day);
+        vegPack(2, "LOSS", day, "80.00", "packed", false);
+        assertThat(recompute(day).getProdLossWeight()).isEqualByComparingTo("5.000"); // 仓库 26
+        var monthly = monthly(day);
+        assertThat(monthly.getVegPackLossRate()).isEqualByComparingTo("11.11"); // 仓库 38
+        assertThat(monthly.getVegProductionLossWeight()).isEqualByComparingTo("5.000"); // 仓库 43
+        assertThat(monthly.getVegProductionLossRate()).isEqualByComparingTo("5.56"); // 仓库 45
+
+        vegPack(2, "OVERDRAW", day.plusDays(1), "20.00", "packed", false);
+        assertThat(recompute(day.plusDays(1)).getProdLossWeight()).isZero();
+        assertThat(monthly(day).getVegProductionLossWeight()).isEqualByComparingTo("5.000");
+
+        // 仓库 38、45：跨期退回使月净领用为负时仍按公式；只有净领用为零才返回 0。
+        flow(1, "prod_return_in", "IN", 90, day.plusDays(2));
+        recompute(day.plusDays(2));
+        assertThat(monthly(day).getVegPackLossRate()).isEqualByComparingTo("0.00");
+        assertThat(monthly(day).getVegProductionLossRate()).isEqualByComparingTo("0.00");
+        flow(1, "prod_return_in", "IN", 10, day.plusDays(3));
+        recompute(day.plusDays(3));
+        assertThat(monthly(day).getVegPackLossRate()).isEqualByComparingTo("1100.00");
+        assertThat(monthly(day).getVegProductionLossRate()).isEqualByComparingTo("-50.00");
+    }
+
+    @Test
+    @DisplayName("仓库 24、50、59：收工快照按库位和单位，重拍当天，月末年末精确取日")
+    void vegStockSnapshotReplacesOnlyTodayAndUsesPeriodEnds() throws SQLException {
+        LocalDate businessDay = LocalDate.now();
+        LocalDate priorYearEnd = LocalDate.of(businessDay.getYear() - 1, 12, 31);
+        LocalDate missingMonth = priorYearEnd.minusMonths(2).withDayOfMonth(1);
+        product(5, 2, "件", "0.5", 1L);
+        product(6, 2, "件", "10", null);
+        execute("""
+            INSERT INTO t_warehouse_location_stock VALUES
+                ('1001','0',101,1,'kg',10,50,NULL,NULL,NULL),
+                ('1001','0',102,1,' 公斤 ',4,NULL,NULL,NULL,NULL),
+                ('1001','0',103,5,'件',4,NULL,NULL,NULL,NULL),
+                ('1001','0',104,6,'件',3,NULL,NULL,NULL,NULL),
+                ('1001','0',105,2,'kg',99,NULL,NULL,NULL,NULL),
+                ('1001','0',106,NULL,'kg',1,60,NULL,NULL,NULL),
+                ('1001','1',107,1,'kg',99,NULL,NULL,NULL,NULL),
+                ('2002','0',108,1,'kg',99,NULL,NULL,NULL,NULL)
+            """);
+        seedVegSnapshot(priorYearEnd, 7);
+        seedVegSnapshot(priorYearEnd.minusDays(1), 99);
+        seedVegSnapshot(missingMonth.plusDays(1), 88);
+        assertThat(recompute(missingMonth).getVegStockWeight()).isNull();
+        assertThat(monthly(missingMonth).getVegEndStockWeight()).isNull();
+        recompute(priorYearEnd);
+        assertThat(monthly(priorYearEnd).getVegEndStockWeight()).isEqualByComparingTo("7.000"); // 仓库 50
+        assertThat(service.getAnnual(priorYearEnd.getYear()).vegEndStockWeight()).isEqualByComparingTo("7.000"); // 仓库 59
+        seedVegSnapshot(priorYearEnd.minusYears(1).minusDays(1), 80);
+        assertThat(service.getAnnual(priorYearEnd.getYear() - 1).vegEndStockWeight()).isNull();
+        assertThat(recompute(businessDay).getVegStockWeight()).isNull();
+        // 仓库 59：本年最新快照可落在没有月末快照的已结月份。
+        LocalDate priorMonthMid = businessDay.withDayOfMonth(1).minusDays(5);
+        if (priorMonthMid.getYear() == businessDay.getYear()) {
+            seedVegSnapshot(priorMonthMid, 23);
+            assertThat(recompute(priorMonthMid).getVegStockWeight()).isEqualByComparingTo("23.000");
+            assertThat(monthly(priorMonthMid).getVegEndStockWeight()).isNull();
+            assertThat(service.getAnnual(businessDay.getYear()).vegEndStockWeight()).isEqualByComparingTo("23.000");
+        }
+
+        DjsJobRegistry registry = new DjsJobRegistry();
+        new WarehouseStatJob(service, registry).register();
+        registry.get(WarehouseStatJob.VEG_STOCK_SNAPSHOT_JOB_NAME).accept(businessDay);
+        assertThat(daily(businessDay).getVegStockWeight()).isEqualByComparingTo("17.000"); // 仓库 24
+        assertThat(daily(businessDay).getVegStockUnconvertedCount()).isEqualByComparingTo("3.000");
+        assertThat(monthly(businessDay).getVegEndStockWeight()).isEqualByComparingTo("17.000");
+        assertThat(service.getAnnual(businessDay.getYear()).vegEndStockWeight()).isEqualByComparingTo("17.000");
+        assertThat(vegSnapshotLocationCount(businessDay)).isEqualTo(5);
+
+        execute("DELETE FROM t_warehouse_location_stock WHERE location_id=101");
+        service.captureMissingVegStockSnapshot(businessDay);
+        assertThat(daily(businessDay).getVegStockWeight()).isEqualByComparingTo("17.000");
+        registry.get(WarehouseStatJob.VEG_STOCK_SNAPSHOT_JOB_NAME).accept(businessDay);
+        assertThat(vegSnapshotLocationCount(businessDay)).isEqualTo(4);
+        assertThat(daily(businessDay).getVegStockWeight()).isEqualByComparingTo("7.000");
+        assertThat(org.assertj.core.api.Assertions.catchThrowable(() ->
+            registry.get(WarehouseStatJob.VEG_STOCK_SNAPSHOT_JOB_NAME).accept(priorYearEnd)))
+            .hasMessageContaining("过去日期");
+        assertThat(recompute(priorYearEnd).getVegStockWeight()).isEqualByComparingTo("7.000");
+        assertThat(org.assertj.core.api.Assertions.catchThrowable(() ->
+            registry.get(WarehouseStatJob.VEG_STOCK_SNAPSHOT_JOB_NAME).accept(missingMonth)))
+            .hasMessageContaining("过去日期");
+        assertThat(recompute(missingMonth).getVegStockWeight()).isNull();
+
+        execute("DELETE FROM t_warehouse_location_stock");
+        registry.get(WarehouseStatJob.VEG_STOCK_SNAPSHOT_JOB_NAME).accept(businessDay);
+        assertThat(daily(businessDay).getVegStockWeight()).isEqualByComparingTo("0.000");
+        assertThat(daily(businessDay).getVegStockUnconvertedCount()).isEqualByComparingTo("0.000");
+    }
+
+    @Test
+    @DisplayName("仓库 12 W1 遗留：整只兜底两边无编号，按白条 ID 关联领用")
+    void cutOutputFallsBackToWholeBarId() throws SQLException {
+        cut(1, 0, "cut", 100, REPORT_DAY, null);
+        execute("UPDATE t_warehouse_pig_cut_record SET white_bar_no=NULL WHERE id=1");
+        execute("""
+            INSERT INTO t_warehouse_stock_flow
+                (tenant_id,del_flag,product_id,inout_type,flow_type,change_quantity,flow_date,white_bar_id)
+            VALUES ('1001','0',3,'IN','cut_out_in',96,?,1)
+            """, REPORT_DAY.plusDays(1));
+        assertThat(recompute(REPORT_DAY).getCutProductWeight()).isEqualByComparingTo("96.000");
+        assertThat(recompute(REPORT_DAY.plusDays(1)).getCutOutputUnmatchedCount()).isZero();
+    }
+
+    private void product(long id, int attr, String unit, String rule, Long material) throws SQLException {
+        execute("""
+            INSERT INTO t_warehouse_product_info
+                (id,tenant_id,del_flag,product_attr,belong_type,product_name,product_unit,material_num,product_material)
+            VALUES (?,'1001','0',?,'vegetable','果蔬',?,?,?)
+            """, id, attr, unit, rule, material);
+    }
+
+    private void vegPack(long product, String no, LocalDate day, String weight, String status, boolean damaged) throws SQLException {
+        execute("""
+            INSERT INTO t_warehouse_product_production
+                (tenant_id,del_flag,product_id,produce_date,produce_no,product_weight,pack_status,is_damaged)
+            VALUES ('1001','0',?,?,?,?,?,?)
+            """, product, day, no, weight, status, damaged ? 1 : 0);
+    }
+
+    private void demand(long id, int product, LocalDate date, int quantity, String unit, String status) throws SQLException {
+        execute("""
+            INSERT INTO t_warehouse_demand_manage
+                (id,tenant_id,del_flag,product_id,store_id,demand_date,demand_quantity,product_unit,demand_type,demand_status)
+            VALUES (?,'1001','0',?,1,?,?,?,'store',?)
+            """, id, product, date, quantity, unit, status);
+    }
+
+    private void vegShipment(long demandId, int product, LocalDate day, String deleted, String type) throws SQLException {
+        execute("""
+            INSERT INTO t_warehouse_stock_flow
+                (tenant_id,del_flag,product_id,inout_type,flow_type,change_quantity,flow_date,demand_id)
+            VALUES ('1001',?,?,'OT',?,1.7,?,?)
+            """, deleted, product, type, day, demandId);
+    }
+
+    private void seedVegSnapshot(LocalDate date, int weight) throws SQLException {
+        execute("""
+            INSERT INTO t_warehouse_veg_stock_snapshot
+                (id,tenant_id,stat_date,location_id,stock_unit,stock_quantity,stock_weight,unconverted_count)
+            VALUES (?,'1001',?,101,'kg',?,?,0)
+            """, date.toEpochDay(), date, weight, weight);
+    }
+
+    private int vegSnapshotLocationCount(LocalDate date) throws SQLException {
+        try (var statement = connection.prepareStatement("""
+            SELECT COUNT(*) FROM t_warehouse_veg_stock_snapshot WHERE stat_date=? AND location_id<>0
+            """)) {
+            statement.setObject(1, date);
+            try (var result = statement.executeQuery()) {
+                result.next();
+                return result.getInt(1);
+            }
+        }
     }
 
     private void createStatTables() throws IOException, SQLException {
@@ -907,14 +1184,29 @@ class WarehouseProductionIndicatorsMysqlTest {
                 ADD COLUMN avg_arrive_weight DECIMAL(12,3)
             """);
         for (String name : List.of("V202609301000__WMS-STAT-V11-production-indicators.sql",
-            "V202609301900__WMS-STAT-V12-pork-indicators.sql")) {
+            "V202609301900__WMS-STAT-V12-pork-indicators.sql",
+            "V202609302000__WMS-STAT-V12-veg-indicators.sql")) {
             for (String statement : Files.readString(MIGRATIONS.resolve(name)).split(";")) {
-                if (!statement.isBlank()) execute(statement);
+                if (!statement.isBlank()) execute(statement.replace("CREATE TABLE ", "CREATE TEMPORARY TABLE "));
             }
         }
     }
 
     private void createSourceTables() throws SQLException {
+        execute("""
+            CREATE TEMPORARY TABLE t_warehouse_demand_manage (
+                id BIGINT PRIMARY KEY, tenant_id VARCHAR(20), del_flag CHAR(1), product_id BIGINT,
+                store_id BIGINT, demand_date DATE, demand_quantity DECIMAL(12,3), product_unit VARCHAR(16),
+                demand_type VARCHAR(20), demand_status VARCHAR(24), update_time DATETIME
+            )
+            """);
+        execute("""
+            CREATE TEMPORARY TABLE t_warehouse_location_stock (
+                tenant_id VARCHAR(20), del_flag CHAR(1), location_id BIGINT, product_id BIGINT,
+                product_unit VARCHAR(16), product_stock DECIMAL(12,3), plot_id BIGINT,
+                ear_no VARCHAR(32), medicine_id BIGINT, white_bar_no VARCHAR(32)
+            )
+            """);
         execute("""
             CREATE TEMPORARY TABLE t_warehouse_bar_info (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT, bar_id VARCHAR(32), tenant_id VARCHAR(20), del_flag CHAR(1),
@@ -973,7 +1265,7 @@ class WarehouseProductionIndicatorsMysqlTest {
     }
 
     private void flow(int product, String type, String direction, int weight, LocalDate date) throws SQLException {
-        execute("INSERT INTO t_warehouse_stock_flow VALUES ('1001','0',?,?,?,?,?,NULL,NULL,NULL,NULL,NULL)",
+        execute("INSERT INTO t_warehouse_stock_flow (tenant_id,del_flag,product_id,inout_type,flow_type,change_quantity,flow_date,ear_no,white_bar_no,remark,create_time,update_time) VALUES ('1001','0',?,?,?,?,?,NULL,NULL,NULL,NULL,NULL)",
             product, direction, type, weight, date);
     }
 

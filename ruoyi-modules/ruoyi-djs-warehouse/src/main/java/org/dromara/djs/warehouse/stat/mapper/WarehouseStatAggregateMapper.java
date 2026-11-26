@@ -1,5 +1,7 @@
 package org.dromara.djs.warehouse.stat.mapper;
 
+import org.apache.ibatis.annotations.Delete;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -275,6 +277,94 @@ public interface WarehouseStatAggregateMapper {
         """)
     BigDecimal sumLossByType(@Param("tenantId") String tenantId, @Param("statDate") String statDate, @Param("lossType") String lossType);
 
+    /** 仓库 17–19、21、46、47、52：与生产份数使用同一个有效生产身份。 */
+    @Select("""
+        SELECT COUNT(CASE WHEN standardWeight > 0 THEN 1 END) AS standardCount,
+               COUNT(CASE WHEN standardWeight > 0 AND actualWeight > standardWeight * 1.03 THEN 1 END) AS overspecCount,
+               COALESCE(SUM(CASE WHEN standardWeight > 0 AND actualWeight > standardWeight * 1.03
+                   THEN CAST((actualWeight - standardWeight) * 100 AS DECIMAL(30,15)) / standardWeight END), 0) AS overspecSum,
+               COUNT(CASE WHEN standardWeight > 0 AND actualWeight BETWEEN standardWeight AND standardWeight * 1.03
+                   THEN 1 END) AS qualifiedCount,
+               COUNT(CASE WHEN damaged = 1 THEN 1 END) AS damagedCount,
+               COUNT(CASE WHEN damaged = 0 AND standardWeight > 0
+                   AND actualWeight BETWEEN standardWeight AND standardWeight * 1.03 THEN 1 END) AS undamagedQualifiedCount
+        FROM (
+          SELECT pp.product_weight AS actualWeight, pi.material_num AS standardWeight,
+                 MAX(CASE WHEN pp.is_damaged = 1 THEN 1 ELSE 0 END) OVER (PARTITION BY
+        """ + WarehouseProductionStatSql.VEG_PORTION_KEY + """
+                 ) AS damaged,
+                 ROW_NUMBER() OVER (PARTITION BY
+        """ + WarehouseProductionStatSql.VEG_PORTION_KEY + """
+                 ORDER BY pp.id DESC) AS portionRow
+        """ + WarehouseProductionStatSql.PRODUCE_FROM + WarehouseProductionStatSql.VEG_PRODUCE_WHERE + """
+          AND pp.produce_date = #{statDate}
+        ) portions
+        WHERE portionRow = 1
+        """)
+    Map<String, Object> selectVegPackIndicators(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+    /** 标损发生在近期时，定位窗口外的生产日；保留软删除行以便更正后清掉旧值。 */
+    @Select("""
+        SELECT DISTINCT pp.produce_date
+        FROM t_warehouse_product_production pp
+        JOIN t_warehouse_product_info pi ON pi.tenant_id = pp.tenant_id AND pi.id = pp.product_id
+        WHERE pp.tenant_id = #{tenantId} AND pi.product_attr = 1 AND pi.belong_type = 'vegetable'
+          AND pp.produce_date < #{from}
+          AND ((pp.damage_time >= #{from} AND pp.damage_time < #{until})
+            OR (pp.damage_time IS NOT NULL AND pp.update_time >= #{from} AND pp.update_time < #{until}))
+        """)
+    List<LocalDate> selectEarlierVegDamageDates(@Param("tenantId") String tenantId,
+                                               @Param("from") LocalDate from, @Param("until") LocalDate until);
+
+    /** 仓库 22：一条有效 ship_out 出库流水 = 一份实发，出库日和需求日对齐，按产品截断超发。 */
+    @Select("""
+        SELECT COALESCE(SUM(LEAST(shipped, requested)), 0) AS fulfilled,
+               COALESCE(SUM(requested), 0) AS requested,
+               COALESCE(SUM(kgExcluded), 0) AS kgExcluded
+        FROM (
+          SELECT d.product_id,
+                 SUM(CASE WHEN LOWER(TRIM(COALESCE(d.product_unit, p.product_unit))) IN ('kg', '公斤')
+                     THEN 0 ELSE d.demand_quantity END) AS requested,
+                 COUNT(CASE WHEN LOWER(TRIM(COALESCE(d.product_unit, p.product_unit))) IN ('kg', '公斤')
+                     THEN 1 END) AS kgExcluded,
+                 SUM(CASE WHEN LOWER(TRIM(COALESCE(d.product_unit, p.product_unit))) IN ('kg', '公斤')
+                     THEN 0 ELSE (
+                         SELECT COUNT(*) FROM t_warehouse_stock_flow f
+                         WHERE f.tenant_id = #{tenantId} AND f.demand_id = d.id AND f.product_id = d.product_id
+                           AND f.flow_type = 'ship_out' AND f.inout_type = 'OT' AND f.del_flag = '0'
+                           AND f.flow_date >= d.demand_date AND f.flow_date < DATE_ADD(d.demand_date, INTERVAL 1 DAY)
+                     ) END) AS shipped
+          FROM t_warehouse_demand_manage d
+          JOIN t_warehouse_product_info p
+            ON p.tenant_id = d.tenant_id AND p.id = d.product_id AND p.del_flag = '0'
+          WHERE d.tenant_id = #{tenantId} AND d.del_flag = '0'
+            AND d.demand_date = #{statDate} AND d.demand_type = 'store' AND d.demand_quantity > 0
+            AND d.demand_status IN ('CONFIRMED', 'IN_PRODUCTION', 'PARTIAL_SHIPPED', 'COMPLETED')
+            AND p.belong_type = 'vegetable'
+          GROUP BY d.product_id
+        ) by_product
+        """)
+    Map<String, Object> selectVegDemandFulfillment(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+    /** 窗口外的需求或发货单据发生补录、撤销和更正后，补刷原业务日。 */
+    @Select("""
+        SELECT DISTINCT d.demand_date
+        FROM t_warehouse_demand_manage d
+        JOIN t_warehouse_product_info p ON p.tenant_id = d.tenant_id AND p.id = d.product_id
+        WHERE d.tenant_id = #{tenantId} AND d.demand_date < #{from}
+          AND d.demand_type = 'store' AND p.belong_type = 'vegetable'
+          AND ((d.update_time >= #{from} AND d.update_time < #{until}) OR EXISTS (
+              SELECT 1 FROM t_warehouse_stock_flow f
+              WHERE f.tenant_id = #{tenantId} AND f.demand_id = d.id AND f.product_id = d.product_id
+                AND f.flow_type = 'ship_out' AND f.inout_type = 'OT'
+                AND f.flow_date >= d.demand_date AND f.flow_date < DATE_ADD(d.demand_date, INTERVAL 1 DAY)
+                AND ((f.create_time >= #{from} AND f.create_time < #{until})
+                  OR (f.update_time >= #{from} AND f.update_time < #{until}))
+          ))
+        """)
+    List<LocalDate> selectEarlierVegDemandDates(@Param("tenantId") String tenantId,
+                                               @Param("from") LocalDate from, @Param("until") LocalDate until);
+
     /**
      * 某损耗类型当日果蔬(belong_type='vegetable')总重（净菜段专用，row206）。
      * 与全口径 {@link #sumLossByType} 区分：净菜段的生产损耗/录入损耗只算果蔬产品，
@@ -539,6 +629,80 @@ public interface WarehouseStatAggregateMapper {
         """)
     List<Map<String, Object>> selectCropLossAgg(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
+    @Select("""
+        SELECT id FROM t_warehouse_product_info
+        WHERE tenant_id = #{tenantId} AND del_flag = '0' AND belong_type = 'vegetable'
+          AND product_attr = 2 AND LOWER(TRIM(product_unit)) IN ('kg', '公斤')
+        """)
+    List<Long> selectKgVegMaterialIds(@Param("tenantId") String tenantId);
+
+    /** 账面余额；只有计件与商品单位一致且明确关联 kg 原料，才将材耗作为折重。 */
+    @Select("""
+        <script>
+        SELECT locationId, stockUnit, SUM(balance) AS quantity,
+               SUM(CASE WHEN kgPerUnit IS NOT NULL THEN balance * kgPerUnit ELSE 0 END) AS weight,
+               SUM(CASE WHEN kgPerUnit IS NULL THEN balance ELSE 0 END) AS unconvertedCount
+        FROM (
+          SELECT s.location_id AS locationId, s.product_stock AS balance,
+                 CASE WHEN LOWER(TRIM(s.product_unit)) IN ('kg', '公斤') THEN 'kg'
+                      ELSE COALESCE(TRIM(s.product_unit), '') END AS stockUnit,
+                 CASE WHEN LOWER(TRIM(s.product_unit)) IN ('kg', '公斤') THEN 1
+                   <if test="!kgMaterialIds.isEmpty()">
+                      WHEN LOWER(TRIM(s.product_unit)) = LOWER(TRIM(p.product_unit))
+                        AND p.material_num > 0 AND p.product_material IN
+                        <foreach collection="kgMaterialIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+                      THEN p.material_num
+                   </if>
+                 END AS kgPerUnit
+          FROM t_warehouse_location_stock s
+          LEFT JOIN t_warehouse_product_info p ON p.id = s.product_id AND p.tenant_id = s.tenant_id
+            AND p.del_flag = '0' AND p.belong_type = 'vegetable' AND p.product_attr = 2
+          WHERE s.tenant_id = #{tenantId} AND s.del_flag = '0' AND s.product_stock != 0
+            AND (p.id IS NOT NULL OR (s.product_id IS NULL AND s.plot_id IS NOT NULL
+                AND s.ear_no IS NULL AND s.medicine_id IS NULL AND s.white_bar_no IS NULL
+                AND LOWER(TRIM(s.product_unit)) IN ('kg', '公斤')))
+        ) stock
+        GROUP BY locationId, stockUnit
+        </script>
+        """)
+    List<VegStockBalance> selectCurrentVegStock(@Param("tenantId") String tenantId,
+                                               @Param("kgMaterialIds") List<Long> kgMaterialIds);
+
+    record VegStockBalance(long locationId, String stockUnit, BigDecimal quantity,
+                           BigDecimal weight, BigDecimal unconvertedCount) {
+    }
+
+    @Delete("""
+        DELETE FROM t_warehouse_veg_stock_snapshot
+        WHERE tenant_id = #{tenantId} AND stat_date = #{today}
+        """)
+    int deleteVegStockSnapshot(@Param("tenantId") String tenantId, @Param("today") LocalDate today);
+
+    @Insert("""
+        INSERT INTO t_warehouse_veg_stock_snapshot
+          (id, tenant_id, stat_date, location_id, stock_unit, stock_quantity, stock_weight,
+           unconverted_count, create_time)
+        VALUES (#{id}, #{tenantId}, #{today}, #{balance.locationId}, #{balance.stockUnit},
+                #{balance.quantity}, #{balance.weight}, #{balance.unconvertedCount}, CURRENT_TIMESTAMP)
+        """)
+    int insertVegStockSnapshot(@Param("id") long id, @Param("tenantId") String tenantId,
+                               @Param("today") LocalDate today, @Param("balance") VegStockBalance balance);
+
+    /** 日、月末及当前年共用，按日期取最后一次已采集的整日余额。 */
+    @Select("""
+        SELECT stat_date, SUM(stock_weight) AS stockWeight, SUM(unconverted_count) AS unconvertedCount
+        FROM t_warehouse_veg_stock_snapshot
+        WHERE tenant_id = #{tenantId} AND del_flag = '0' AND stat_date BETWEEN #{from} AND #{to}
+        GROUP BY stat_date
+        ORDER BY stat_date DESC
+        LIMIT 1
+        """)
+    VegStockTotals selectLatestVegStockTotals(@Param("tenantId") String tenantId,
+                                             @Param("from") LocalDate from, @Param("to") LocalDate to);
+
+    record VegStockTotals(LocalDate statDate, BigDecimal stockWeight, BigDecimal unconvertedCount) {
+    }
+
     // ============================================================
     //  仓库月表（row18）源聚合 —— 从已落盘日表 Σ 回读
     // ============================================================
@@ -562,7 +726,18 @@ public interface WarehouseStatAggregateMapper {
                COALESCE(SUM(prod_pick_weight), 0)            AS vegProductionPickWeight,
                COALESCE(SUM(veg_raw_inbound_weight), 0)      AS vegRawInboundWeight,
                COALESCE(SUM(veg_delivery_out_weight), 0)     AS vegDeliveryOutWeight,
-               COALESCE(SUM(veg_produced_portion_count), 0)   AS vegProducedPortionCount
+               COALESCE(SUM(veg_produced_portion_count), 0)   AS vegProducedPortionCount,
+               COALESCE(AVG(CASE WHEN veg_demand_portion_count > 0 THEN veg_demand_fulfillment_rate END), 0) AS vegDemandRate,
+               COALESCE(SUM(veg_demand_kg_excluded_count), 0)  AS vegDemandKgExcludedCount,
+               COALESCE(SUM(veg_prod_return_weight), 0)      AS vegReturnWeight,
+               COALESCE(SUM(veg_pack_usage_weight), 0)       AS vegPackUsageWeight,
+               COALESCE(SUM(prod_loss_weight), 0)            AS vegProductionLossWeight,
+               COALESCE(SUM(veg_damaged_portion_count), 0)   AS vegDamagedPortionCount,
+               COALESCE(SUM(veg_standard_portion_count), 0)  AS vegStandardPortionCount,
+               COALESCE(SUM(veg_overspec_portion_count), 0)  AS vegOverspecPortionCount,
+               COALESCE(SUM(veg_overspec_percent_sum), 0)    AS vegOverspecPercentSum,
+               COALESCE(SUM(veg_spec_qualified_count), 0)     AS vegSpecQualifiedCount,
+               COALESCE(SUM(veg_undamaged_qualified_count), 0) AS vegUndamagedQualifiedCount
         FROM t_warehouse_indicator_record
         WHERE del_flag = '0' AND tenant_id = #{tenantId}
           AND DATE_FORMAT(stat_date, '%Y-%m') = #{month}
@@ -579,7 +754,11 @@ public interface WarehouseStatAggregateMapper {
                COALESCE(SUM(cut_loss), 0) AS cutLoss,
                COALESCE(SUM(cut_loss_pickup_weight), 0) AS cutLossPickupWeight,
                COALESCE(SUM(veg_raw_inbound_weight), 0) AS vegRawInboundWeight,
-               COALESCE(SUM(veg_delivery_out_weight), 0) AS vegDeliveryOutWeight
+               COALESCE(SUM(veg_delivery_out_weight), 0) AS vegDeliveryOutWeight,
+               COALESCE(SUM(veg_damaged_portion_count), 0) AS vegDamagedPortionCount,
+               COALESCE(SUM(veg_produced_portion_count), 0) AS vegProducedPortionCount,
+               MAX(CASE WHEN stat_month = #{lastMonth} AND veg_end_stock_date = LAST_DAY(CONCAT(#{lastMonth}, '-01'))
+                   THEN veg_end_stock_weight END) AS vegEndStockWeight
         FROM t_warehouse_monthly_record
         WHERE tenant_id = #{tenantId} AND del_flag = '0'
           AND stat_month >= #{firstMonth} AND stat_month <= #{lastMonth}

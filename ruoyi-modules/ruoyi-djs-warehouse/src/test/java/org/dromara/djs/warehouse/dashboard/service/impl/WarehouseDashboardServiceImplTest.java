@@ -82,7 +82,8 @@ class WarehouseDashboardServiceImplTest {
 
     private WarehouseAnnualRecordVo annual(int year, int slaughterCount, String barYieldRate) {
         return new WarehouseAnnualRecordVo(year, BigDecimal.ZERO, BigDecimal.ZERO, null,
-            BigDecimal.ZERO, BigDecimal.ZERO, slaughterCount, new BigDecimal(barYieldRate), BigDecimal.ZERO);
+            BigDecimal.ZERO, BigDecimal.ZERO, slaughterCount, new BigDecimal(barYieldRate), BigDecimal.ZERO,
+            null, BigDecimal.ZERO);
     }
 
     @AfterEach

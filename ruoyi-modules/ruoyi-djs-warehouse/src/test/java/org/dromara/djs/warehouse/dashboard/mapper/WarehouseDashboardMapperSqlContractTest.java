@@ -42,7 +42,7 @@ class WarehouseDashboardMapperSqlContractTest {
             .contains("from t_warehouse_stock_flow f")
             .contains("flow_type = 'cut_out_in'")
             .contains("c.pickup_time >= curdate()")
-            .contains("c.tenant_id = f.tenant_id and c.white_bar_no = f.white_bar_no")
+            .contains("c.tenant_id = f.tenant_id", "c.white_bar_no = f.white_bar_no", "c.white_bar_id = f.white_bar_id")
             .contains("c.del_flag = '0'")
             .contains("f.del_flag = '0'")
             .doesNotContain("f.remark")

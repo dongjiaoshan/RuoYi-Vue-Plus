@@ -9,12 +9,15 @@ public final class WarehouseProductionStatSql {
     /** 按扇计，兼容历史未标半只的记录（原口径按整只处理）。 */
     public static final String CUT_SIDES = "CASE WHEN is_half = 1 THEN 1 ELSE 2 END";
 
-    /** 按白条编号关联有效领用单；没有归属领用日的流水保留给未配对统计。 */
+    /** 优先按白条编号关联，双方无编号时按整猪白条 ID 关联。 */
     public static final String CUT_OUTPUT_PICKUP_JOIN = """
         FROM t_warehouse_stock_flow f
         LEFT JOIN t_warehouse_pig_cut_record c
-          ON c.tenant_id = f.tenant_id AND c.white_bar_no = f.white_bar_no
-         AND f.white_bar_no <> '' AND c.out_type = 'cut' AND c.del_flag = '0' AND c.pickup_time IS NOT NULL
+          ON c.tenant_id = f.tenant_id
+         AND ((f.white_bar_no <> '' AND c.white_bar_no = f.white_bar_no)
+           OR ((f.white_bar_no IS NULL OR f.white_bar_no = '')
+           AND (c.white_bar_no IS NULL OR c.white_bar_no = '') AND c.white_bar_id = f.white_bar_id))
+         AND c.out_type = 'cut' AND c.del_flag = '0' AND c.pickup_time IS NOT NULL
         WHERE f.tenant_id = #{tenantId} AND f.flow_type = 'cut_out_in' AND f.inout_type = 'IN'
         """;
 
@@ -31,9 +34,9 @@ public final class WarehouseProductionStatSql {
         """;
 
     /** 每份打包有独立生产号。重复打印使用原号；老记录缺号时以主键识别。 */
-    public static final String VEG_PORTIONS = """
-        COUNT(DISTINCT COALESCE(CONCAT('no:', NULLIF(TRIM(pp.produce_no), '')), CONCAT('id:', pp.id)))
-        """;
+    public static final String VEG_PORTION_KEY =
+        "COALESCE(CONCAT('no:', NULLIF(TRIM(pp.produce_no), '')), CONCAT('id:', pp.id))";
+    public static final String VEG_PORTIONS = "COUNT(DISTINCT " + VEG_PORTION_KEY + ")";
 
     public static final String PRODUCE_FROM = """
         FROM t_warehouse_product_production pp

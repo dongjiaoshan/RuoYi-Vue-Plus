@@ -42,6 +42,15 @@ public interface IWarehouseStatService {
     /** 查找近期分割变更影响的窗口外领用日，供 warehouse-stat 回刷。 */
     List<LocalDate> findEarlierCutPickupDates(LocalDate from, LocalDate until);
 
+    /** 查找近期标损、发货补录或需求调整影响的窗口外统计日。 */
+    List<LocalDate> findEarlierVegIndicatorDates(LocalDate from, LocalDate until);
+
+    /** 只使用上海业务当天的账面余额，重拍覆盖当天。 */
+    void captureVegStockSnapshot(LocalDate targetDate);
+
+    /** 服务在收工时间之后启动时，只补采尚未采集的业务当天。 */
+    void captureMissingVegStockSnapshot(LocalDate targetDate);
+
     /**
      * 仓库日报表列表（row16）：按日期范围倒序返回全量（行数=天数，前端客户端分页）。
      *
