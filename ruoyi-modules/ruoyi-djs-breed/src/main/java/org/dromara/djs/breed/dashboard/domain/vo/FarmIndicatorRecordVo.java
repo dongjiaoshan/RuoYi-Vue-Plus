@@ -178,6 +178,8 @@ public class FarmIndicatorRecordVo implements Serializable {
     private Integer endReserve230Count;
     /** 期末非生产状态母猪头数。 */
     private Integer endNonprodSowCount;
+    /** 日末妊娠母猪存栏（配种后未分娩，含未孕检）。 */
+    private Integer pregnantSowCount;
 
     // ---- 配种批次回溯 ----
     /** 当年配种批次分娩头数。 */
