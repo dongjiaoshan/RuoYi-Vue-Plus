@@ -28,7 +28,8 @@ public class StoreProductionIndicatorController {
         @RequestParam(required = false) Long storeId,
         @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
         @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
-        @RequestParam(defaultValue = "DAY") StoreIndicatorPeriod period) {
-        return R.ok(service.query(storeId, from, to, period));
+        @RequestParam(defaultValue = "DAY") StoreIndicatorPeriod period,
+        @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate reportDate) {
+        return R.ok(service.query(storeId, from, to, period, reportDate));
     }
 }

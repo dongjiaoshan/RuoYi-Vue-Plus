@@ -9,7 +9,6 @@ import org.dromara.djs.store.ledger.domain.StoreDailyLedger;
 import org.dromara.djs.store.ledger.mapper.StoreDailyLedgerMapper;
 import org.dromara.djs.store.loss.domain.StoreLossRecord;
 import org.dromara.djs.store.loss.mapper.StoreLossRecordMapper;
-import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.store.stat.domain.StoreProductionIndicatorDaily;
@@ -34,6 +33,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -64,7 +64,6 @@ class StoreLossServiceImplTest {
     @Mock private StoreDailyLedgerMapper storeDailyLedgerMapper;
     @Mock private StoreProductionIndicatorMapper indicatorMapper;
     @Mock private ProductInfoMapper productInfoMapper;
-    @Mock private IProductProductionService productProductionService;
     @Mock private DictService dictService;
 
     private StoreLossServiceImpl service;
@@ -76,9 +75,6 @@ class StoreLossServiceImplTest {
     private static final Long PRODUCT_B = 8002L;
     private static final Long WHITE_BAR_PRODUCT = 8100L;
     private static final String WHITE_BAR_CODE = "P-WB-001";
-    /** 材料外售成品（原材料 = 白条部位产品）：其当日到店重从白条分割产品总重中剔除。 */
-    private static final Long MATERIAL_SOLD_PRODUCT = 8200L;
-    private static final String MATERIAL_SOLD_CODE = "P-MS-001";
     private static final LocalDate DATE = LocalDate.of(2026, 8, 15);
 
     /** MyBatis-Plus 单测 entity cache 预热（LambdaQueryWrapper 解析列名需要）。 */
@@ -95,7 +91,7 @@ class StoreLossServiceImplTest {
     @BeforeEach
     void setup() {
         service = new StoreLossServiceImpl(baseMapper, storeDailyLedgerMapper, indicatorMapper,
-            productInfoMapper, productProductionService, dictService);
+            productInfoMapper, dictService);
         tenantHelperMock = Mockito.mockStatic(TenantHelper.class);
         tenantHelperMock.when(TenantHelper::getTenantId).thenReturn(TENANT_ID);
         when(baseMapper.insert(any(StoreLossRecord.class))).thenReturn(1);
@@ -129,6 +125,8 @@ class StoreLossServiceImplTest {
 
         when(dictService.getAllDictByDictType("djs_white_bar_return_product"))
             .thenReturn(Map.of(WHITE_BAR_CODE, "白条产品"));
+        when(indicatorMapper.selectWhiteBarCutProductIds(TENANT_ID, List.of(WHITE_BAR_CODE)))
+            .thenReturn(List.of(WHITE_BAR_PRODUCT));
 
         service.aggregate(DATE);
 
@@ -182,7 +180,8 @@ class StoreLossServiceImplTest {
             .thenReturn(List.of(new StoreQuantity(STORE_ID, new BigDecimal("20.000"))));
         when(dictService.getAllDictByDictType("djs_white_bar_return_product"))
             .thenReturn(Map.of(WHITE_BAR_CODE, "白条产品"));
-        when(productInfoMapper.selectList(any())).thenReturn(List.of(product(WHITE_BAR_PRODUCT, WHITE_BAR_CODE, "kg")));
+        when(indicatorMapper.selectWhiteBarCutProductIds(TENANT_ID, List.of(WHITE_BAR_CODE)))
+            .thenReturn(List.of(WHITE_BAR_PRODUCT));
 
         service.aggregate(DATE);
 
@@ -206,12 +205,10 @@ class StoreLossServiceImplTest {
             .thenReturn(List.of(new StoreQuantity(STORE_ID, new BigDecimal("44.000"))));
         when(dictService.getAllDictByDictType("djs_white_bar_return_product"))
             .thenReturn(Map.of(WHITE_BAR_CODE, "白条产品"));
-        // productInfoMapper 两次调用：① 白条部位字典 resolve ② 材料外售成品（product_material ∈ 白条部位）
-        when(productInfoMapper.selectList(any())).thenReturn(
-            List.of(product(WHITE_BAR_PRODUCT, WHITE_BAR_CODE, "kg")),
-            List.of(product(MATERIAL_SOLD_PRODUCT, MATERIAL_SOLD_CODE, "份")));
-        when(productProductionService.sumDeliveredWeightToStore(STORE_ID, MATERIAL_SOLD_PRODUCT, DATE))
-            .thenReturn(new BigDecimal("1.001"));
+        when(indicatorMapper.selectWhiteBarCutProductIds(TENANT_ID, List.of(WHITE_BAR_CODE)))
+            .thenReturn(List.of(WHITE_BAR_PRODUCT));
+        when(indicatorMapper.selectMaterialSoldReceipts(TENANT_ID, DATE, null, Set.of(WHITE_BAR_PRODUCT)))
+            .thenReturn(List.of(new StoreQuantity(STORE_ID, new BigDecimal("1.001"))));
 
         service.aggregate(DATE);
 
@@ -234,11 +231,10 @@ class StoreLossServiceImplTest {
             .thenReturn(List.of(new StoreQuantity(STORE_ID, new BigDecimal("30.000"))));
         when(dictService.getAllDictByDictType("djs_white_bar_return_product"))
             .thenReturn(Map.of(WHITE_BAR_CODE, "白条产品"));
-        when(productInfoMapper.selectList(any())).thenReturn(
-            List.of(product(WHITE_BAR_PRODUCT, WHITE_BAR_CODE, "kg")),
-            List.of(product(MATERIAL_SOLD_PRODUCT, MATERIAL_SOLD_CODE, "份")));
-        when(productProductionService.sumDeliveredWeightToStore(STORE_ID, MATERIAL_SOLD_PRODUCT, DATE))
-            .thenReturn(new BigDecimal("15.000"));
+        when(indicatorMapper.selectWhiteBarCutProductIds(TENANT_ID, List.of(WHITE_BAR_CODE)))
+            .thenReturn(List.of(WHITE_BAR_PRODUCT));
+        when(indicatorMapper.selectMaterialSoldReceipts(TENANT_ID, DATE, null, Set.of(WHITE_BAR_PRODUCT)))
+            .thenReturn(List.of(new StoreQuantity(STORE_ID, new BigDecimal("15.000"))));
 
         service.aggregate(DATE);
 

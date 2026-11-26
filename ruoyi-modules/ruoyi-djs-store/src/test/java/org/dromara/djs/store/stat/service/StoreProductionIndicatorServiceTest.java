@@ -30,15 +30,16 @@ class StoreProductionIndicatorServiceTest {
     void monthRatesUseSummedBasesAndNaturalMonth() {
         LocalDate from = LocalDate.of(2026, 1, 15);
         StoreProductionIndicatorVo row = new StoreProductionIndicatorVo();
+        row.setPeriodStart(from.withDayOfMonth(1));
         row.setWhiteBarReceivedWeight(new BigDecimal("150"));
         row.setSplitProductWeight(new BigDecimal("110"));
         row.setSplitLossWeight(new BigDecimal("45"));
         when(mapper.selectPeriod("1001", List.of(11L), from.withDayOfMonth(1),
-            LocalDate.of(2026, 2, 1), StoreIndicatorPeriod.MONTH)).thenReturn(List.of(row));
+            LocalDate.of(2026, 2, 1), StoreIndicatorPeriod.MONTH, from)).thenReturn(List.of(row));
 
         try (var tenant = mockStatic(TenantHelper.class)) {
             tenant.when(TenantHelper::getTenantId).thenReturn("1001");
-            assertThat(service.query(11L, from, from, StoreIndicatorPeriod.MONTH)).containsExactly(row);
+            assertThat(service.query(11L, from, from, StoreIndicatorPeriod.MONTH, from)).containsExactly(row);
         }
         assertThat(row.getSplitYieldRate()).isEqualByComparingTo("73.33");
         assertThat(row.getSplitLossRate()).isEqualByComparingTo("30.00");

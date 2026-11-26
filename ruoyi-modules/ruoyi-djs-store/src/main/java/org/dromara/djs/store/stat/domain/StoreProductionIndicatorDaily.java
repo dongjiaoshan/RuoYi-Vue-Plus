@@ -19,6 +19,13 @@ public class StoreProductionIndicatorDaily extends TenantEntity {
     private Long id;
     private Long storeId;
     private LocalDate statDate;
+    private Boolean orderTimely;
+    private boolean orderPlaced;
+    private BigDecimal porkReceivedWeightKg;
+    private BigDecimal vegDamagePortionCount;
+    private BigDecimal vegDamageReceivedPortionCount;
+    private BigDecimal splitYieldRate;
+    private BigDecimal splitLossRate;
     private BigDecimal vegReceivedPortionCount;
     private BigDecimal vegReceiveKgWeight;
     private BigDecimal whiteBarReceivedWeight;

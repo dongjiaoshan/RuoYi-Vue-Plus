@@ -36,9 +36,10 @@ public final class StoreReturnStatSql {
          FROM t_store_return r
          JOIN t_warehouse_product_info p ON p.id = r.product_id AND p.tenant_id = r.tenant_id
         """;
-    public static final String WHERE = """
-         WHERE r.tenant_id = #{tenantId} AND r.del_flag = '0' AND p.del_flag = '0'
+    public static final String HISTORICAL_WHERE = """
+         WHERE r.tenant_id = #{tenantId} AND r.del_flag = '0'
            AND r.return_direction = 'store_to_warehouse' AND r.store_id IS NOT NULL
            AND
         """ + ELIGIBLE + " ";
+    public static final String WHERE = HISTORICAL_WHERE + " AND p.del_flag = '0' ";
 }

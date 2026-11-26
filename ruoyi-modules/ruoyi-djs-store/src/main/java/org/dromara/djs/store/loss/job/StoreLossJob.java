@@ -33,6 +33,6 @@ public class StoreLossJob {
     @Scheduled(cron = "${djs.schedule.store-loss-cron:0 30 1 * * ?}", zone = BUSINESS_ZONE)
     public void aggregate() {
         LocalDate today = LocalDate.now(ZoneId.of(BUSINESS_ZONE));
-        DjsJobRunner.run(JOB_NAME, () -> indicatorService.rebuildRange(today.minusDays(REFRESH_DAYS), today.minusDays(1)));
+        DjsJobRunner.run(JOB_NAME, () -> indicatorService.rebuildRollingWindow(today.minusDays(REFRESH_DAYS), today.minusDays(1)));
     }
 }
